@@ -223,6 +223,25 @@ pub(super) fn handle_key(
     if key.code != KeyCode::Enter || !key.modifiers.is_empty() {
         app.busy_send_confirmation = None;
     }
+    if app.ready_update_path.is_some()
+        && app.picker.is_none()
+        && app.editor.text().is_empty()
+        && key.modifiers.is_empty()
+    {
+        match key.code {
+            KeyCode::Char('r' | 'R') => {
+                app.restart_ready_update();
+                return false;
+            }
+            KeyCode::Char('l' | 'L') => {
+                app.ready_update_path = None;
+                app.restart_when_idle = false;
+                app.push_system("Update kept for a later restart.");
+                return false;
+            }
+            _ => {}
+        }
+    }
     if raster::key(app, &key) {
         return false;
     }

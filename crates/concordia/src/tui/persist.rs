@@ -130,6 +130,27 @@ fn edit_signature(app: &super::App) -> u64 {
 }
 
 impl super::App {
+    pub(super) fn ensure_recovery_lease(&mut self) {
+        if self.keep.lease.is_some() {
+            return;
+        }
+        let root = self
+            .keep
+            .recovery_root
+            .clone()
+            .or_else(|| super::recovery::recovery_root(&self.state_root, &self.cwd).ok());
+        let Some(root) = root else {
+            return;
+        };
+        self.keep.recovery_root = Some(root.clone());
+        if let Ok(lease) = super::recovery::create(&root) {
+            self.keep.lease = Some(Arc::new(lease));
+            if let Some(lease) = self.keep.lease.clone() {
+                let _ = self.workspace.set_file_recovery(lease, &self.cwd);
+            }
+        }
+    }
+
     fn alternate_draft(&self) -> Option<String> {
         self.parked_draft
             .as_ref()

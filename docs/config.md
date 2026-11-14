@@ -171,7 +171,7 @@ protocol = false         # let the orchestrator propose delegations (you still a
 idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
 
 [updates]
-install_on_launch = false # install a prepared update when Concordia starts
+install_on_launch = false # install a prepared update when Concordia starts; /config can choose this or background preparation
 ```
 
 | Key | Default | Notes |

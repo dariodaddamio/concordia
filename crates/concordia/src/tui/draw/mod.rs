@@ -2118,7 +2118,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         "{} saved drafts/requests retained",
         app.keep.recovery_choices.len()
     );
-    let (left, left_style) = if app.recovery_warning().is_some() {
+    let (left, left_style) = if app.ready_update_path.is_some() {
+        (
+            "Update ready · R restart now · L later",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )
+    } else if app.recovery_warning().is_some() {
         (
             "draft not saved locally · retrying persistence",
             Style::default().fg(Color::Red),

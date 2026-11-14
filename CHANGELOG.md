@@ -1,5 +1,25 @@
 # Changelog
 
+### Fixed (2026-11-13ae)
+
+- Apply background update checks to restored and new tabs, and show restart actions only after
+  the prepared update is complete.
+
+### Fixed (2026-11-13ad)
+
+- Show prepared-update actions on Home, wait for delegated work before restart, and install
+  next-launch updates without restarting the current session.
+
+### Fixed (2026-11-13ac)
+
+- Lower source update builds to below-normal priority, preserve fresh-tab recovery ownership,
+  keep typed `l` input intact, and ask before restarting while another tab is running.
+
+### Added (2026-11-13ab)
+
+- Prepare updates in the background with capped source builds, a non-focused Restart now or Later
+  notice, persisted update mode, and restart restoration of the saved window.
+
 ### Fixed (2026-11-13aa)
 
 - Keep ordinary provider errors out of usage-limit continuation, disable targets without a

@@ -186,6 +186,8 @@ pub struct OrchestratorSettings {
     pub delegate_auto_return: bool,
     #[serde(default)]
     pub delegate_quota_failover: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_install_on_launch: Option<bool>,
     /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
     /// `None` = never set by the user: `[delegation] protocol` in config.toml decides (see
     /// [`delegation_protocol_on`]).
@@ -276,6 +278,7 @@ impl Default for OrchestratorSettings {
             child_trust: ChildTrust::Inherit,
             delegate_auto_return: false,
             delegate_quota_failover: false,
+            update_install_on_launch: None,
             delegation_protocol: None,
             continuation_automatic: None,
             same_provider_automatic: false,
@@ -656,6 +659,21 @@ pub fn set_continuation_automatic(root: &Path, automatic: bool) -> Result<()> {
         store.settings.continuation_automatic = Some(automatic);
         Ok(())
     })
+}
+
+pub fn set_update_install_on_launch(root: &Path, install_on_launch: bool) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.update_install_on_launch = Some(install_on_launch);
+        Ok(())
+    })
+}
+
+pub fn update_install_on_launch(root: &Path) -> Option<bool> {
+    let raw = read_store_bytes(&store_path(root)).ok()?;
+    serde_json::from_slice::<OrchestratorStore>(&raw)
+        .ok()?
+        .settings
+        .update_install_on_launch
 }
 
 pub fn same_provider_automatic(root: &Path) -> bool {

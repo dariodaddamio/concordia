@@ -36,6 +36,8 @@ struct RunTab {
 
 impl RunTab {
     fn new(app: App) -> Self {
+        let mut app = app;
+        app.ensure_recovery_lease();
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let (handle_tx, handle_rx) = mpsc::unbounded_channel();
@@ -160,6 +162,8 @@ impl tabs::TabState for RunTab {
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
+    app.background_update_checks = true;
+    app.install_update_on_launch = crate::config::for_root(state_root).updates.install_on_launch;
     // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
     // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
     // The normal persist tick still retries a real dirty lease when the tab is used.
@@ -386,14 +390,20 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     let (mut saved_window, mut tabs) = window_session::open(&state_root, &cwd, use_window);
+    let install_update_on_launch = crate::config::for_root(&state_root).updates.install_on_launch;
+    for tab in &mut tabs.tabs {
+        tab.app.background_update_checks = true;
+        tab.app.install_update_on_launch = install_update_on_launch;
+    }
     tabs.active_mut().app.compat_rx = Some(crate::provider::compat::start_real_detection(
         state_root.clone(),
     ));
-    tabs.active_mut().app.start_job(if crate::config::get().updates.install_on_launch {
-        JobKind::Update
+    if install_update_on_launch {
+        tabs.active_mut().app.background_update = true;
+        tabs.active_mut().app.start_job(JobKind::Update);
     } else {
-        JobKind::Check
-    });
+        tabs.active_mut().app.start_job(JobKind::Check);
+    }
 
     let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
     let (backend, mut terminal_input) = if use_window {
@@ -1586,11 +1596,34 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
 
+            if !tabs.tabs.iter().any(|t| {
+                t.app.busy || t.app.deleg.d.any_active() || t.app.deleg.has_pending_prompt()
+            }) {
+                for tab in &mut tabs.tabs {
+                    if tab.app.restart_when_idle {
+                        tab.app.restart_when_idle = false;
+                        if let Some(path) = tab.app.ready_update_path.take() {
+                            tab.app.reexec_path = Some(path);
+                            tab.app.should_quit = true;
+                        }
+                    }
+                }
+            }
+
             if tabs
                 .tabs
                 .iter()
                 .any(|t| t.app.should_quit || t.app.reexec_path.is_some())
             {
+                if tabs.tabs.iter().any(|t| t.app.reexec_path.is_some())
+                    && tabs.tabs.iter().any(|t| {
+                        t.app.busy
+                            || t.app.deleg.d.any_active()
+                            || t.app.deleg.has_pending_prompt()
+                    })
+                {
+                    continue;
+                }
                 break;
             }
 

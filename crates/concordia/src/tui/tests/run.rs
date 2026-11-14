@@ -127,6 +127,7 @@ fn update_check_failure_is_visible_on_the_page() {
 #[test]
 fn background_update_notice_is_visible_without_opening_the_update_panel() {
     let mut h = Harness::new(90, 28);
+    h.app.background_update_checks = true;
     h.app.job = Some(spawn_job(JobKind::Check, |_| {
         JR::Check(Ok(update_preview(true, 0)))
     }));
@@ -136,7 +137,41 @@ fn background_update_notice_is_visible_without_opening_the_update_panel() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(h.transcript_text().contains("A Concordia update is ready"));
+    assert!(h.transcript_text().contains("restart now (R) or Later (L)"));
     assert!(h.app.picker.is_none());
+    h.app.job.as_ref().unwrap().cancel();
+}
+
+#[test]
+fn background_update_preparation_does_not_offer_restart_before_install_finishes() {
+    let mut h = Harness::new(90, 28);
+    h.app.background_update_checks = true;
+    h.app.job = Some(spawn_job(JobKind::Check, |_| {
+        JR::Check(Ok(update_preview(true, 0)))
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.job.as_ref().is_some_and(|job| job.kind == JobKind::Check)
+        && Instant::now() < deadline
+    {
+        h.app.poll_job();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let text = h.transcript_text();
+    assert!(text.contains("Preparing it in the background"), "{text}");
+    assert!(!text.contains("restart now (R) or Later (L)"), "{text}");
+    assert!(h.app.ready_update_path.is_none());
+    assert!(h.app.background_update);
+    h.app.job.as_ref().unwrap().cancel();
+}
+
+#[test]
+fn update_notice_does_not_swallow_l_while_composing() {
+    let mut h = Harness::new(90, 28);
+    h.type_str("draft ");
+    h.app.ready_update_path = Some(std::path::PathBuf::from("prepared.exe"));
+    h.key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "draft l");
+    assert!(h.app.ready_update_path.is_some());
 }
 
 #[test]

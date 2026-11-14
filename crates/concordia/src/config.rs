@@ -541,7 +541,11 @@ pub fn delegation_protocol() -> bool {
 
 /// The same config for an explicit state root (store code and tests with temp roots).
 pub fn for_root(state_root: &Path) -> Config {
-    Config::load(state_root).config
+    let mut config = Config::load(state_root).config;
+    if let Some(value) = crate::store::update_install_on_launch(state_root) {
+        config.updates.install_on_launch = value;
+    }
+    config
 }
 
 #[cfg(test)]

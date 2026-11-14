@@ -34,6 +34,15 @@
 | crates/concordia/src/harness/command.rs, crates/concordia/src/tui/{app/slash.rs,integrations.rs}, crates/concordia/tests | ok: 1, 4, 5, 9, 10 | Extend the existing guided-command and review surfaces only where argument-taking commands currently bypass them; tests exercise user-visible panels and keep mutation confirmation in the existing picker. |
 | crates/concordia/src/version.rs, CHANGELOG.md, docs | ok: 5, 10 | Record shipped behavior in the existing release metadata and canonical documentation. |
 
+### Y1 background updates - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/update.rs` | ok: 1, 2, 4, 5, 8 | Keep preparation in the existing update job, add one Cargo-process gate and one capped build environment at the process boundary. |
+| `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/run.rs` | ok: 1, 4, 5, 6, 9 | Reuse the existing job result, window snapshot and input owners for a passive restart decision; no second window or update queue. |
+| `crates/concordia/src/store.rs`, `crates/concordia/src/config.rs`, `crates/concordia/src/tui/settings.rs` | ok: 1, 4, 6, 10 | Persist one update-mode preference beside existing user settings and project it through `/config`. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Record the user-facing behavior and extend the existing journey boundary without provider turns. |
+
 ### Q2 topbar lane - anti-slop gate
 
 | path | tendency_check | justification |
@@ -65,3 +74,18 @@
 | README.md, site/src/content/docs/{features,index,install,providers,configuration}.md, site/astro.config.mjs | ok: 1, 4, 5, 6, 10 | Keep the README and site as canonical documentation surfaces, add one grouped feature page, and record shipped behavior without adding a duplicate catalog. |
 | .github/workflows/release.yml | ok: 1, 4, 5, 10 | Extend existing staging and attestation steps to cover each release asset; do not add a new release subsystem. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing documentation and release-integrity changes in existing metadata. |
+
+### Y1 review repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/update.rs | ok: 1, 2, 4, 5, 10 | Apply priority at the spawned source-build process boundary and fail visibly if the required background priority cannot be set. |
+| crates/concordia/src/tui/persist.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 6, 10 | Keep recovery ownership in the existing persistence owner and make every live tab claim it before window snapshots. |
+| crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 10 | Let the existing composer own typed characters before interpreting the non-focused update notice shortcut. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+### Y1 review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,run.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep update actions, restart admission, and presentation in their existing owners; wait on the existing delegated-work state and expose the existing prepared-update action in the shared footer. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |

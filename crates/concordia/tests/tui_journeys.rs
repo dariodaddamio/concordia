@@ -2772,3 +2772,19 @@ fn activation_repaints_the_last_frame_without_a_blank_one() {
     }
     s.exit();
 }
+
+#[test]
+#[ignore = "native-window update settings journey with a fake provider"]
+fn update_mode_is_visible_in_config_and_does_not_open_a_modal_notice() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("/config");
+    s.enter();
+    s.until("update mode setting", |s| {
+        s.screen().contains("Updates") && s.screen().contains("prepare in background")
+    });
+    assert!(!s.screen().contains("Restart now"));
+    s.exit();
+}

@@ -82,6 +82,18 @@ pub(super) fn open(app: &mut App) {
             "Saved for future sessions; proactive rollover is Codex-only and off by default",
         ),
         row(
+            "updates",
+            format!(
+                "Updates Â· {}",
+                if crate::config::for_root(&app.state_root).updates.install_on_launch {
+                    "install on next launch"
+                } else {
+                    "prepare in background"
+                }
+            ),
+            "Choose whether a prepared update waits for Restart now or installs at the next launch",
+        ),
+        row(
             "fallback",
             {
                 let fallbacks = crate::config::for_root(&app.state_root).continuation.fallback_models;
@@ -248,6 +260,18 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                     app.continuation.toggle_automatic();
                     app.flash("Continuation preference saved");
                 }
+                Err(error) => app.flash(format!("Not saved: {error}")),
+            }
+            open(app);
+        }
+        "updates" => {
+            let current = crate::config::for_root(&app.state_root).updates.install_on_launch;
+            match crate::store::set_update_install_on_launch(&app.state_root, !current) {
+                Ok(()) => app.flash(if current {
+                    "Updates will prepare in the background"
+                } else {
+                    "Updates will install on the next launch"
+                }),
                 Err(error) => app.flash(format!("Not saved: {error}")),
             }
             open(app);

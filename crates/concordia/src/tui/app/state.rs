@@ -363,6 +363,11 @@ pub(crate) struct App {
     pub(in crate::tui) artifacts: artifacts::State,
     pub(in crate::tui) landing: Option<landing::Landing>,
     pub(in crate::tui) update_preview: Option<UpdatePreview>,
+    pub(in crate::tui) ready_update_path: Option<PathBuf>,
+    pub(in crate::tui) background_update: bool,
+    pub(in crate::tui) background_update_checks: bool,
+    pub(in crate::tui) install_update_on_launch: bool,
+    pub(in crate::tui) restart_when_idle: bool,
     pub(in crate::tui) update_rows: usize,
     pub(in crate::tui) update_view: usize,
     pub(in crate::tui) cancel_handle: Option<Arc<RunningTurn>>,
@@ -1221,7 +1226,7 @@ impl App {
             self.push_system("an update is already running - Esc cancels it");
             return;
         }
-        if kind == JobKind::Update && self.update_blocked_by_work() {
+        if kind == JobKind::Update && !self.background_update && self.update_blocked_by_work() {
             self.push_system("Cannot update while work or unsaved file edits remain. Finish or cancel chat/workers and save or close edited files, then press Enter again. The update has not been queued.");
             return;
         }
@@ -1230,6 +1235,23 @@ impl App {
             JobKind::Update => start_update(self.cwd.clone()),
             JobKind::Check => start_check(self.cwd.clone()),
         });
+    }
+
+    pub(in crate::tui) fn start_background_update(&mut self) {
+        self.background_update = true;
+        self.start_job(JobKind::Update);
+    }
+
+    pub(in crate::tui) fn restart_ready_update(&mut self) {
+        if self.busy || self.deleg.d.any_active() || self.deleg.has_pending_prompt() {
+            self.restart_when_idle = true;
+            self.push_system("Restart is waiting for active work and will continue when it finishes.");
+            return;
+        }
+        if let Some(path) = self.ready_update_path.take() {
+            self.reexec_path = Some(path);
+            self.should_quit = true;
+        }
     }
 
     pub(in crate::tui) fn open_update_preview(&mut self) {
@@ -1249,6 +1271,16 @@ impl App {
             self.close_update_screen();
         }
         match result {
+            JobResult::Update(Ok(UpdateOutcome::Installed(result))) if self.background_update => {
+                self.background_update = false;
+                if self.install_update_on_launch {
+                    self.ready_update_path = None;
+                    self.push_system("A Concordia update was installed for the next launch. This session will keep running.");
+                } else {
+                    self.ready_update_path = Some(result.install_path);
+                    self.push_system("A Concordia update is ready. Restart now (R) or Later (L). It will not take focus.");
+                }
+            }
             JobResult::Update(Ok(UpdateOutcome::Installed(result))) => {
                 crate::logging::info(&format!(
                     "update-installed {}",
@@ -1284,14 +1316,18 @@ impl App {
             }
             JobResult::Check(Ok(preview)) => {
                 if preview.install_available
+                    && self.background_update_checks
                     && !self
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.kind == PickerKind::Update)
                 {
-                    self.push_system(
-                        "A Concordia update is ready. Type /update to review and press Enter to install it, or continue later.",
-                    );
+                    if self.install_update_on_launch {
+                        self.push_system("A Concordia update is available. It will install on the next launch.");
+                    } else {
+                        self.push_system("A Concordia update is available. Preparing it in the background; actions will appear when it is ready.");
+                        self.start_background_update();
+                    }
                 }
                 self.footer_left = if preview.install_available {
                     "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
@@ -1405,7 +1441,10 @@ impl App {
         if !self.busy {
             self.cancel_requested = false;
         }
-        if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) && !line.starts_with('/') {
+        if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
+            && !self.background_update
+            && !line.starts_with('/')
+        {
             self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
             return;
         }
@@ -1755,6 +1794,11 @@ impl App {
             artifacts: artifacts::State::default(),
             landing: None,
             update_preview: None,
+            ready_update_path: None,
+            background_update: false,
+            background_update_checks: false,
+            install_update_on_launch: false,
+            restart_when_idle: false,
             update_rows: 0,
             update_view: 0,
             cancel_handle: None,
