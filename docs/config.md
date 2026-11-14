@@ -152,7 +152,7 @@ clamped). Nothing here is ever fatal.
 
 ```toml
 [ui]
-theme = "default"       # default | dark | light | terminal | opifex
+theme = "default"       # default | dark | light | terminal | studio
 # background = "#101318" # optional #RRGGBB override
 # foreground = "#e5e7eb"
 # accent = "#78b9ef"
@@ -179,12 +179,12 @@ protocol = false         # let the orchestrator propose delegations (you still a
 idle_timeout_minutes = 10 # notify after this much provider silence; 0 disables it
 
 [updates]
-install_on_launch = false # install a prepared update when Concordia starts
+install_on_launch = false # install a prepared update when Concordia starts; /config can choose this or background preparation
 ```
 
 | Key | Default | Notes |
 | --- | --- | --- |
-| `ui.theme` | `"opifex"` | `default`, `dark`, `light`, `terminal` or `opifex`; also selectable live in `/config` |
+| `ui.theme` | `"studio"` | `default`, `dark`, `light`, `terminal` or `studio`; also selectable live in `/config` |
 | `ui.brand_color` | Amber `#FFB000` | Optional running-window icon color |
 | `ui.motion` | `true` | Retained for config compatibility; the Home portrait is static |
 | `ui.background` | Theme default | Optional quoted `#RRGGBB` background, including empty rows and native client margins |
@@ -214,18 +214,18 @@ theme file is at most 16 KiB and must contain nonempty `name` and `author` strin
 `background`, `foreground`, `accent`, `dim`, `success`, `warning`, `error`, `selection`, and
 `border` colors as `#RRGGBB`.
 `portrait_tint` is optional. Unknown keys and malformed colors are rejected with a line-aware
-error. Built-in Dark, Light, and Opifex Studio themes use this same parser. Foreground contrast
+error. Built-in Dark, Light, and Studio themes use this same parser. Foreground contrast
 below WCAG AA 4.5:1, or dim contrast below 3:1, loads with a warning in the picker.
 
 In `/config` → Appearance → Theme, choose a built-in or imported library theme. **Import theme...**
 validates a `.toml` before copying it into `<state>/themes`; **Export current** writes the active
 theme there or to a path supplied by the user, including configured palette overrides. Default
 and Terminal do not expose the host terminal palette; select a named theme before exporting.
-Opifex Studio is the default for new installs. Loading appearance settings preserves explicit
+Studio is the default for new installs. Loading appearance settings preserves explicit
 theme/config choices without an old-theme migration or startup file rewrite.
 
-Direct commands are `/config theme opifex`, `/config color #78BFFF` and `/config motion off`.
-**Opifex Studio** uses black `#000000`, amber `#FFB000` and bone `#D8D0C0`
+Direct commands are `/config theme studio`, `/config color #78BFFF` and `/config motion off`.
+**Studio** uses black `#000000`, amber `#FFB000` and bone `#D8D0C0`
 palette. Build 05d restores the original static gold Home portrait and removes the 3D renderer.
 Small windows omit the portrait to preserve chat space. Saved motion preferences remain readable
 for compatibility and do not animate the portrait. Build 05e uses the motion preference for

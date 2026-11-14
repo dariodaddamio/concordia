@@ -40,6 +40,10 @@ pub(super) struct State {
     pub notice: Option<String>,
 }
 
+pub(super) fn notifications_enabled(root: &Path) -> bool {
+    State::load(root).ui.notifications
+}
+
 fn read(root: &Path) -> io::Result<Saved> {
     let path = root.join(".ao/appearance.json");
     let metadata = match std::fs::symlink_metadata(&path) {

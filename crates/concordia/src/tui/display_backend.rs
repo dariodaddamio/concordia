@@ -59,6 +59,12 @@ impl DisplayBackend {
             window.set_attention_notification(item_id, text);
         }
     }
+    #[cfg(windows)]
+    pub fn notifications_enabled(&mut self, enabled: bool) {
+        if let Self::Window(window) = self {
+            window.set_notifications_enabled(enabled);
+        }
+    }
 }
 
 impl Write for DisplayBackend {

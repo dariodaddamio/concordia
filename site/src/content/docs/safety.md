@@ -17,7 +17,7 @@ Read-only, Edit and Full modes translate into provider-native sandbox and approv
 
 ## External text
 
-Grok Bot callback content is untrusted external text. Concordia fences it before storage and does not expose chat history, Brain or general-purpose MCP tools to the callback.
+Grok Bot callback content is untrusted external text. Concordia fences it before storage and does not expose chat history, private notes or general-purpose MCP tools to the callback.
 
 ## Privacy boundary
 

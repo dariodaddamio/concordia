@@ -38,7 +38,7 @@ unreachable, the row says so and the result remains in Grok Bot's own chat.
 - The listener binds to `127.0.0.1` and is started only when at least one routine is configured.
 - The callback token and webhook keys are Credential Manager secrets. Credential Manager protects
   against other users and disk theft, not a process already running as the same Windows user.
-- No chat history, Brain, provider credentials or general-purpose MCP tools are exposed.
+- No chat history, private notes, provider credentials or general-purpose MCP tools are exposed.
 - Concordia runs no tunnel and makes no unattended approval decisions for Grok Bot.
 - The focused fake-endpoint and callback tests cover the local HTTP contract, identity checks,
   body/rate limits, listener binding and state-directory redaction; they never contact xAI.

@@ -33,9 +33,14 @@ pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
         ProviderKind::Opencode => &["rate_limit", "rate_limit_exceeded", "quota_exceeded"],
     };
     input.lines().any(|line| {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
+        let line = line.trim_start();
+        if signals.iter().any(|signal| {
+            line.get(..signal.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(signal))
+                && line.as_bytes().get(signal.len()) == Some(&b':')
+        }) {
+            return true;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { return false; };
         fn visit(value: &serde_json::Value, signals: &[&str]) -> bool {
             match value {
                 serde_json::Value::Object(map) => map.iter().any(|(key, value)| {
@@ -43,11 +48,11 @@ pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
                         .iter()
                         .any(|signal| key.eq_ignore_ascii_case(signal))
                         || matches!(key.as_str(), "code" | "type" | "errorType" | "error_code")
-                            && value.as_str().is_some_and(|text| {
-                                signals
-                                    .iter()
-                                    .any(|signal| text.eq_ignore_ascii_case(signal))
-                            }))
+                        && (value.as_str().is_some_and(|text| signals.iter().any(|signal| text.eq_ignore_ascii_case(signal)))
+                            || value.as_u64() == Some(429)))
+                        || matches!(key.as_str(), "status" | "status_code" | "http_status")
+                            && (value.as_u64() == Some(429)
+                                || value.as_str() == Some("429"))
                         || visit(value, signals)
                 }),
                 serde_json::Value::Array(values) => {
@@ -57,14 +62,6 @@ pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
             }
         }
         visit(&value, signals)
-            || value.get("status").and_then(serde_json::Value::as_u64) == Some(429)
-    }) || input.split_whitespace().any(|token| {
-        let token = token.split_once('=').map_or(token, |(_, value)| value);
-        signals.iter().any(|signal| {
-            token
-                .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .eq_ignore_ascii_case(signal)
-        })
     })
 }
 
@@ -117,12 +114,10 @@ pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> Failur
 pub fn classify_failure_text(
     provider: ProviderKind,
     input: &str,
-    exit_code: Option<i32>,
+    _exit_code: Option<i32>,
 ) -> FailureKind {
     let text = input.to_ascii_lowercase();
-    let kind = if exit_code == Some(429) || crate::provider::stream_cards::usage_exhausted(&text) {
-        FailureKind::Usage
-    } else if crate::provider::stream_cards::model_overloaded(&text) {
+    let kind = if crate::provider::stream_cards::model_overloaded(&text) {
         FailureKind::Overloaded
     } else if text.contains("context_length_exceeded")
         || text.contains("context_window_exceeded")
@@ -153,7 +148,7 @@ mod tests {
         );
         assert_eq!(
             classify_failure_text(ProviderKind::Claude, "quota exceeded", Some(1)),
-            FailureKind::Usage
+            FailureKind::None
         );
         assert_eq!(
             classify_failure_text(ProviderKind::Cursor, "unrelated", Some(0)),
@@ -187,14 +182,22 @@ mod tests {
             };
             assert_eq!(classify_failure(provider, &outcome), FailureKind::Usage);
         }
-        let ordinary = TurnOutcome {
-            stderr_tail: r#"{"type":"error","message":"usage limit mentioned in prose"}"#.into(),
+        let ordinary = TurnOutcome { stderr_tail: r#"{"type":"error","message":"usage limit mentioned in prose"}"#.into(), exit_code: Some(1), ..Default::default() };
+        assert_eq!(classify_failure(ProviderKind::Claude, &ordinary), FailureKind::Other);
+        let prose = TurnOutcome { stderr_tail: "Please inspect quota_exceeded in config".into(), exit_code: Some(1), ..Default::default() };
+        assert_eq!(classify_failure(ProviderKind::Claude, &prose), FailureKind::Other);
+    }
+
+    #[test]
+    fn nested_acp_http_status_is_a_usage_signal() {
+        let outcome = TurnOutcome {
+            stderr_tail: r#"{"error":{"code":-32000,"data":{"status":429}}}"#.into(),
             exit_code: Some(1),
             ..Default::default()
         };
         assert_eq!(
-            classify_failure(ProviderKind::Claude, &ordinary),
-            FailureKind::Other
+            classify_failure(ProviderKind::Cursor, &outcome),
+            FailureKind::Usage
         );
     }
 }

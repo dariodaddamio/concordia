@@ -148,6 +148,7 @@ pub(in crate::tui) struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) enum PickerKind {
+    Guided,
     Doctor,
     DoctorConfirm,
     ChatRepair,
@@ -178,6 +179,7 @@ pub(in crate::tui) enum PickerKind {
     Effort,
     GrokBotForm,
     GrokBotActions,
+    FallbackModel,
     AddProvider,
     Remove,
     RemoveConfirm,
@@ -299,6 +301,7 @@ pub(crate) struct App {
     pub(in crate::tui) home_documentation_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
     pub(in crate::tui) permission_rows: Vec<(Rect, usize)>,
+    pub(in crate::tui) picker_rows: Vec<(Rect, usize)>,
     pub(in crate::tui) permission_row_pressed: Option<usize>,
     pub(in crate::tui) card_header_pressed: Option<usize>,
     pub(in crate::tui) header_credits_pressed: bool,
@@ -315,6 +318,7 @@ pub(crate) struct App {
     pub(in crate::tui) chatref: chatref::ChatRef,
     pub(in crate::tui) related_files: related_files::State,
     pub(in crate::tui) questions: questions::State,
+    pub(in crate::tui) restored_attention: bool,
     pub(in crate::tui) images: images::State,
     pub(in crate::tui) raster: raster::State,
     pub(in crate::tui) history: Vec<String>,
@@ -367,6 +371,11 @@ pub(crate) struct App {
     pub(in crate::tui) artifacts: artifacts::State,
     pub(in crate::tui) landing: Option<landing::Landing>,
     pub(in crate::tui) update_preview: Option<UpdatePreview>,
+    pub(in crate::tui) ready_update_path: Option<PathBuf>,
+    pub(in crate::tui) background_update: bool,
+    pub(in crate::tui) background_update_checks: bool,
+    pub(in crate::tui) install_update_on_launch: bool,
+    pub(in crate::tui) restart_when_idle: bool,
     pub(in crate::tui) update_rows: usize,
     pub(in crate::tui) update_view: usize,
     pub(in crate::tui) cancel_handle: Option<Arc<RunningTurn>>,
@@ -422,6 +431,9 @@ pub(crate) struct App {
     pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) tab_close_hits: Vec<Rect>,
     pub(in crate::tui) rename_editor: Option<Editor>,
+    pub(in crate::tui) mcp_add_editor: bool,
+    pub(in crate::tui) mcp_add_preview: Option<(String, String, Vec<String>)>,
+    pub(in crate::tui) mcp_import_entries: Option<Vec<crate::mcp_registry::ImportEntry>>,
     pub(in crate::tui) user_cmds: Vec<crate::user_commands::UserCommand>,
     pub(in crate::tui) queue: queue::Queue,
     pub(in crate::tui) last_sent: Option<String>,
@@ -430,6 +442,7 @@ pub(crate) struct App {
     pub(in crate::tui) signed_out_overrides: HashSet<String>,
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
     pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
+    pub(in crate::tui) fallback_role: Option<String>,
 }
 
 impl App {
@@ -901,7 +914,9 @@ impl App {
 
     pub(in crate::tui) fn sync_needs_you(&mut self) {
         use crate::needs_you::{Item, ItemKind};
+        use sha2::{Digest, Sha256};
         self.questions.refresh_native();
+        self.deleg.d.refresh_native_inputs();
         let session = self.needs_you_session();
         let project = self.cwd.file_name().map_or_else(
             || "project".into(),
@@ -912,6 +927,19 @@ impl App {
             .title
             .clone()
             .unwrap_or_else(|| "New chat".into());
+        let turn_identity = self
+            .submitted_prompt
+            .as_deref()
+            .or_else(|| self.continuation.prompt_text())
+            .or_else(|| {
+                self.messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MsgRole::User)
+                    .map(|message| message.text.as_str())
+            })
+            .map(|prompt| format!("turn:{:x}", Sha256::digest(prompt.as_bytes())))
+            .unwrap_or_else(|| format!("turn:{}", self.continuation.run_id()));
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -933,6 +961,19 @@ impl App {
                 "resume paused prompt queue",
             ),
             (
+                "interrupted",
+                self.continuation.waiting()
+                    && self.restored_attention
+                    && self
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| !matches!(message.role, MsgRole::System | MsgRole::Meta))
+                        .is_some_and(|message| message.role == MsgRole::User),
+                ItemKind::InterruptedRequest,
+                "review interrupted request",
+            ),
+            (
                 "idle",
                 self.idle_notice.is_some(),
                 ItemKind::IdleNotice,
@@ -946,8 +987,34 @@ impl App {
             ),
         ];
         for (suffix, present, kind, title) in current {
-            self.needs_you.remove_suffix(suffix);
-            let id = format!("{session}:{suffix}");
+            for id in self
+                .needs_you
+                .remove_prefix(&format!("{session}:{suffix}:"))
+            {
+                crate::needs_you::withdraw(&id);
+            }
+            let legacy_id = format!("{session}:{suffix}");
+            self.needs_you.remove(&legacy_id);
+            crate::needs_you::withdraw(&legacy_id);
+            let identity = match suffix {
+                // The continuation checkpoint is the durable identity of the turn.  The
+                // provider request identity is not available after a restart, when the same
+                // outstanding question is represented as an interrupted request.
+                "question" => format!("{turn_identity}:question"),
+                "approval" => format!("{turn_identity}:approval"),
+                "paused-queue" => format!(
+                    "queue:{:x}",
+                    Sha256::digest(self.queue.items.join("\0").as_bytes())
+                ),
+                "interrupted" => format!("{turn_identity}:question"),
+                "signed-out" => self
+                    .signed_out_confirmation
+                    .as_ref()
+                    .map(|value| format!("signed-out:{value:?}"))
+                    .unwrap_or_else(|| suffix.into()),
+                _ => suffix.into(),
+            };
+            let id = format!("{session}:{suffix}:{identity}");
             crate::needs_you::withdraw(&id);
             if present {
                 let item = Item {
@@ -971,6 +1038,9 @@ impl App {
             }
         }
         self.needs_you.remove_kind(ItemKind::WorkerResult);
+        for id in self.needs_you.remove_prefix("worker-native:") {
+            crate::needs_you::withdraw(&id);
+        }
         for job in &self.deleg.d.jobs {
             let id = format!("worker:{}", job.id);
             if job.state == crate::delegate::WorkerState::Done && !job.collected {
@@ -1077,7 +1147,8 @@ impl App {
                     self.questions.focused = true;
                 }
             }
-            crate::needs_you::ItemKind::PausedQueue => {
+            crate::needs_you::ItemKind::PausedQueue
+            | crate::needs_you::ItemKind::InterruptedRequest => {
                 self.queue.focused = true;
                 self.questions.focused = false;
             }
@@ -1207,7 +1278,7 @@ impl App {
             self.push_system("an update is already running - Esc cancels it");
             return;
         }
-        if kind == JobKind::Update && self.update_blocked_by_work() {
+        if kind == JobKind::Update && !self.background_update && self.update_blocked_by_work() {
             self.push_system("Cannot update while work or unsaved file edits remain. Finish or cancel chat/workers and save or close edited files, then press Enter again. The update has not been queued.");
             return;
         }
@@ -1216,6 +1287,23 @@ impl App {
             JobKind::Update => start_update(self.cwd.clone()),
             JobKind::Check => start_check(self.cwd.clone()),
         });
+    }
+
+    pub(in crate::tui) fn start_background_update(&mut self) {
+        self.background_update = true;
+        self.start_job(JobKind::Update);
+    }
+
+    pub(in crate::tui) fn restart_ready_update(&mut self) {
+        if self.busy || self.deleg.d.any_active() || self.deleg.has_pending_prompt() {
+            self.restart_when_idle = true;
+            self.push_system("Restart is waiting for active work and will continue when it finishes.");
+            return;
+        }
+        if let Some(path) = self.ready_update_path.take() {
+            self.reexec_path = Some(path);
+            self.should_quit = true;
+        }
     }
 
     pub(in crate::tui) fn open_update_preview(&mut self) {
@@ -1235,6 +1323,16 @@ impl App {
             self.close_update_screen();
         }
         match result {
+            JobResult::Update(Ok(UpdateOutcome::Installed(result))) if self.background_update => {
+                self.background_update = false;
+                if self.install_update_on_launch {
+                    self.ready_update_path = None;
+                    self.push_system("A Concordia update was installed for the next launch. This session will keep running.");
+                } else {
+                    self.ready_update_path = Some(result.install_path);
+                    self.push_system("A Concordia update is ready. Restart now (R) or Later (L). It will not take focus.");
+                }
+            }
             JobResult::Update(Ok(UpdateOutcome::Installed(result))) => {
                 crate::logging::info(&format!(
                     "update-installed {}",
@@ -1270,14 +1368,18 @@ impl App {
             }
             JobResult::Check(Ok(preview)) => {
                 if preview.install_available
+                    && self.background_update_checks
                     && !self
                         .picker
                         .as_ref()
                         .is_some_and(|picker| picker.kind == PickerKind::Update)
                 {
-                    self.push_system(
-                        "A Concordia update is ready. Type /update to review and press Enter to install it, or continue later.",
-                    );
+                    if self.install_update_on_launch {
+                        self.push_system("A Concordia update is available. It will install on the next launch.");
+                    } else {
+                        self.push_system("A Concordia update is available. Preparing it in the background; actions will appear when it is ready.");
+                        self.start_background_update();
+                    }
                 }
                 self.footer_left = if preview.install_available {
                     "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
@@ -1391,7 +1493,10 @@ impl App {
         if !self.busy {
             self.cancel_requested = false;
         }
-        if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) && !line.starts_with('/') {
+        if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
+            && !self.background_update
+            && !line.starts_with('/')
+        {
             self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
             return;
         }
@@ -1663,6 +1768,7 @@ impl App {
             home_documentation_pressed: false,
             permissions_pressed: false,
             permission_rows: Vec::new(),
+            picker_rows: Vec::new(),
             permission_row_pressed: None,
             card_header_pressed: None,
             header_credits_pressed: false,
@@ -1684,6 +1790,7 @@ impl App {
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),
+            restored_attention: false,
             native_owner: None,
             native_usage_model: None,
             native_usage_session: None,
@@ -1743,6 +1850,11 @@ impl App {
             artifacts: artifacts::State::default(),
             landing: None,
             update_preview: None,
+            ready_update_path: None,
+            background_update: false,
+            background_update_checks: false,
+            install_update_on_launch: false,
+            restart_when_idle: false,
             update_rows: 0,
             update_view: 0,
             cancel_handle: None,
@@ -1797,6 +1909,9 @@ impl App {
             tab_hits: Vec::new(),
             tab_close_hits: Vec::new(),
             rename_editor: None,
+            mcp_add_editor: false,
+            mcp_add_preview: None,
+            mcp_import_entries: None,
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
             queue: queue::Queue::default(),
             last_sent: None,
@@ -1805,6 +1920,7 @@ impl App {
             signed_out_overrides: HashSet::new(),
             needs_you: crate::needs_you::Queue::default(),
             grok_bot_form: None,
+            fallback_role: None,
         }
     }
 }

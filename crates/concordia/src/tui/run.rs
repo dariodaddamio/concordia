@@ -36,6 +36,8 @@ struct RunTab {
 
 impl RunTab {
     fn new(app: App) -> Self {
+        let mut app = app;
+        app.ensure_recovery_lease();
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let (handle_tx, handle_rx) = mpsc::unbounded_channel();
@@ -160,6 +162,8 @@ impl tabs::TabState for RunTab {
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
+    app.background_update_checks = true;
+    app.install_update_on_launch = crate::config::for_root(state_root).updates.install_on_launch;
     // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
     // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
     // The normal persist tick still retries a real dirty lease when the tab is used.
@@ -386,22 +390,26 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     let (mut saved_window, mut tabs) = window_session::open(&state_root, &cwd, use_window);
+    let install_update_on_launch = crate::config::for_root(&state_root).updates.install_on_launch;
+    for tab in &mut tabs.tabs {
+        tab.app.background_update_checks = true;
+        tab.app.install_update_on_launch = install_update_on_launch;
+    }
     tabs.active_mut().app.compat_rx = Some(crate::provider::compat::start_real_detection(
         state_root.clone(),
     ));
-    tabs.active_mut()
-        .app
-        .start_job(if crate::config::get().updates.install_on_launch {
-            JobKind::Update
-        } else {
-            JobKind::Check
-        });
+    if install_update_on_launch {
+        tabs.active_mut().app.background_update = true;
+        tabs.active_mut().app.start_job(JobKind::Update);
+    } else {
+        tabs.active_mut().app.start_job(JobKind::Check);
+    }
 
     let terminal_restore = (!use_window).then(TerminalRestoreGuard::new);
     let (backend, mut terminal_input) = if use_window {
         #[cfg(windows)]
         {
-            let (backend, events) = native_window::open()?;
+            let (backend, events) = native_window::open_with_state_root(state_root.clone())?;
             let input = input_stream::InputStream::from_native(events)?;
             // This process owns a native window now. Detach only its inherited console,
             // so another application's console control events cannot terminate its runs.
@@ -538,6 +546,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
+            let mut force_attention_save = false;
             for tab in tabs.tabs.iter_mut() {
                 dirty |= tab.refresh_chat_ownership();
             }
@@ -585,17 +594,29 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 let mut needs_attention = false;
                 let mut working = false;
                 let mut notification = None;
+                let notifications_enabled =
+                    super::appearance::notifications_enabled(&state_root);
+                terminal
+                    .backend_mut()
+                    .notifications_enabled(notifications_enabled);
                 for tab in &mut tabs.tabs {
                     tab.app.sync_needs_you();
-                    needs_attention |= !tab.app.needs_you.is_empty();
+                    needs_attention |= tab.app.needs_you.items().any(|item| item.is_actionable());
                     working |= tab.app.busy || tab.app.deleg.d.any_active();
-                    if notification.is_none() && tab.app.appearance.ui.notifications {
+                    if notification.is_none() && notifications_enabled {
                         notification = tab
                             .app
                             .needs_you
                             .items()
+                            .filter(|item| item.is_actionable())
                             .find(|item| {
                                 !crate::store::attention_notification_seen(&state_root, &item.id)
+                                    && !(item.kind
+                                        == crate::needs_you::ItemKind::InterruptedRequest
+                                        && crate::store::interrupted_attention_notification_seen(
+                                            &state_root,
+                                            &item.id,
+                                        ))
                             })
                             .map(|item| (item.id.clone(), item.notification_text()));
                     }
@@ -608,9 +629,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     super::native_window::StatusDot::Idle
                 });
                 if let Some((item_id, text)) = notification {
-                    if crate::store::mark_attention_notification(&state_root, &item_id).is_ok() {
-                        terminal.backend_mut().attention_notification(item_id, text);
-                    }
+                    terminal
+                        .backend_mut()
+                        .attention_notification(item_id, text);
+                    force_attention_save = true;
                 }
             }
             let labels: Vec<TabChip> = if tabs.has_multiple() {
@@ -1354,20 +1376,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Some(scope) = scope_intent {
                             prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
                         }
-                        let mut standing_tools =
-                            if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
-                                crate::mcp::registered_tool_names()
-                            } else {
-                                Vec::new()
-                            };
-                        if native_input != crate::native_input::Mode::Standard
-                            && matches!(
-                                provider,
-                                ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode
-                            )
-                        {
-                            standing_tools.push("question".into());
-                        }
+                        let standing_tools = crate::provider::standing_context::tools_for_transport(
+                            provider,
+                            native_input,
+                        );
                         let standing = crate::provider::standing_context::render(
                             &crate::provider::standing_context::State {
                                 provider,
@@ -1589,10 +1601,24 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
 
             if let Some(saved) = &mut saved_window {
-                if let Err(error) = saved.save(&tabs, false) {
+                if let Err(error) = saved.save(&tabs, force_attention_save) {
                     tabs.active_mut()
                         .app
                         .flash(format!("Could not save open tabs: {error}"));
+                }
+            }
+
+            if !tabs.tabs.iter().any(|t| {
+                t.app.busy || t.app.deleg.d.any_active() || t.app.deleg.has_pending_prompt()
+            }) {
+                for tab in &mut tabs.tabs {
+                    if tab.app.restart_when_idle {
+                        tab.app.restart_when_idle = false;
+                        if let Some(path) = tab.app.ready_update_path.take() {
+                            tab.app.reexec_path = Some(path);
+                            tab.app.should_quit = true;
+                        }
+                    }
                 }
             }
 
@@ -1601,6 +1627,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 .iter()
                 .any(|t| t.app.should_quit || t.app.reexec_path.is_some())
             {
+                if tabs.tabs.iter().any(|t| t.app.reexec_path.is_some())
+                    && tabs.tabs.iter().any(|t| {
+                        t.app.busy
+                            || t.app.deleg.d.any_active()
+                            || t.app.deleg.has_pending_prompt()
+                    })
+                {
+                    continue;
+                }
                 break;
             }
 

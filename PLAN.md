@@ -81,7 +81,7 @@ record answers and open proposals; they are not approved final product wording o
     Needs attention with reliable questions and approvals across providers; the taskbar status
     dot and notifications; close, background and resume behavior; `/model`; `@chat`; per-chat
     PowerShell; attachment previews; live usage; the built-in editor, previews, Mermaid and image
-    rendering; Brain and Harness support through the pluggable memory/harness extension point;
+    rendering; private-notes and Harness support through the pluggable memory/harness extension point;
     providers Claude Code, Codex, Cursor, Grok Build and Grok Bot; concise GitHub Pages
     documentation.
   - Intended direction: fully dockable panels with per-chat layouts (MVP: show, hide and resize
@@ -89,7 +89,7 @@ record answers and open proposals; they are not approved final product wording o
     custom tool panels; shared named terminals; `/skills` editing and propagation (MVP: list with
     on/off); chats in several projects at once (MVP: one project per chat); provider-history
     deletion.
-  - Out of Concordia: Goals; the Brain reaction-poller fix (Brain repository backlog).
+  - Out of Concordia: Goals; the private-notes reaction-poller fix (external repository backlog).
   - Open: a parity review against Claude Code, Codex and Cursor may add MVP features.
     Review findings (2026-11-11, awaiting owner decisions): the main gap is that provider-native
     slash commands (`/compact`, `/init`, `/mcp`, `/diff`, `/fork` and others) fail as unknown in
@@ -108,11 +108,11 @@ record answers and open proposals; they are not approved final product wording o
     can likely reuse the Cursor ACP path. Grok Bot is a cloud-hosted assistant used through chat,
     Slack, X and desktop apps, with no documented CLI, API or ACP; it does not fit the augmenter
     model as specified. Owner decision (2026-11-11): Grok Bot stays in the MVP. The owner's use
-    case is research, adding notes to Brain and social-media growth for Goodman and Poolaris,
+    case is research, adding notes to a private notes service and social-media growth for Goodman and Poolaris,
     not coding. The integration mechanism is unresolved. Follow-up research (official
     docs.x.ai pages, partly unverified): Grok Bot has no documented API, CLI, webhook or ACP. It
     is a confirmed MCP client: its desktop app adds custom remote HTTPS connectors, reached from
-    xAI's cloud machine, so a Brain server would need a public, authenticated endpoint. Other
+    xAI's cloud machine, so a private notes server would need a public, authenticated endpoint. Other
     routes (Slack relay with the user's token, the Bot email inbox) are speculative. Grok Build
     may cover research through web search tools (unverified in official docs). Third pass:
     Grok Bot routines accept an authenticated webhook trigger (HTTP POST with a bearer key;
@@ -134,7 +134,7 @@ record answers and open proposals; they are not approved final product wording o
     the user chooses and runs (ngrok, Cloudflare Tunnel or Tailscale Funnel); Concordia guides
     setup and never ships or runs tunnel software. Safety and efficiency requirements: the
     listener is off unless Grok Bot is configured and binds only to localhost; it exposes only
-    the callback (no chat history, Brain or other tools); every call needs a Concordia-generated
+    the callback (no chat history, private notes or other tools); every call needs a Concordia-generated
     bearer token stored in Windows Credential Manager and rotatable; Concordia accepts results
     only for run IDs it started; requests are size- and rate-limited; returned content is treated
     as untrusted external text; nothing polls, so there is one call per finished routine. When
@@ -156,13 +156,13 @@ record answers and open proposals; they are not approved final product wording o
   the homepage for smaller projects. Generator choice awaits the owner.
 - Documentation must have its own distinctive look at the quality of leading projects, not a
   copy of another tool's theme. Decision (2026-11-11): build it with Astro Starlight on GitHub
-  Pages, themed with the Opifex Studio theme. Constraint found: `@dariodaddamio/opifex` 1.3.0 is
-  MIT-licensed but published with restricted access on GitHub Packages, and Opifex is not yet
+  Pages, themed with the vendored studio theme. Constraint found: the source theme package 1.3.0 is
+  MIT-licensed but published with restricted access on GitHub Packages, and the source theme is not yet
   public, so a public Concordia docs build cannot install it without credentials. Decision:
-  Opifex stays unpublished until after Concordia ships (it is the owner's next project), so the
-  docs vendor the Opifex Studio theme (tokens, CSS and any components used) at a pinned Opifex
-  version with a sync script, keeping the look consistent with Opifex Studio and the portfolio.
-  Switch to the published package once Opifex is public. It must also explain Windows Defender and SmartScreen warnings
+  The source theme stays unpublished until after Concordia ships, so the docs vendor the studio
+  theme (tokens, CSS and any components used) at a pinned version with a sync script, keeping the
+  look consistent with the owner's portfolio. Switch to the published package once it is public.
+  It must also explain Windows Defender and SmartScreen warnings
   for the unsigned executable. Research (2026-11-11; Microsoft SmartScreen and reputation docs,
   NousResearch/hermes-agent README, Upscayl, yt-dlp, espanso): the docs page "Windows security
   warnings" covers why SmartScreen warns on files without reputation (not a malware verdict);
@@ -205,9 +205,12 @@ record answers and open proposals; they are not approved final product wording o
 - Usage-limit continuation decision (2026-11-13): keep the existing inline continuation path.
   Open it only for provider-owned structured quota signals from Claude Code, Codex, Cursor, Grok
   Build or opencode. Put the role-configured fallback model first and keep the default policy as
-  ask. Account usage and reset times come from provider snapshots. Disabled exhausted rows,
-  wait-for-reset and the complete per-chat role selector remain follow-up UI work because the
-  current picker row contract has no disabled state.
+  ask. Account usage and reset times come from provider snapshots. The continuation picker owns
+  available and disabled model rows, wait-for-reset, stop, and the per-role fallback editor.
+- Y3 completion: the continuation picker now orders configured fallback, available account/model
+  rows, disabled exhausted rows, wait-for-reset and stop. Reset waiting resumes from cached
+  provider usage, and `/config` exposes role fallbacks alongside the ask/automatic setting.
+  Provider-facing live behavior remains unverified.
 - Command consolidation following the picker principle: account switching, adding and removing
   live in one `/use` picker (`/login` and `/connect` go); `/open` and `/preview` merge into one
   `/open` that previews read-only with an edit action.
@@ -258,7 +261,7 @@ record answers and open proposals; they are not approved final product wording o
   `/worktree` and the managed worktree code; isolating parallel agents is left to providers and
   the user's harness.
 - Extension contract (2026-11-11): `harness.json` is the single extension point for harnesses
-  and memory systems such as Brain (connect and verify per provider, skill, pinned decisions,
+  and memory systems such as private notes (connect and verify per provider, skill, pinned decisions,
   tools). One `/harness` picker handles connect, status, verify and disconnect. `/skills` and
   `/hooks` remain views (with skill on/off) and lose their duplicate connect actions. Harness
   tools are listed in `/harness` for the user to see and test-run; agents reach them through
@@ -437,24 +440,34 @@ record answers and open proposals; they are not approved final product wording o
   In the absence of explicit user rules, the model uses its judgment within existing provider
   permissions. Skill and hook management remains in scope as user control over that setup.
 - Modular memory and harness integration is an MVP requirement: users can plug a memory system
-  (such as Brain) or a harness into Concordia through a defined extension point. Concordia owns
+  (such as a private notes service) or a harness into Concordia through a defined extension point. Concordia owns
   that extension point; a specific integration's setup belongs to that integration, not to
   Concordia's core. This does not authorize publishing or changing vault data.
+- Needs attention status and Windows notifications are reserved for items with a user action.
+  Passive idle notices remain available in the local picker but do not raise taskbar status or
+  notifications. Questions, approvals, paused queues, signed-out confirmations and worker results
+  remain actionable; each item notification is durable by item identity and clicking it focuses
+  its owning chat and item.
 - Question and approval requests must work reliably across every supported provider, despite
   differing native mechanisms (native question tools, Cursor ACP extensions, the MCP question
   bridge). Every request an agent makes must reach the user in the chat and in Needs attention.
   Concordia cannot surface a question the agent only reasons about without making a request;
   preventing unrequested actions such as commits belongs to provider permissions and the harness.
 - Needs attention decision (2026-11-13): a Windows notification is emitted once per actionable
-  item ID and the told-item ledger persists across restarts. The notification names the chat and
-  waiting action, and its click selects that chat and focuses the item. Closed, finished or
-  cancelled items do not contribute to the status. `/config` can disable Windows notifications
-  while retaining the taskbar status. Test-controlled windows emit neither tray nor taskbar shell
-  signals.
+  item ID after Windows accepts delivery, and the told-item ledger persists across restarts. Native
+  item IDs use the provider session and request identity, never a transient connection ID. The
+  notification names the chat and waiting action, and its click captures the item before
+  foregrounding, then selects that chat and focuses the item. Closed, finished, cancelled or
+  resolved worker-native items do not contribute to the status. `/config` can disable Windows
+  notifications while retaining the taskbar status. Test-controlled windows emit neither tray nor
+  taskbar shell signals. When a restart restores an unfinished request without a live native
+  question panel, it is represented as one actionable interrupted-request item until the user
+  reviews or resumes it. Windows balloons are delivered serially while their shared tray click
+  target is live, because the shell callback does not identify queued balloons.
 - Reported regressions (2026-11-11, user reports, causes not yet inspected): attachment image
   previews render squished again; streamed reasoning text is joined without separators
   (for example, "Await again.All 107 scenarios passed").
-- Brain operations finding: the reaction poller converts failed reaction reads into empty user
+- Private-notes operations finding: the reaction poller converts failed reaction reads into empty user
   lists. A local audit observed seven Discord HTTP 429 responses; bounded GET retries processed
   14 already-human-approved cards. That mitigation was used for catch-up only. A permanent
   polling fix remains outstanding; failed reads must not be reported as confirmed lack of approval.
@@ -631,7 +644,7 @@ Decisions recorded on 2026-11-12:
   user's own `ANTHROPIC_BASE_URL` environment profile. Concordia stores no keys. Codex custom
   providers are left out because Codex now accepts only the Responses API. Pending owner
   confirmation.
-- Docs: Starlight with the vendored Opifex theme, published on GitHub Pages. The repository goes
+- Docs: Starlight with the vendored studio theme, published on GitHub Pages. The repository goes
   public after a history scan.
 - Keyboard: Ctrl+O expands the last collapsed item in the last message; Ctrl+Shift+O expands
   every item in it.
@@ -672,6 +685,22 @@ Going public:
 - After the owner's final go, make the repository public and enable Pages.
 
 ## This slice
+
+### Y3 review-2 correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/failure.rs` | ok: 1, 3, 4, 5, 10 | Extend the existing structured provider signal visitor to nested ACP HTTP 429 fields; no prose fallback or new classifier. |
+| `crates/concordia/src/tui/continuation.rs` | ok: 1, 4, 5, 6, 10 | Keep reset waiting in the continuation owner and bind its existing target to provider, account, and model. |
+| `crates/concordia/src/tui/app/pickers.rs` | ok: 1, 4, 5, 10 | Correct the existing disabled-row predicate at the picker construction owner for cached zero usage. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 10 | Record the correction and advance the user-facing build identity. |
+
+### Y6 ACP compaction review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| `crates/concordia/tests/support/fake_provider.rs`, `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 5, 9, 10 | Extend the existing ACP fixture and native journey to emit and observe one completed compaction with a duplicate event; no production test-only branch or second connection owner. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the review correction and advance the required build identity in existing metadata owners. |
 
 ### Q10 Concordia-wide MCP registry - anti-slop gate
 
@@ -754,7 +783,7 @@ Going public:
 | path | tendency_check | justification |
 | ---- | -------------- | ------------- |
 | `site/**` | ok: 1, 4, 6, 7, 10 | Add one isolated Starlight publication layer, keep the Rust crate independent, and derive pages from current canonical docs. |
-| `site/src/styles/opifex/**`, `site/scripts/sync-opifex.mjs` | ok: 1, 5, 6, 10 | Vendor only the Opifex token and Studio CSS needed by Starlight, with one refresh owner and pinned provenance. |
+| `site/src/styles/studio/**`, `site/scripts/sync-studio.mjs` | ok: 1, 5, 6, 10 | Vendor only the studio token and CSS needed by Starlight, with one refresh owner and pinned provenance. |
 | `.github/workflows/docs.yml` | ok: 1, 4, 10 | Add one GitHub Pages build and deployment path without enabling Pages or changing release workflows. |
 | `CHANGELOG.md`, `crates/concordia/src/version.rs`, `PLAN.md` | ok: 5, 10 | Record the user-facing documentation scaffold and its build identity in the existing metadata owners. |
 

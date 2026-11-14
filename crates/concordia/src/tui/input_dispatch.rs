@@ -21,14 +21,25 @@ fn rename_key(app: &mut App, key: KeyEvent) {
         return;
     }
     let mut editor = app.rename_editor.take().expect("active title editor");
+    let mcp_add = app.mcp_add_editor;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
-        KeyCode::Esc => return,
+        KeyCode::Esc => {
+            app.mcp_add_editor = false;
+            return;
+        }
         KeyCode::Enter => {
+            if mcp_add {
+                app.mcp_add_editor = false;
+                app.finish_mcp_add_editor(editor.text());
+                return;
+            }
             let saved = app.rename_session(&editor.text());
-            if !saved {
+            if saved {
+                app.push_system("Chat title validated and saved. Undo: run /rename again with the previous title.");
+            } else {
                 app.rename_editor = Some(editor);
             }
             return;
@@ -229,6 +240,25 @@ pub(super) fn handle_key(
     }
     if key.code != KeyCode::Enter || !key.modifiers.is_empty() {
         app.busy_send_confirmation = None;
+    }
+    if app.ready_update_path.is_some()
+        && app.picker.is_none()
+        && app.editor.text().is_empty()
+        && key.modifiers.is_empty()
+    {
+        match key.code {
+            KeyCode::Char('r' | 'R') => {
+                app.restart_ready_update();
+                return false;
+            }
+            KeyCode::Char('l' | 'L') => {
+                app.ready_update_path = None;
+                app.restart_when_idle = false;
+                app.push_system("Update kept for a later restart.");
+                return false;
+            }
+            _ => {}
+        }
     }
     if raster::key(app, &key) {
         return false;
@@ -1237,6 +1267,19 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                     .state
                     .select(Some((picker.state.selected().unwrap_or(0) + 3).min(max))),
                 _ => {}
+            }
+        }
+        if m.kind == MouseEventKind::Up(MouseButton::Left) {
+            if let Some(index) = app
+                .picker_rows
+                .iter()
+                .find(|(rect, _)| contains(*rect, m.column, m.row))
+                .map(|(_, index)| *index)
+            {
+                if let Some(picker) = app.picker.as_mut() {
+                    picker.state.select(Some(index));
+                }
+                app.apply_picker_selection(None);
             }
         }
         return;

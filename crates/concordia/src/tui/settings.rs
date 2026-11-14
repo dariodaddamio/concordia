@@ -82,6 +82,37 @@ pub(super) fn open(app: &mut App) {
             "Saved for future sessions; proactive rollover is Codex-only and off by default",
         ),
         row(
+            "updates",
+            format!(
+                "Updates Â· {}",
+                if crate::config::for_root(&app.state_root).updates.install_on_launch {
+                    "install on next launch"
+                } else {
+                    "prepare in background"
+                }
+            ),
+            "Choose whether a prepared update waits for Restart now or installs at the next launch",
+        ),
+        row(
+            "fallback",
+            {
+                let fallbacks = crate::config::for_root(&app.state_root).continuation.fallback_models;
+                if fallbacks.is_empty() {
+                    "Fallback model per role · not configured".into()
+                } else {
+                    format!(
+                        "Fallback model per role · {}",
+                        fallbacks
+                            .into_iter()
+                            .map(|(role, model)| format!("{role} → {model}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            },
+            "First model offered after a provider usage limit; default is to ask",
+        ),
+        row(
             "same-provider",
             format!(
                 "Same-provider handoff ({}) · {}",
@@ -233,6 +264,42 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             }
             open(app);
         }
+        "updates" => {
+            let current = crate::config::for_root(&app.state_root).updates.install_on_launch;
+            match crate::store::set_update_install_on_launch(&app.state_root, !current) {
+                Ok(()) => app.flash(if current {
+                    "Updates will prepare in the background"
+                } else {
+                    "Updates will install on the next launch"
+                }),
+                Err(error) => app.flash(format!("Not saved: {error}")),
+            }
+            open(app);
+        }
+        "fallback" => {
+            let mut roles = crate::store::get_settings(&app.state_root)
+                .roles
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            roles.push("general".into());
+            roles.sort();
+            roles.dedup();
+            let configured = crate::config::for_root(&app.state_root).continuation.fallback_models;
+            app.show_picker(
+                PickerKind::Settings,
+                "Fallback model · choose a role".into(),
+                roles
+                    .into_iter()
+                    .map(|role| row(
+                        format!("fallback-role:{role}").as_str(),
+                        role.clone(),
+                        configured.get(&role).map_or("not configured".into(), |model| format!("fallback model · {model}")),
+                    ))
+                    .collect(),
+                true,
+            );
+        }
         "same-provider" => {
             let root = app.state_root.clone();
             let on = crate::store::same_provider_automatic(&root)
@@ -290,6 +357,20 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             } else {
                 app.flash("No config.toml yet; defaults are active. See docs/config.md for available settings.");
             }
+        }
+        id if id.starts_with("fallback-role:") => {
+            let role = id.trim_start_matches("fallback-role:").to_owned();
+            let rows = model_picker_rows(
+                crate::models::available_at(&app.state_root, app.provider, &app.account),
+                None,
+            );
+            app.fallback_role = Some(role.clone());
+            app.show_picker(
+                PickerKind::FallbackModel,
+                format!("Fallback model · {role}"),
+                rows,
+                true,
+            );
         }
         _ => {}
     }

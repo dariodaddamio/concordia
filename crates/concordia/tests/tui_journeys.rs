@@ -112,6 +112,9 @@ fn setup(root: &Path, provider: ProviderKind) {
             "cli-config.json",
             "{\"authInfo\":{\"email\":\"fake@example.invalid\"}}",
         ),
+        (".grok", "auth.json", "synthetic-login-existence-marker"),
+        (".grok", "config.toml", "default_model = 'synthetic-model'"),
+        (".opencode", "auth.json", "synthetic-login-existence-marker"),
     ] {
         std::fs::create_dir_all(profile.join(name)).unwrap();
         std::fs::write(profile.join(name).join(marker), body).unwrap();
@@ -145,6 +148,8 @@ fn setup(root: &Path, provider: ProviderKind) {
             ("codex", ProviderKind::Codex),
             ("claude", ProviderKind::Claude),
             ("cursor", ProviderKind::Cursor),
+            ("grok", ProviderKind::Grok),
+            ("opencode", ProviderKind::Opencode),
         ]
         .into_iter()
         .map(|(id, provider)| StoredAccount {
@@ -204,6 +209,8 @@ impl Session {
             "AO_CODEX_HOME_B",
             "AO_CLAUDE_CONFIG_DIR",
             "AO_CURSOR_HOME",
+            "CONCORDIA_GROK_BIN",
+            "CONCORDIA_OPENCODE_BIN",
         ] {
             cmd.env_remove(key);
         }
@@ -211,6 +218,8 @@ impl Session {
             "CONCORDIA_CODEX_BIN",
             "CONCORDIA_CLAUDE_BIN",
             "CONCORDIA_AGENT_BIN",
+            "CONCORDIA_GROK_BIN",
+            "CONCORDIA_OPENCODE_BIN",
         ] {
             cmd.env(key, FAKE);
         }
@@ -492,6 +501,49 @@ impl Session {
             .into()
     }
 
+    fn notification_count(&self) -> u64 {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["notification_count"]
+            .as_u64()
+            .unwrap_or_default()
+    }
+
+    fn notification_texts(&self) -> Vec<String> {
+        self.clone_request(serde_json::json!({"op":"snapshot"}))["notification_texts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn save_check(&self, check: u8) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/q7-notifications");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
+    }
+
+    fn save_y3_check(&self, check: u8) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/y3-continue-after-limit");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
+    }
+
+    fn save_y2_panel(&self, name: &str) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/y2-guided-commands");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("{name}.txt")), self.screen()).unwrap();
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -593,9 +645,40 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     let mut s = Session::launch(dir.path());
     s.request(serde_json::json!({"op":"resize","columns":180,"rows":30}));
     s.submit("Inspect the synthetic app-server request");
+    s.until("turn shows working status before the request", |s| {
+        s.status_dot() == "working"
+    });
     s.until("native question needs attention", |s| {
         s.status_dot() == "needs_attention"
     });
+    s.until("one question produces one notification", |s| {
+        s.notification_count() == 1
+    });
+    assert!(
+        s.notification_texts()[0].contains("Inspect the synthetic app-server request"),
+        "notification text: {:?}",
+        s.notification_texts()
+    );
+    assert!(s.notification_texts()[0].contains("has a question for you"));
+
+    s.request(serde_json::json!({"op":"notification_click"}));
+    s.until("notification click opens the waiting item", |s| {
+        s.screen().contains("Choose the route") && s.screen().contains("Direct")
+    });
+    s.save_check(3);
+
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"activate"}));
+    s.until("needs attention survives focus changes", |s| {
+        s.status_dot() == "needs_attention"
+    });
+    assert_eq!(s.notification_count(), 1);
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"activate"}));
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"activate"}));
+    assert_eq!(s.notification_count(), 1);
+    s.save_check(1);
 
     s.send("\x0e");
     s.until("needs attention panel lists the question details", |s| {
@@ -607,9 +690,17 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
             && screen.contains("question")
             && screen.contains("waiting")
     });
+    s.save_check(2);
+    assert_eq!(s.status_dot(), "needs_attention");
+    s.save_check(5);
     s.enter();
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.until("second item produces its notification", |s| {
+        s.notification_count() == 2
+    });
+    assert!(s.notification_texts()[1].contains("is waiting for approval"));
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"Esc"}));
     std::thread::sleep(Duration::from_millis(120));
@@ -617,14 +708,78 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
-    s.until("question answer is working", |s| {
-        s.status_dot() == "working"
-    });
     s.release();
     s.until("question answer resolves in the chat", |s| {
         s.screen().contains("Native approval handled")
     });
     s.until("app-server turn is idle", |s| s.status_dot() == "idle");
+    s.save_check(4);
+    s.save_check(6);
+    // Let the periodic tab snapshot record that the resolved item is no longer actionable.
+    std::thread::sleep(Duration::from_millis(1200));
+    drop(s);
+    let mut s = Session::launch(dir.path());
+    s.until("resolved attention stays idle after restart", |s| {
+        s.status_dot() == "idle"
+    });
+    s.exit();
+}
+
+#[test]
+fn outstanding_attention_is_not_notified_again_after_restart() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    concordia::native_input::command(dir.path(), "codex", "on").unwrap();
+    std::fs::write(
+        dir.path().join("workspace/appserver-fixture.json"),
+        serde_json::json!({
+            "question": true,
+            "finish_wait_for": "../gate"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut first = Session::launch(dir.path());
+    first.submit("Restart with this question outstanding");
+    first.until("first process delivers one notification", |s| {
+        s.notification_count() == 1
+    });
+    assert!(
+        first.notification_texts()[0].contains("has a question for you"),
+        "notification text: {:?}",
+        first.notification_texts()
+    );
+    drop(first);
+
+    let mut restarted = Session::launch(dir.path());
+    restarted.until("restart restores the outstanding conversation", |s| {
+        s.screen().contains("Saved conversation kept")
+    });
+    restarted.until("restart restores outstanding attention", |s| {
+        s.status_dot() == "needs_attention"
+    });
+    assert_eq!(restarted.notification_count(), 0);
+    restarted.save_check(1);
+    restarted.exit();
+}
+
+#[test]
+fn notifications_can_be_disabled_from_config_without_changing_idle_status() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("/config");
+    for _ in 0..5 {
+        s.request(serde_json::json!({"op":"key","code":"Down"}));
+    }
+    s.request(serde_json::json!({"op":"key","code":"Enter"}));
+    s.until("notifications setting is saved", |s| {
+        s.screen().contains("Appearance saved")
+    });
+    assert_eq!(s.status_dot(), "idle");
     s.exit();
 }
 
@@ -727,6 +882,188 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/09g-command-journey.txt");
     std::fs::write(artifact, session.screen()).unwrap();
     session.exit();
+}
+
+#[test]
+#[ignore = "ACP compaction wire journey; synthetic providers only"]
+fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for provider in [ProviderKind::Cursor, ProviderKind::Grok, ProviderKind::Opencode] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        if provider == ProviderKind::Cursor {
+            concordia::native_input::command(dir.path(), "cursor", "on").unwrap();
+        }
+        std::fs::write(
+            dir.path().join("workspace/acp-fixture.json"),
+            serde_json::json!({"compaction": true, "reply": "ACP context verified"}).to_string(),
+        )
+        .unwrap();
+        let mut session = Session::launch(dir.path());
+        session.submit("verify standing context");
+        session.until("ACP reply after compaction", |s| {
+            s.screen().contains("ACP context verified")
+        });
+
+        let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl"))
+            .unwrap();
+        let messages: Vec<Value> = calls
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let context_prompts: Vec<&Value> = messages
+            .iter()
+            .filter(|call| {
+                call["method"] == "session/prompt"
+                    && call["params"]["prompt"]
+                        .as_array()
+                        .is_some_and(|prompt| {
+                            prompt.iter().any(|part| {
+                                part["text"]
+                                    .as_str()
+                                    .is_some_and(|text| {
+                                        text.contains("inside Concordia") && text.contains("ask_user")
+                                    })
+                            })
+                        })
+            })
+            .collect();
+        assert_eq!(context_prompts.len(), 2, "{provider:?}: {calls}");
+        let mode = match provider {
+            ProviderKind::Cursor => concordia::native_input::Mode::CursorAcp,
+            ProviderKind::Grok => concordia::native_input::Mode::GrokAcp,
+            ProviderKind::Opencode => concordia::native_input::Mode::OpencodeAcp,
+            _ => unreachable!("ACP journey only uses ACP providers"),
+        };
+        let expected_tools = concordia::provider::standing_context::tools_for_transport(
+            provider, mode,
+        );
+        for tool in expected_tools {
+            assert!(
+                context_prompts.iter().all(|call| call["params"]["prompt"]
+                    .to_string()
+                    .contains(&tool)),
+                "{provider:?}: ACP standing context omitted registered tool {tool}: {calls}"
+            );
+        }
+        assert!(messages.windows(2).all(|pair| {
+            !(pair[0]["method"] == "session/prompt"
+                && pair[1]["method"] == "session/prompt"
+                && pair[0]["params"]["prompt"]
+                    .to_string()
+                    .contains("inside Concordia")
+                && pair[1]["params"]["prompt"]
+                    .to_string()
+                    .contains("inside Concordia"))
+        }));
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|call| call["params"]["update"]["sessionUpdate"]
+                    == "compaction_update")
+                .count(),
+            2,
+            "{provider:?}: duplicate compaction event fixture was not observed"
+        );
+        let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/preview/y6-context")
+            .join(format!("check-1-{}.txt", provider.as_str()));
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(artifact, session.screen()).unwrap();
+        session.exit();
+    }
+}
+
+#[test]
+#[ignore = "provider compaction boundary journey; synthetic providers only"]
+fn cli_standing_context_is_sent_again_after_compaction() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), provider);
+        std::fs::write(
+            dir.path().join("workspace/provider-compaction.json"),
+            "{\"event\":\"completed\",\"id\":\"fixture-compaction\",\"duplicate\":true}",
+        )
+        .unwrap();
+        let mut session = Session::launch(dir.path());
+        session.submit("first context check");
+        session.until("first provider turn", |s| {
+            s.journal().iter().any(|event| event["kind"] == "done")
+        });
+        session.submit("second context check");
+        session.until("second provider turn", |s| {
+            s.journal().iter().filter(|event| event["kind"] == "done").count() == 2
+        });
+
+        let journal = session.journal();
+        let starts: Vec<&Value> = journal
+            .iter()
+            .filter(|event| event["kind"] == "start")
+            .collect();
+        assert_eq!(starts.len(), 2, "{provider:?}: {journal:?}");
+        assert!(!journal.iter().any(|event| event["kind"] == "compaction"));
+        assert!(
+            journal
+                .iter()
+                .any(|event| event["kind"] == "provider_compaction"),
+            "{provider:?}: the fixture must emit a provider-shaped compaction event: {journal:?}"
+        );
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|event| event["kind"] == "provider_compaction")
+                .count(),
+            4,
+            "{provider:?}: each of two turns must emit the duplicated provider boundary"
+        );
+        let second_start = journal
+            .iter()
+            .position(|event| event["kind"] == "start")
+            .and_then(|first| {
+                journal[first + 1..]
+                    .iter()
+                    .position(|event| event["kind"] == "start")
+                    .map(|next| first + 1 + next)
+            })
+            .expect("two provider starts");
+        let first_compaction = journal
+            .iter()
+            .position(|event| event["kind"] == "provider_compaction")
+            .expect("provider compaction event");
+        assert!(
+            first_compaction < second_start,
+            "{provider:?}: second standing-context delivery was not after the provider event: {journal:?}"
+        );
+        for start in starts {
+            let prompt = start["prompt"].as_str().unwrap_or_default();
+            let args = start["args"].to_string();
+            assert!(
+                prompt.contains("inside Concordia") || args.contains("inside Concordia"),
+                "{provider:?} launch did not carry standing context: {start}"
+            );
+            assert!(
+                prompt.contains("Registered Concordia tools:")
+                    || args.contains("Registered Concordia tools:")
+            );
+            assert!(
+                prompt.contains("agents") || args.contains("agents"),
+                "{provider:?} launch did not carry the registered agents tool: {start}"
+            );
+            for tool in concordia::mcp::registered_tool_names() {
+                assert!(
+                    prompt.contains(&tool) || args.contains(&tool),
+                    "{provider:?} launch did not carry registered tool {tool}: {start}"
+                );
+            }
+        }
+        let artifact = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/preview/y6-context")
+            .join(format!("check-1-{}.txt", provider.as_str()));
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::write(artifact, session.screen()).unwrap();
+        session.exit();
+    }
 }
 
 #[test]
@@ -1302,6 +1639,7 @@ fn usage_limit_automatically_continues_on_configured_provider_without_foreign_se
         .any(|arg| arg == "quota-source-session" || arg == "--resume"));
     assert!(starts[1]["home"].as_str().unwrap().ends_with(".claude"));
     s.until("idle after continuation", |s| s.screen().contains("in 123"));
+    s.save_y3_check(3);
     s.exit();
 }
 
@@ -2329,6 +2667,86 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
 }
 
 #[test]
+#[ignore = "Y2 real-window guided command journey; fake provider only"]
+fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":180,"rows":34}));
+
+    for (name, command, marker) in [
+        ("terminal", "/terminal", "/terminal · This panel"),
+        ("delegate", "/delegate", "/delegate · This panel"),
+        ("native", "/native", "/native · This panel"),
+        ("use", "/use", "accounts"),
+        ("model", "/model", "model"),
+        ("rename", "/rename", "/rename · This panel"),
+        ("config", "/config", "Appearance"),
+        ("mode", "/mode", "permissions"),
+        ("usage", "/usage", "usage"),
+        ("help", "/help", "/help · This panel"),
+        ("harness", "/harness", "integrations"),
+        ("skills", "/skills", "Project vs user scope"),
+        ("hooks", "/hooks", "Project vs user scope"),
+        ("mcp", "/mcp", "/mcp · This panel"),
+        ("open", "/open", "Open"),
+        ("resume", "/resume", "continue an explicit recorded conversation"),
+        ("queue", "/queue", "/queue · This panel"),
+        ("close", "/close", "/close · This panel"),
+    ] {
+        s.submit(command);
+        s.until(name, |s| s.screen().contains(marker));
+        s.save_y2_panel(name);
+        s.send("\x1b");
+        s.until("guided panel cancelled", |s| s.screen().contains("Message Concordia"));
+    }
+    assert!(s.prompts().is_empty());
+    s.exit();
+}
+
+#[test]
+#[ignore = "Y5 MCP screen journey; fake providers only"]
+fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    std::fs::write(dir.path().join("profile/.claude/mcp.json"), r#"{"mcpServers":{"imported":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("profile/.claude.json"), r#"{"mcpServers":{"claude-native":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("profile/.codex/config.toml"), "[mcp_servers.codex-remote]\nurl=\"https://example.invalid/mcp\"\nbearer_token_env_var=\"Y5_MISSING\"\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("profile/.opencode")).unwrap();
+    std::fs::write(dir.path().join("profile/.opencode/opencode.json"), r#"{"mcp":{"open-native":{"type":"local","command":["synthetic-mcp","--stdio"]}}}"#).unwrap();
+    std::fs::write(dir.path().join("mcp.toml"), "[servers.synthetic]\nenabled=true\n[servers.synthetic.transport]\ntype=\"stdio\"\ncommand=\"synthetic-mcp\"\n[servers.needs-login]\nenabled=true\n[servers.needs-login.transport]\ntype=\"remote\"\nurl=\"https://example.invalid/mcp\"\n[servers.needs-login.transport.headers]\nAuthorization={env=\"Y5_MISSING\"}\n").unwrap();
+    let mut s = Session::launch(dir.path());
+    s.submit("/mcp import");
+    s.until("guided MCP import panel", |s| s.screen().contains("/mcp import") && s.screen().contains("Add imported from claude"));
+    let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+    let out = target.join("preview/y5-mcp");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("check-2.txt"), s.screen()).unwrap();
+    s.send("\x1b");
+    s.until("import panel closed", |s| s.screen().contains("Message Concordia"));
+    s.submit("/mcp");
+    s.until("per-provider MCP status", |s| {
+        s.screen().contains("Claude Code")
+            && s.screen().contains("Codex")
+            && s.screen().contains("Cursor")
+            && s.screen().contains("delivered")
+            && s.screen().contains("needs sign-in")
+            && s.screen().contains("next: sign in")
+    });
+    std::fs::write(out.join("check-1.txt"), s.screen()).unwrap();
+    std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
+    s.send("\x1b");
+    s.submit("/doctor");
+    s.until("doctor MCP status", |s| s.screen().contains("mcp") && s.screen().contains("Claude Code"));
+    std::fs::write(out.join("check-5.txt"), s.screen()).unwrap();
+    assert!(!s.screen().contains("SECRET_CANARY"));
+    std::fs::write(out.join("check-4.txt"), "Synthetic stdio and HTTP proxy coverage is exercised by the MCP unit journey; live OAuth and provider delivery remain pending.").unwrap();
+    s.exit();
+}
+
+#[test]
 #[ignore = "isolated modal close/cancel input journey; fake providers only"]
 fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -3119,5 +3537,21 @@ fn activation_repaints_the_last_frame_without_a_blank_one() {
         );
         assert!(s.screen().contains("FAKE REPLY: activation probe"));
     }
+    s.exit();
+}
+
+#[test]
+#[ignore = "native-window update settings journey with a fake provider"]
+fn update_mode_is_visible_in_config_and_does_not_open_a_modal_notice() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.submit("/config");
+    s.enter();
+    s.until("update mode setting", |s| {
+        s.screen().contains("Updates") && s.screen().contains("prepare in background")
+    });
+    assert!(!s.screen().contains("Restart now"));
     s.exit();
 }

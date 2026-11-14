@@ -114,7 +114,7 @@ impl Ui {
         let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
         app.home_path = Some(dir.path().join("home"));
         // These UX assertions exercise the historical terminal palette; pin it
-        // so the product's Opifex default does not change their contract.
+        // so the product's studio default does not change their contract.
         app.appearance.ui.theme = crate::config::Theme::Default;
         super::theme::install(&app.appearance.ui);
         app.no_color = false;

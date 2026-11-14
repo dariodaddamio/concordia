@@ -15,4 +15,4 @@ Concordia owns commands that span providers, accounts or sessions. Provider-nati
 | Cursor, Grok Build and opencode commands | ACP provider | Enabled only when the session advertises them. |
 | Any other slash name | Active provider | Passed as provider input. |
 
-The source registry lives in `crates/concordia/src/commands.rs`. The current command audit is [in the repository](https://github.com/dariodaddamio/concordia/blob/main/docs/command-audit.md).
+The source registry lives in `crates/concordia/src/commands.rs`. The current command audit is [in the repository](../../../docs/command-audit.md).

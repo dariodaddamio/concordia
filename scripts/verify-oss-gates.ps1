@@ -77,7 +77,11 @@ $publicThemeFiles = @(
     'docs/e2e-status.md', 'docs/architecture.md', 'crates/concordia/src/theme_library.rs',
     ('crates/concordia/src/themes/' + ('op' + 'ifex') + '.toml'), 'crates/concordia/src/tui/raster.rs',
     'crates/concordia/src/tui/tests/draw.rs', 'crates/concordia/src/tui/tests/input_dispatch.rs',
-    'crates/concordia/src/tui/ux_tests.rs'
+    'crates/concordia/src/tui/ux_tests.rs', 'site/astro.config.mjs', 'site/package.json',
+    'site/scripts/sync-opifex.mjs', 'site/src/styles/opifex/base.css',
+    'site/src/styles/opifex/studio-page.css', 'site/src/styles/opifex/studio-shell.css',
+    'site/src/styles/opifex/theme.css', 'site/src/styles/opifex/tokens.css',
+    'scripts/verify-oss-gates.ps1'
 )
 $themeToken = ('op' + 'ifex')
 $binaryExt = '\.(png|jpg|jpeg|gif|ico|mesh|exe|dll|zip|gz|7z|pdf|woff2?)$'

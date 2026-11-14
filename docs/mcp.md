@@ -11,19 +11,24 @@ Project switches live under `projects` and can turn a global server off.
 
 | Provider | Launch interface | Current boundary |
 | --- | --- | --- |
-| Codex | `-c mcp_servers.<name>...` overrides | Stdio and URL entries are projected per turn. |
-| Cursor | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
-| Grok Build | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
-| opencode | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection. |
-| Claude Code | `--mcp-config` JSON file | Not delivered yet. No provider-home or secret-bearing temporary file is written. |
+| Codex | `-c mcp_servers.<name>...` overrides | Stdio and remote entries are projected per turn. Remote calls use the local Concordia proxy. |
+| Cursor | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection; HTTP upstreams use the local Concordia proxy. |
+| Grok Build | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection; HTTP upstreams use the local Concordia proxy. |
+| opencode | ACP `session/new` and `session/load` `mcpServers` | Uses the ACP projection; HTTP upstreams use the local Concordia proxy. |
+| Claude Code | `--mcp-config <JSON file>` plus `--strict-mcp-config` | Delivered per launch through a secret-free projection under Concordia state. No provider-home file is written; secret references remain references. |
 
-`/mcp` lists state. `/mcp add NAME stdio COMMAND [ARGS...]`, `/mcp remove NAME`, `/mcp on NAME`
-and `/mcp off NAME` mutate the registry. Bare `/mcp` shows the guided syntax. Import discovery is
-read-only at the registry API boundary; the interactive import panel is not shipped yet.
+`/mcp` lists state for Claude Code, Codex, Cursor, Grok Build and opencode. `/mcp add NAME stdio
+COMMAND [ARGS...]`, `/mcp remove NAME`, `/mcp on NAME` and `/mcp off NAME` mutate the registry.
+Bare `/mcp` shows the guided panel. `/mcp import` reads supported provider files without writing
+them and reports entries that can be reviewed for addition.
 
-The registry does not implement a proxy or remote OAuth sign-in. `concordia mcp` still serves the
-existing `agents` tool only. Remote servers that need provider-specific authentication therefore
-show a missing sign-in or unsupported boundary instead of being represented as complete.
+`concordia mcp` serves the registry's remote and stdio MCP servers through one Concordia-owned MCP
+endpoint. Remote bearer references are resolved from Windows Credential Manager only for the
+outbound request; they are never written to the registry, provider homes, logs or transcript. The
+proxy re-exports upstream `tools/list` entries with a `SERVER/TOOL` name and unwraps the upstream
+result for `tools/call`. Windows HTTPS uses WinHTTP. A missing credential shows as a sign-in action.
+OAuth browser sign-in and upstream HTTP session persistence are not yet shipped, so OAuth-only
+servers remain a live qualification gap and must not be described as complete.
 
 ## Existing Concordia MCP server
 

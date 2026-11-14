@@ -1,6 +1,6 @@
 //! `<state>/config.toml`: user-written defaults and switches. Read-only to Concordia.
 //!
-//! Loading never fails and never writes: a missing file is the defaults, a malformed file is the
+//! Loading never fails: a missing file is the defaults, a malformed file is the
 //! defaults plus a warning (with line and column), unknown keys and invalid values are warnings
 //! (invalid values fall back to the default or are clamped). Warnings are surfaced by
 //! `concordia doctor`. Concordia-owned state stays in `store.json`; a value the user set there
@@ -197,6 +197,33 @@ pub fn config_path(state_root: &Path) -> PathBuf {
         Ok(p) if !p.trim().is_empty() => PathBuf::from(p),
         _ => state_root.join("config.toml"),
     }
+}
+
+/// Save one role's continuation fallback while preserving other TOML settings.
+pub fn set_fallback_model(state_root: &Path, role: &str, model: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!role.trim().is_empty(), "role is required");
+    anyhow::ensure!(!model.trim().is_empty(), "model is required");
+    let path = config_path(state_root);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut table: toml::Table = if text.trim().is_empty() {
+        toml::Table::new()
+    } else {
+        text.parse().map_err(|error| anyhow::anyhow!("config.toml is malformed: {error}"))?
+    };
+    let continuation = table
+        .entry("continuation")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("continuation must be a table"))?;
+    let fallbacks = continuation
+        .entry("fallback_models")
+        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("continuation.fallback_models must be a table"))?;
+    fallbacks.insert(role.trim().into(), toml::Value::String(model.trim().into()));
+    std::fs::create_dir_all(state_root)?;
+    std::fs::write(path, table.to_string())?;
+    Ok(())
 }
 
 fn line_col(text: &str, byte: usize) -> (usize, usize) {
@@ -511,7 +538,11 @@ pub fn delegation_protocol() -> bool {
 
 /// The same config for an explicit state root (store code and tests with temp roots).
 pub fn for_root(state_root: &Path) -> Config {
-    Config::load(state_root).config
+    let mut config = Config::load(state_root).config;
+    if let Some(value) = crate::store::update_install_on_launch(state_root) {
+        config.updates.install_on_launch = value;
+    }
+    config
 }
 
 #[cfg(test)]
@@ -545,6 +576,22 @@ mod tests {
         );
         assert!(warnings.is_empty());
         assert_eq!(cfg.continuation.fallback_models["reviewer"], "gpt-5");
+    }
+
+    #[test]
+    fn fallback_model_editor_preserves_other_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "[ui]\ntips = false\n[continuation]\nmode = 'manual'\n",
+        )
+        .unwrap();
+        set_fallback_model(dir.path(), "reviewer", "claude-sonnet").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        let (config, warnings) = Config::parse(&text);
+        assert!(warnings.is_empty());
+        assert!(!config.ui.tips);
+        assert_eq!(config.continuation.fallback_models["reviewer"], "claude-sonnet");
     }
 
     #[test]

@@ -125,6 +125,12 @@ pub struct PickerRow {
     pub detail: String,
 }
 
+impl PickerRow {
+    pub fn disabled(&self) -> bool {
+        self.id.starts_with("continue-disabled:")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatOpenability {
     Openable,

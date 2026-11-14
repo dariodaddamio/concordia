@@ -370,9 +370,17 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 trust: req.trust,
                 standing_context,
             })?;
+            let mut argv = plan.argv;
+            if let Some(config) = crate::mcp_registry::claude_config_path(
+                &crate::store::default_store_root(),
+                req.cwd,
+            ) {
+                let prompt = argv.pop().expect("provider prompt is always present");
+                argv.extend(["--mcp-config".into(), config.to_string_lossy().into_owned(), "--strict-mcp-config".into(), prompt]);
+            }
             Ok(PlannedTurn {
                 command: plan.command,
-                argv: plan.argv,
+                argv,
                 env: plan.env,
                 env_remove: Vec::new(),
                 cwd: plan.cwd,

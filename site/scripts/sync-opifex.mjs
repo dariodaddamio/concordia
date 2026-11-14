@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const siteRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const opifexRoot = process.env.OPIFEX_ROOT ?? 'C:/Users/dario/dev/opifex';
+const opifexRoot = process.env.OPIFEX_ROOT ?? path.join(siteRoot, '..', 'theme-source');
 const packageJson = JSON.parse(await readFile(path.join(opifexRoot, 'packages/ui/package.json'), 'utf8'));
 const destination = path.join(siteRoot, 'src/styles/opifex');
 const files = [

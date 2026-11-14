@@ -126,6 +126,188 @@
 
 - Match Home, usage, provider selection and the top bar to the requested account and model views.
 
+### Fixed (2026-11-13ay)
+
+- Keep one attention item from notifying again as an interrupted request after restart, and
+  continue delivering later actionable notifications while an earlier balloon is present.
+
+### Fixed (2026-11-13ax)
+
+- Restore unfinished requests in Needs attention after restart and serialize Windows balloons so
+  each queued notification keeps its own click target.
+
+### Fixed (2026-11-13aw)
+
+- Deliver each distinct actionable Needs attention item even when another notification tray icon remains present.
+
+### Fixed (2026-11-13av)
+
+- Keep one native notification click target and queue later actionable items until it is cleared.
+- Count test-control notifications only at the suppressed delivery point.
+
+### Fixed (2026-11-13au)
+
+- Deliver each actionable Needs attention item even when an earlier notification is still shown.
+
+### Fixed (2026-11-13at)
+
+- Keep the command catalog current and route MCP stdio servers through Concordia's process helper.
+
+### Fixed (2026-11-13as)
+
+- Derive standing-context tool names from the active transport and require provider compaction
+  ordering in the context journey.
+
+### Fixed (2026-11-13ar)
+
+- Make the standing-context journey capture the provider compaction event and verify Claude's
+  single resend without duplicating Codex developer instructions.
+
+### Fixed (2026-11-13aq)
+
+- Emit provider-shaped compaction events in the standing-context journey and reinject Claude's
+  standing context once for each completed compaction boundary.
+
+### Fixed (2026-11-13ap)
+
+- Corrected the standing context to name the registered `ask_user` bridge and strengthened its provider journey checks.
+
+### Fixed (2026-11-13ao)
+
+- Repair JSONC URL imports, project HTTP(S) servers to provider launch projections, keep stdio
+  initialization and discovery in one process, and redact MCP command transcript entries.
+
+### Fixed (2026-11-13an)
+
+- Complete native MCP import discovery, show unresolved sign-in references honestly, proxy stdio
+  and HTTPS servers, and redact Credential Manager values from returned MCP data.
+
+### Fixed (2026-11-13am)
+
+- Repair MCP import routing, reject inline imported secrets, classify HTTPS upstreams as unsupported,
+  and route supported HTTP upstreams through Concordia with unwrapped tool results.
+
+### Added (2026-11-13al)
+
+- Repair Concordia-wide MCP delivery: Claude Code receives the registry per launch, provider MCP
+  files can be imported through a guided read-only panel, `/mcp` and `/doctor` show per-provider
+  status, and `concordia mcp` re-exports tools from registered remote HTTP MCP servers.
+
+### Fixed (2026-11-13aj)
+
+- Make guided panels state their purpose, keep mouse selection aligned after scrolling, and require validated MCP server details with a preview before saving.
+
+### Fixed (2026-11-13ai)
+
+- Apply guided title restoration and terminal choices from both keyboard and mouse selection, and document the active delegate argument forms.
+
+### Fixed (2026-11-13ah)
+
+- Complete guided panels for native transport, queues, resume and file panes, make title and terminal actions apply their validated choices, and correct multiline picker mouse hitboxes.
+
+### Fixed (2026-11-13ag)
+
+- Apply guided command choices for local terminals, MCP registry changes and help views, and document `/help`.
+
+### Added (2026-11-13af)
+
+- Open guided panels for argument-taking slash commands, with detected choices, validation,
+  change and undo guidance, and Esc cancellation.
+
+### Fixed (2026-11-13ae)
+
+- Apply background update checks to restored and new tabs, and show restart actions only after
+  the prepared update is complete.
+
+### Fixed (2026-11-13ad)
+
+- Show prepared-update actions on Home, wait for delegated work before restart, and install
+  next-launch updates without restarting the current session.
+
+### Fixed (2026-11-13ac)
+
+- Lower source update builds to below-normal priority, preserve fresh-tab recovery ownership,
+  keep typed `l` input intact, and ask before restarting while another tab is running.
+
+### Added (2026-11-13ab)
+
+- Prepare updates in the background with capped source builds, a non-focused Restart now or Later
+  notice, persisted update mode, and restart restoration of the saved window.
+
+### Fixed (2026-11-13aa)
+
+- Keep ordinary provider errors out of usage-limit continuation, disable targets without a
+  confirmed usage reading, use only the active chat role's fallback, and retry the original target
+  after its reset.
+
+### Fixed (2026-11-13z)
+
+- Recognize nested ACP 429 quota signals, disable zero-usage continuation rows, and bind reset
+  waiting to the original provider, account, and model.
+
+### Fixed (2026-11-13y)
+
+- Preserve structured quota errors from Codex app-server and ACP providers, resume the original
+  account and model after a reset, and edit role fallback models directly from `/config`.
+
+### Fixed (2026-11-13x)
+
+- Complete usage-limit continuation choices with ordered fallback and model rows, exhausted
+  account reset details, wait-for-reset resumption, and visible per-role fallback configuration.
+- Restrict the continuation prompt to structured usage-limit signals, validate displayed catalog
+  models, preserve usage details in fallback rows, and resume the original model after reset.
+
+### Fixed (2026-11-13v)
+
+- Keep notification identities stable across provider reconnects and preserve the clicked item
+  while the window is brought to the foreground.
+
+### Fixed (2026-11-13u)
+
+- Keep notification click targets tied to the displayed item, clear queued notifications when
+  Windows notifications are disabled, and include provider connection and session identity in
+  attention notification records.
+
+### Fixed (2026-11-13t)
+
+- Give each attention request its own durable notification identity, reload the shared notification
+  setting across tabs, and extend the native journey to count notifications through focus changes.
+
+### Fixed (2026-11-13s)
+
+- Record attention items only after Windows accepts their notification, handle balloon clicks, clear
+  resolved worker requests, and keep taskbar status and test-window shell isolation correct.
+
+### Fixed (2026-11-13r)
+
+- Keep passive idle notices out of Windows Needs attention status and notifications while retaining
+  actionable questions, approvals, queues, account confirmations and worker results.
+
+### Fixed (2026-11-13q)
+
+- Verify Claude and Codex standing-context delivery again after a synthetic compaction boundary,
+  and acknowledge ACP context resend requests in the provider fixture.
+
+### Fixed (2026-11-13p)
+
+- Exercise ACP standing-context delivery through the native test connection and verify one
+  resend per completed compaction, including duplicate compaction notifications.
+
+### Fixed (2026-11-13o)
+
+- Restore the protected built-in theme identity and verify the ACP provider wire messages for
+  standing context delivery after compaction.
+
+### Fixed (2026-11-13n)
+
+- Deliver the standing Concordia context to every ACP provider on its first prompt and once per
+  completed compaction, and remove private theme and site-source wording from distributable files.
+
+### Fixed (2026-11-13m)
+
+- Keep provider standing context under 150 words, cover every supported provider in control-plane
+  tests, and remove private project wording from the public source surface.
+
 ### Added (2026-11-13l)
 
 - Add a Concordia-owned MCP registry with project switches and per-launch delivery to Codex and
@@ -256,7 +438,7 @@
 
 ### Added (2026-11-12q)
 
-- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored Opifex
+- Added an Astro Starlight documentation site scaffold for GitHub Pages with a vendored studio
   Studio theme, source-derived install and usage pages, and a Windows security warnings guide.
 
 ### Added (2026-11-12p)
@@ -613,7 +795,7 @@
   account preserves the selected model. Recorded exhaustion is explained without hiding history.
 - The Attention badge is clickable; Ctrl+N and its items open questions, approvals, queued
   prompts, worker results or account controls. Empty paused queues no longer create a badge.
-- Opifex and default canvases use pure black. Image preview padding uses the same canvas color.
+- Studio and default canvases use pure black. Image preview padding uses the same canvas color.
 - Switching accounts only prepares the local binding. Context is built, displayed and attached
   after submitting a message. Removed the obsolete map-display helper, model picker and duplicate
   literal parser. Worker count tests now follow the configured limit.
@@ -723,7 +905,7 @@
   "resets <time>".
 - Chats from folders that no longer exist (for example deleted git worktrees) are hidden from
   home; they stay reachable with `/resume` and the `h` show-all toggle.
-- Opifex Studio (near-black, amber, bone) is the default theme; existing installs switch once,
+- Studio (near-black, amber, bone) is the default theme; existing installs switch once,
   and any theme you pick afterwards sticks. Themes can be imported and exported as TOML files
   from `/config`, with a contrast check.
 
@@ -836,7 +1018,7 @@
 
 - `/config` now opens live appearance settings with immediate, persistent theme, Concordia color
   and motion controls; it no longer redirects to diagnostics. Hand-edited config files stay intact.
-- Added Opifex Studio's near-black/amber/bone palette and a rotating, depth-tested classical
+- Added the studio near-black/amber/bone palette and a rotating, depth-tested classical
   Concordia bust with local scan/glitch treatment. Motion-off and Windows animation preferences
   are respected. The compact CC0 source and deterministic mesh conversion have recorded provenance.
 - Concordia color presets/custom hex values tint both the sculpture and running-window icon.

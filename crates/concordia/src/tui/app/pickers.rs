@@ -1,6 +1,29 @@
 use super::super::*;
 
 impl App {
+    pub(in crate::tui) fn open_guided_command(&mut self, command: &str, choices: Vec<PickerRow>) {
+        let purpose = match command {
+            "/terminal" => "This panel opens, hides, or closes a terminal.",
+            "/delegate" => "This panel reviews and manages delegated work.",
+            "/rename" => "This panel changes the current chat title.",
+            "/native" => "This panel changes native provider transport for an account.",
+            "/mcp" => "This panel manages the local MCP server registry.",
+            "/help" => "This panel shows the available slash commands.",
+            "/close" => "This panel closes an open file pane.",
+            "/queue" => "This panel reviews and controls queued prompts.",
+            _ => "This panel guides the command and previews its effect.",
+        };
+        self.show_picker(PickerKind::Guided, format!("{command} · {purpose}"), choices, false);
+        self.footer_left = "↑↓ choose · Enter validate choice · Esc cancels with nothing changed".into();
+    }
+
+    pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
+        if let Some(picker) = self.picker.as_mut() {
+            picker.title = format!("{command} · This panel lets you {does}.");
+            self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
+        }
+    }
+
     pub(in crate::tui) fn open_resume_picker(&mut self) {
         self.refresh_store_warning();
         let sessions = list_recent_sessions(&self.state_root, 40);
@@ -484,8 +507,7 @@ impl App {
         let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
             .filter(|a| {
-                (a.account != self.account || self.continuation.same_account_allowed())
-                    && a.home_path.is_some()
+                a.home_path.is_some()
             })
             .collect::<Vec<_>>();
         accounts.sort_by(|a, b| {
@@ -510,66 +532,71 @@ impl App {
                 })
                 .then_with(|| a.account.cmp(&b.account))
         });
-        let mut rows = accounts
+        let rows = accounts
             .into_iter()
-            .map(|a| {
-                let remaining = a.home_path.as_ref().and_then(|home| {
+            .flat_map(|a| {
+                let observation = a.home_path.as_ref().and_then(|home| {
                     crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
-                        .and_then(|o| o.remaining_pct)
                 });
-                let tier = crate::models::catalog_tier(&self.model);
-                let tier = match tier {
-                    crate::models::ModelTier::Frontier => "frontier",
-                    crate::models::ModelTier::Standard => "standard",
-                    crate::models::ModelTier::Fast => "fast",
-                };
-                PickerRow {
-                    id: format!("continue:{}", a.account),
-                    label: a.label,
-                    detail: format!(
-                        "5h {}% left · {tier} · continue the paused request",
-                        remaining
-                            .map(|p| p.round() as i64)
-                            .map_or("??".into(), |p| p.to_string())
-                    ),
-                }
+                let remaining = observation.as_ref().and_then(|o| o.remaining_pct);
+                let available = observation.as_ref().is_some_and(|o| {
+                    !o.exhausted && o.remaining_pct.is_some_and(|remaining| remaining > 0.0)
+                });
+                let reset = observation.and_then(|o| o.reset);
+                let models = a.home_path.as_ref().map(|home| {
+                    crate::models::ids_at(&self.state_root, a.provider, &a.account, home)
+                }).unwrap_or_default();
+                models.into_iter().map(move |model| PickerRow {
+                    id: format!("{}{} {model}", if available { "continue:" } else { "continue-disabled:" }, a.account),
+                    label: format!("{} → {model}", a.label),
+                    detail: if !available && reset.is_some() {
+                        format!("at limit · {}", reset.as_deref().unwrap_or("reset time unavailable"))
+                    } else if !available {
+                        "usage unavailable · capacity must be confirmed before continuing".into()
+                    } else {
+                        remaining.map_or_else(
+                            || "usage unavailable · continue the paused request".into(),
+                            |p| format!("{}% left · continue the paused request", p.round() as i64),
+                        )
+                    },
+                }).collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let (mut exhausted_rows, mut available_rows): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(PickerRow::disabled);
+        available_rows.sort_by(|a, b| {
+            let left = a.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
+            let right = b.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
+            right.partial_cmp(&left).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut rows = available_rows;
         let fallback = crate::config::for_root(&self.state_root)
             .continuation
             .fallback_models
             .get("general")
-            .cloned();
-        if let Some(model) = fallback.filter(|model| {
-            self.home_path.as_ref().is_some_and(|home| {
-                crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
-                    .iter()
-                    .any(|available| available == model)
+            .cloned()
+            .filter(|model| {
+            rows.iter().any(|row| {
+                row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
             })
-        }) {
-            rows.insert(
-                0,
-                PickerRow {
-                    id: format!("continue:{} {model}", self.account),
-                    label: format!("Fallback model: {model}"),
-                    detail: "configured for the general role; current account usage is shown above"
-                        .into(),
-                },
-            );
+        });
+        if let Some(model) = fallback {
+            if let Some(index) = rows.iter().position(|row| {
+                row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
+            }) {
+                let mut row = rows.remove(index);
+                row.label = format!("Fallback · {}", row.label);
+                row.detail = format!("configured fallback for the general role · {}", row.detail);
+                rows.insert(0, row);
+            }
         }
-        if let Some(home) = &self.home_path {
-            rows.extend(
-                crate::models::ids_at(&self.state_root, self.provider, &self.account, home)
-                    .into_iter()
-                    .filter(|model| model != &self.model)
-                    .map(|model| PickerRow {
-                        id: format!("continue:{} {model}", self.account),
-                        label: format!("{} \u{2192} {model}", self.account_label()),
-                        detail: "continue on another model; account-wide quota may still apply"
-                            .into(),
-                    }),
-            );
-        }
+        rows.append(&mut exhausted_rows);
+        let reset = self.home_path.as_ref().and_then(|home| {
+            crate::usage::peek_cached_usage(&self.state_root, self.provider, &self.account, home)
+        }).and_then(|o| o.reset);
+        rows.push(PickerRow { id: "continue:wait".into(), label: "Wait for the reset".into(), detail: reset.map_or_else(|| "resume when the provider reports capacity again".into(), |r| format!("resume automatically when {r} passes")) });
+        rows.push(PickerRow { id: "continue:stop".into(), label: "Stop here".into(), detail: "keep the interrupted request for later".into() });
         if rows.is_empty() {
             self.push_system("usage limit reached; /use add another account to continue");
         } else {
@@ -1130,6 +1157,134 @@ impl App {
         #[cfg(test)]
         self.flash("release page opened");
     }
+    pub(in crate::tui) fn begin_mcp_add(&mut self) {
+        let mut editor = Editor::default();
+        editor.set_text("NAME COMMAND [ARGS...]");
+        editor.select_all();
+        self.mcp_add_editor = true;
+        self.rename_editor = Some(editor);
+        self.footer_left = "type NAME COMMAND [ARGS...] · Enter previews and validates · Esc cancels with nothing changed".into();
+    }
+
+    pub(in crate::tui) fn begin_mcp_import(&mut self) {
+        let entries = crate::mcp_registry::import_entries(&self.state_root);
+        if entries.is_empty() {
+            self.push_system("MCP import found no readable provider servers. Nothing changed.");
+            return;
+        }
+        let rows = entries.iter().enumerate().map(|(index, entry)| PickerRow {
+            id: format!("mcp:import:{index}"),
+            label: format!("Add {} from {}", entry.name, entry.provider),
+            detail: format!("read-only source {}; adds a registry reference with no provider-home write; undo: /mcp remove {}", entry.path.display(), entry.name),
+        }).collect();
+        self.mcp_import_entries = Some(entries);
+        self.show_picker(PickerKind::Guided, "/mcp import · Choose a provider server to add".into(), rows, false);
+        self.footer_left = "↑↓ choose · Enter adds the selected server · Esc cancels with nothing changed".into();
+    }
+
+    fn apply_mcp_import(&mut self, index: usize) {
+        let Some(entry) = self.mcp_import_entries.as_ref().and_then(|entries| entries.get(index)).cloned() else {
+            self.push_system("MCP import selection is no longer available. Nothing changed.");
+            return;
+        };
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(_) => { self.push_system("MCP import could not read the local registry. Nothing changed."); return; }
+        };
+        if registry.servers.contains_key(&entry.name) {
+            self.push_system(format!("MCP import skipped {} because it already exists. Provider homes were not changed.", entry.name));
+            return;
+        }
+        registry.servers.insert(entry.name.clone(), crate::mcp_registry::Server { enabled: true, transport: entry.transport });
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system(format!("MCP import added {} from {}. Provider homes were not changed.", entry.name, entry.provider)),
+            Err(_) => self.push_system("MCP import could not save the local registry. Nothing changed."),
+        }
+    }
+
+    pub(in crate::tui) fn finish_mcp_add_editor(&mut self, text: String) {
+        let words = text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        if words.len() < 2 || words[0].chars().any(|c| c.is_control() || c.is_whitespace()) {
+            self.push_system("MCP add validation failed: enter a server name and command; nothing changed.");
+            return;
+        }
+        let name = words[0].clone();
+        let command = words[1].clone();
+        let args = words[2..].to_vec();
+        self.show_picker(PickerKind::Guided, "/mcp add · This panel previews the server change.".into(), vec![PickerRow {
+            id: "mcp:add:confirm".into(),
+            label: format!("Add {name} using {command}"),
+            detail: format!("validated name and command; change: add an enabled local stdio server with arguments [{}]; undo: /mcp remove {name}", args.join(" ")),
+        }], false);
+        self.mcp_add_preview = Some((name, command, args));
+        self.footer_left = "Enter confirms the preview · Esc cancels with nothing changed".into();
+    }
+
+    pub(in crate::tui) fn apply_mcp_add(&mut self) {
+        let Some((name, command, args)) = self.mcp_add_preview.take() else {
+            self.push_system("MCP add validation failed: preview is missing; nothing changed.");
+            return;
+        };
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(error) => { self.push_system(format!("MCP add validation failed: {error}; nothing changed.")); return; }
+        };
+        if registry.servers.contains_key(&name) {
+            self.push_system(format!("MCP add validation failed: {name} already exists; nothing changed."));
+            return;
+        }
+        registry.servers.insert(name.clone(), crate::mcp_registry::Server {
+            enabled: true,
+            transport: crate::mcp_registry::Transport::Stdio { command, args, env: Default::default() },
+        });
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system(format!("Add a server validated; added the enabled {name} server to the local registry. Undo: /mcp remove {name}.")),
+            Err(error) => self.push_system(format!("MCP add failed after validation: {error}; nothing changed.")),
+        }
+    }
+
+    fn toggle_guided_mcp_server(&mut self) {
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(error) => {
+                self.push_system(format!("MCP toggle validation failed: {error}"));
+                return;
+            }
+        };
+        let Some(name) = registry.servers.keys().next().cloned() else {
+            self.push_system("MCP toggle validation failed: no local server was detected; nothing changed. Undo: not needed.");
+            return;
+        };
+        let enabled = {
+            let server = registry.servers.get_mut(&name).expect("key came from the map");
+            server.enabled = !server.enabled;
+            server.enabled
+        };
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system(format!("Enable or disable a server validated; {name} is now {}. Undo: choose Enable or disable a server again.", if enabled { "enabled" } else { "disabled" })),
+            Err(error) => self.push_system(format!("MCP toggle failed after validation: {error}; nothing changed.")),
+        }
+    }
+
+    fn remove_guided_mcp_server(&mut self) {
+        let mut registry = match crate::mcp_registry::load(&self.state_root) {
+            Ok(registry) => registry,
+            Err(error) => {
+                self.push_system(format!("MCP remove validation failed: {error}"));
+                return;
+            }
+        };
+        let Some(name) = registry.servers.keys().next().cloned() else {
+            self.push_system("MCP remove validation failed: no local server was detected; nothing changed. Undo: not needed.");
+            return;
+        };
+        registry.servers.remove(&name);
+        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(()) => self.push_system(format!("Remove a server validated; removed {name} from the local registry. Undo: add the server again with its command.")),
+            Err(error) => self.push_system(format!("MCP remove failed after validation: {error}; nothing changed.")),
+        }
+    }
+
     pub(in crate::tui) fn apply_picker_selection(
         &mut self,
         turn_tx: Option<&mpsc::UnboundedSender<String>>,
@@ -1156,6 +1311,9 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        if row.disabled() {
+            return;
+        }
         if kind == PickerKind::Doctor {
             if let Some(index) = id.strip_prefix("doctor:fix:").and_then(|s| s.parse().ok()) {
                 self.open_doctor_confirmation(index);
@@ -1180,6 +1338,88 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::Guided => {
+                match id.as_str() {
+                    "terminal:open" => {
+                        local_terminal::command(self, "open");
+                        self.push_system("Open local PowerShell validated; the terminal pane is open. Undo: run /terminal close.");
+                    }
+                    "terminal:native" => {
+                        local_terminal::command(self, "native");
+                        self.push_system("Open the provider's native interface validated; the native terminal action was requested. Undo: run /terminal close.");
+                    }
+                    "terminal:hide" => {
+                        local_terminal::command(self, "hide");
+                        self.push_system("Hide the running terminal validated; the process remains alive. Undo: run /terminal open.");
+                    }
+                    "terminal:close" => {
+                        local_terminal::command(self, "close");
+                        self.push_system("Close the terminal validated; its process was stopped. Undo: run /terminal open.");
+                    }
+                    "rename:set" => {
+                        let mut editor = Editor::default();
+                        editor.set_text(self.session_ui.title.as_deref().unwrap_or_default());
+                        editor.select_all();
+                        self.rename_editor = Some(editor);
+                        self.footer_left = "type a title · Enter validates and saves · Esc cancels with nothing changed".into();
+                    }
+                    "rename:clear" => {
+                        if self.rename_session("") {
+                            self.push_system("Restore automatic title validated; the custom title was cleared. Undo: set the previous title again with /rename.");
+                        }
+                    }
+                    id if id.starts_with("delegate:") => {
+                        let mut parts = id.split(':');
+                        let _ = parts.next();
+                        match (parts.next(), parts.next()) {
+                            (Some("fallback"), Some(mode @ ("on" | "off"))) => {
+                                self.worker_recovery_command(&format!("fallback {mode}"));
+                            }
+                            (Some("input"), Some(id)) => match id.parse() {
+                                Ok(id) => worker_input::open(self, id),
+                                Err(_) => self.push_system("delegate input validation failed; worker id is invalid"),
+                            },
+                            (Some("recover"), Some(id)) => self.worker_recovery_command(&format!("recover {id}")),
+                            (Some("retry"), Some(id)) => self.worker_recovery_command(&format!("retry {id} reconciled")),
+                            _ => self.push_system("delegate choice validation failed; nothing changed"),
+                        }
+                    }
+                    "help:everyday" => {
+                        self.push_system(format!("Commands (everyday view):\n{}", crate::commands::format_slash_help(false)));
+                    }
+                    "help:all" => {
+                        self.push_system(format!("Commands (all view):\n{}", crate::commands::format_slash_help(true)));
+                    }
+                    "mcp:add" => self.begin_mcp_add(),
+                    "mcp:add:confirm" => self.apply_mcp_add(),
+                    "mcp:toggle" => self.toggle_guided_mcp_server(),
+                    "mcp:remove" => self.remove_guided_mcp_server(),
+                    "mcp:import" => self.begin_mcp_import(),
+                    id if id.starts_with("mcp:import:") => {
+                        if let Ok(index) = id["mcp:import:".len()..].parse::<usize>() { self.apply_mcp_import(index); }
+                    }
+                    id if id.starts_with("native:") => {
+                        let parts = id.split(':').collect::<Vec<_>>();
+                        if let [_, account, action] = parts.as_slice() {
+                            let result = crate::native_input::command(&self.state_root, account, action);
+                            self.push_system(result.map_or_else(|error| format!("native input validation failed: {error}"), |message| format!("native input validated for {account}; {message}. Undo: choose the opposite transport.")));
+                        }
+                    }
+                    id if id.starts_with("queue:") => match id {
+                        "queue:list" => for line in self.queue_command("") { self.push_system(line); },
+                        "queue:resume" => for line in queue_controls::resume(self) { self.push_system(line); },
+                        "queue:clear" => for line in self.queue_command("clear") { self.push_system(line); },
+                        _ => {}
+                    },
+                    id if id.starts_with("close:") => {
+                        if let Some(id) = id.strip_prefix("close:").and_then(|id| id.parse::<u32>().ok()) {
+                            self.handle_slash(&format!("/close {id}"));
+                        }
+                    }
+                    "close:none" => self.push_system("No open file panes were found; nothing changed. Undo: not needed."),
+                    _ => self.push_system(format!("{label} validated; no change was made. Esc cancels and leaves the current state unchanged.")),
+                }
+            }
             PickerKind::Settings | PickerKind::FilePreferences | PickerKind::Customization => {
                 settings::choose(self, kind, &id)
             }
@@ -1430,6 +1670,17 @@ impl App {
                 }
             }
             PickerKind::GrokBotForm => {}
+            PickerKind::FallbackModel => {
+                if let (Some(role), Some(model)) = (
+                    self.fallback_role.take(),
+                    id.strip_prefix("model:"),
+                ) {
+                    match crate::config::set_fallback_model(&self.state_root, &role, model) {
+                        Ok(()) => self.push_system(format!("fallback for {role} → {model}")),
+                        Err(error) => self.push_system(format!("fallback save failed · {error}")),
+                    }
+                }
+            }
             PickerKind::Model => {
                 if let Some(model) = id.strip_prefix("model:") {
                     let Some(entry) = crate::models::find_at(
@@ -1537,7 +1788,12 @@ impl App {
                 }
             }
             PickerKind::Continuation => {
-                if let Some(account) = id.strip_prefix("continue:") {
+                if id == "continue:wait" {
+                    self.wait_for_usage_reset();
+                } else if id == "continue:stop" {
+                    self.continuation.invalidate();
+                    self.push_system("stopped here; the interrupted request remains unsent");
+                } else if let Some(account) = id.strip_prefix("continue:") {
                     if let Some(tx) = turn_tx {
                         self.continue_usage(account, tx);
                     } else {

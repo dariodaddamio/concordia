@@ -290,6 +290,9 @@ fn run_child_with_format(
         cmd.process_group(0);
     }
     let mut child = cmd.spawn().context("spawn build")?;
+    if cargo_json {
+        lower_process_priority(&child)?;
+    }
     let mut tree = match crate::process_lifetime::own_std_process(&child) {
         Ok(tree) => Some(tree),
         Err(error) => {
@@ -396,6 +399,28 @@ fn run_child_with_format(
             None => std::thread::sleep(Duration::from_millis(40)),
         }
     }
+}
+
+#[cfg(windows)]
+fn lower_process_priority(child: &std::process::Child) -> Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS, PROCESS_SET_INFORMATION,
+    };
+
+    let process = unsafe { OpenProcess(PROCESS_SET_INFORMATION, 0, child.id()) };
+    if process.is_null() {
+        bail!("could not open source build process for priority control");
+    }
+    let changed = unsafe { SetPriorityClass(process, BELOW_NORMAL_PRIORITY_CLASS) } != 0;
+    unsafe { CloseHandle(process) };
+    anyhow::ensure!(changed, "could not lower source build priority");
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn lower_process_priority(_child: &std::process::Child) -> Result<()> {
+    Ok(())
 }
 
 /// What `/update` did.
@@ -840,6 +865,9 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
 
     let expected_source = source_version(&root)?;
     let cargo = which::which("cargo").context("cargo not on PATH")?;
+    if cargo_process_is_running() {
+        bail!("another Cargo process is running; Concordia will try again later")
+    }
     // Prefer default target/; if this process is that release exe (locked), build aside.
     let default_built = root.join("target").join("release").join("concordia.exe");
     let aside_dir = root.join("target").join("concordia-update");
@@ -1444,6 +1472,11 @@ fn run_cargo_build(
         "--message-format=json",
     ])
     .current_dir(root);
+    let inherited_jobs = std::env::var("CARGO_BUILD_JOBS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2);
+    cmd.env("CARGO_BUILD_JOBS", inherited_jobs.min(2).max(1).to_string());
     if let Some(dir) = target_dir {
         cmd.arg("--target-dir").arg(dir);
     }
@@ -1466,6 +1499,29 @@ fn run_cargo_build(
         .collect::<Vec<_>>()
         .join("\n");
     Ok((built, display))
+}
+
+fn cargo_process_is_running() -> bool {
+    #[cfg(windows)]
+    {
+        return crate::process_ui::command("tasklist")
+            .args(["/FI", "IMAGENAME eq cargo.exe", "/FO", "CSV", "/NH"])
+            .output()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("\"cargo.exe\""))
+            })
+            .unwrap_or(true);
+    }
+    #[cfg(not(windows))]
+    {
+        crate::process_ui::command("pgrep")
+            .args(["-x", "cargo"])
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(true)
+    }
 }
 
 fn cargo_executable(root: &Path, log: &str) -> Result<PathBuf> {

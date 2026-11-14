@@ -142,6 +142,12 @@ fn fake_acp() {
             | "session/set_model"
             | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
+                if value["id"] == 9001 {
+                    // The standing-context resend is deliberately a separate wire request. It
+                    // must be acknowledged, but it must not start another fake turn.
+                    emit(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}));
+                    continue;
+                }
                 if fixture["quota"] == true {
                     emit(
                         serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":429,"message":"UsageLimitExceeded"}}),
@@ -157,6 +163,13 @@ fn fake_acp() {
                         serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":fixture["permission_title"].as_str().unwrap_or("Read attached image"),"toolCallId":"image-read","rawInput":{"path":"synthetic-input"}},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
                     );
                 } else {
+                    if fixture["compaction"] == true {
+                        for _ in 0..2 {
+                            let update = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"compaction_update","status":"completed","compactionId":"fixture-compaction"}}});
+                            writeln!(journal, "{update}").unwrap();
+                            emit(update);
+                        }
+                    }
                     finish(&session_id);
                 }
                 continue;
@@ -842,6 +855,7 @@ fn main() {
 
 fn interaction(args: &[String]) {
     use serde_json::json;
+    use std::io::BufRead;
     let provider = if args.first().is_some_and(|a| a == "exec") {
         "codex"
     } else if args.first().is_some_and(|a| a == "-p") {
@@ -851,13 +865,23 @@ fn interaction(args: &[String]) {
     };
     let mut prompt = args.last().cloned().unwrap_or_default();
     let mut image_count = args.iter().filter(|a| *a == "--image").count();
+    let mut wire_frames = Vec::new();
     if args
         .windows(2)
         .any(|v| v == ["--input-format", "stream-json"])
     {
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input).unwrap();
-        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut line = String::new();
+        let input = loop {
+            line.clear();
+            assert!(input.read_line(&mut line).unwrap() > 0);
+            let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            wire_frames.push(frame.clone());
+            if frame["type"] == "user" {
+                break frame;
+            }
+        };
         let content = input["message"]["content"].as_array().unwrap();
         prompt = content
             .iter()
@@ -884,11 +908,24 @@ fn interaction(args: &[String]) {
             }
         }
     };
+    for frame in &wire_frames {
+        if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+        }
+    }
     let emit = |event: serde_json::Value| {
         println!("{event}");
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if prompt.contains("[compaction]") {
+        journal("compaction");
+    }
     // `[bulk N]`: a long synthetic transcript for render timing journeys. The fixture emits
     // bounded text batches so the test measures transcript layout rather than provider pipe
     // backpressure.
@@ -1058,6 +1095,42 @@ fn interaction(args: &[String]) {
         emit(
             json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":states.keys().filter(|id| **id != "orchestrator").collect::<Vec<_>>(),"prompt":"Inspect the graph parser","agents_states":states,"status":"completed"}}),
         );
+    }
+    let compaction_fixture = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| std::fs::read(cwd.join("provider-compaction.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let explicit_compaction = compaction_fixture.is_some();
+    if prompt.contains("[compaction]") || explicit_compaction {
+        let event = if provider == "claude" {
+            json!({"type":"system","subtype":"compact_boundary","uuid":"fixture-compaction"})
+        } else {
+            json!({"type":"turn/compaction_completed","compaction_id":"fixture-compaction"})
+        };
+        let event_count = compaction_fixture
+            .as_ref()
+            .and_then(|fixture| fixture["duplicate"].as_bool())
+            .map_or(1, |duplicate| if duplicate { 2 } else { 1 });
+        for _ in 0..event_count {
+            emit(event.clone());
+            journal("provider_compaction");
+        }
+        if provider == "claude" {
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut line = String::new();
+            if input.read_line(&mut line).unwrap_or(0) > 0 {
+                let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .unwrap();
+                    writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+                }
+            }
+        }
     }
     if prompt.contains("[wait]") {
         let gate =

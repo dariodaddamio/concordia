@@ -1098,6 +1098,8 @@ pub struct CachedObservation {
     pub fresh: bool,
     pub exhausted: bool,
     pub remaining_pct: Option<f64>,
+    pub reset: Option<String>,
+    pub reset_passed: bool,
 }
 
 pub struct CachedUsageView {
@@ -1143,6 +1145,12 @@ pub fn peek_cached_usage(
             .iter()
             .find(|window| !window.expired())
             .map(UsageWindow::left_pct),
+        reset: cached
+            .windows
+            .iter()
+            .find(|window| !window.expired())
+            .and_then(|window| window.resets.clone()),
+        reset_passed: cached.windows.iter().any(UsageWindow::expired),
     })
 }
 

@@ -236,11 +236,9 @@ impl Connection {
                 Some("interrupted") => self.out.cancelled = true,
                 _ => {
                     self.out.failed = true;
-                    let message = params["turn"]["error"]["message"]
-                        .as_str()
-                        .unwrap_or("Native Codex turn failed");
-                    let code = params["turn"]["error"]["code"].to_string();
-                    self.out.stderr_tail = format!("{message} code={code}")
+                    let error = &params["turn"]["error"];
+                    self.out.stderr_tail = serde_json::to_string(error)
+                        .unwrap_or_else(|_| r#"{"type":"error"}"#.into())
                         .chars()
                         .take(2000)
                         .collect();

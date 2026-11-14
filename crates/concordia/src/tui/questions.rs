@@ -32,6 +32,11 @@ pub(super) struct State {
     scroll: usize,
     page: usize,
 }
+
+fn native_attention_identity(native_session_id: &str, request_id: &serde_json::Value) -> String {
+    format!("native:{native_session_id}:{request_id}")
+}
+
 impl State {
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
@@ -58,6 +63,24 @@ impl State {
             .as_ref()
             .filter(|request| request.is_active())
             .map(|request| request.envelope().native_session_id.clone())
+    }
+
+    pub(super) fn attention_identity(&self) -> Option<String> {
+        if let Some(request) = self.native.as_ref().filter(|request| request.is_active()) {
+            let envelope = request.envelope();
+            return Some(native_attention_identity(
+                &envelope.native_session_id,
+                &envelope.request_id,
+            ));
+        }
+        if self.waiting() {
+            use sha2::{Digest, Sha256};
+            return Some(format!(
+                "question:{:x}",
+                Sha256::digest(self.last_source.as_bytes())
+            ));
+        }
+        None
     }
     pub fn refresh_native(&mut self) -> bool {
         if self
@@ -1189,6 +1212,24 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_attention_identity_distinguishes_session_and_turn() {
+        let request = serde_json::json!("request");
+        assert_ne!(
+            native_attention_identity("session-a", &request),
+            native_attention_identity("session-b", &request)
+        );
+        assert_ne!(
+            native_attention_identity("session", &request),
+            native_attention_identity("session", &serde_json::json!("next"))
+        );
+        assert_eq!(
+            native_attention_identity("session", &request),
+            native_attention_identity("session", &request)
+        );
+    }
+
     #[test]
     fn status_updates_and_example_json_do_not_become_questions() {
         let status = "I also found an input edge case: typing a number at the start of a note could select an option. I’m fixing that and checking both note-only and choice-with-note replies before building.\n\nInstalled the new build. Reopen the app.\n\n- `/use` lets you choose an account.\n- Includes note and session fixes.\n- Notes can start with numbers.";
