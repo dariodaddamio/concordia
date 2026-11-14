@@ -1,12 +1,85 @@
 # Concordia work plan
 
-Current phase: cleanup closeout, documentation rewrite and product interview (2026-11-09).
+Current phase: parity and polish (2026-11-14).
 
 ## Current instruction
 
-Feature roadmap execution is paused, including the dockable panels. Finish cleanup, then
-rewrite the documentation while using grill-me to settle Concordia's purpose and direction.
-Do the factual consolidation and product interview together. Publication remains on hold.
+Parity and polish come before new features (owner, 2026-11-14). Concordia reuses each provider's
+own features and adds augmentations; it never rebuilds what a provider already does. Everything a
+provider does natively must stay reachable from Concordia. Work the plan below in order, one item
+per task, each proven in the running app and with a live turn where a provider is involved.
+Publication remains on hold.
+
+## Parity and polish plan (2026-11-14)
+
+Source: the audit in `_work/audit/out/` (lanes U1 to U6, CL, CX, CU, OR), run on build
+2026-11-14b. Grok and opencode are out of testing scope because they are not installed.
+
+### 1. Turns must start and finish
+
+- A turn can stay at "starting the turn" forever: Cursor (CU-2), Codex (U4-3), and a Claude chat
+  that dropped into a paused usage view (U5-3). On a timeout or a closed transport, show an error
+  with the provider and session, keep the prompt, and offer retry.
+- Input sent while a turn runs is concatenated into the draft instead of becoming a queue item
+  (U3-2), and `/use` typed during a turn becomes part of the next message (U3-4).
+
+### 2. `/model` lists the provider's own models
+
+- Claude model metadata is rejected because Concordia requires exactly CLI 2.1.319 and 2.1.325 is
+  installed (CL-1, U4-2, U6-5). Accept the pinned version or newer.
+- Every provider shows display name, full model ID and the provider's effort levels; Cursor's
+  list is empty today. In progress as task FIX1 on `fix/model-picker`.
+
+### 3. Native features are reachable on the same session
+
+- `/terminal native` starts a separate provider session (CL-3, U2-3). It must resume the chat's
+  own native session for Claude, Codex and Cursor.
+- A provider command that Concordia cannot run through its transport opens in the native terminal
+  on that same session, instead of being disabled (U4-1, CX-2 to CX-10).
+- Command pickers come from what the provider reports (Claude `initialize`, Cursor ACP
+  `available_commands_update`, the Codex app-server schema), not from hard-coded tables (CL-2,
+  CU-1).
+- Codex requests that exist but are unused get wired where they map one to one, starting with
+  `thread/fork` (CX-3, CX-11).
+- Claude's native permission modes are selectable, not only Concordia's four presets (CL-4).
+
+### 4. Screens that are wrong or unstable
+
+- PNG, SVG and PDF open as one line of raw text, and a corrupt image shows no error (U5-1, U5-2).
+- Home and `/usage` show different numbers, and Home omits Cursor (U1-1). Both read one snapshot.
+- `/usage` flips between "cached; refreshing" and the settled text while idle (U4-4); show the last
+  good reading with its age and never swap it for an "unavailable" line.
+- F1, `/config` and other overlays cut text mid-word and draw borders past the window edge at
+  narrow widths (U2-1, U6-1, U6-2). F1 also changes while idle (U6-2).
+- Mojibake in settings and terminal labels (U2-2, U6-3, U6-4). Part of FIX1.
+- Claude usage readings time out; read the usage data Claude Code already writes instead of
+  asking for it.
+
+### 5. Handoff: fewest tokens, readable display
+
+- The agent receives one compact block: goal, state, changed files, last error, last reply, and
+  the exact read command plus source ids. No section prose, no one line per turn (OR-5).
+- The user sees a card: from which account and provider to which, the pointer count and token
+  cost, expandable into the grouped pointers.
+
+### 6. Orchestration the lead agent can rely on
+
+- Every provider process is killed when its turn ends, by design (OR-1). Work that must outlive a
+  turn runs under a Concordia-owned supervisor with recovery state, not under the turn.
+- The `agents` tool reports a durable watch record per worker: heartbeat, last event, process and
+  session ids, how it ended, and log pointers; cancel and retry are available (OR-3).
+- A delegated worker that hits a usage limit records that reason and can resume on another account
+  (OR-2).
+- `concordia.log` tells a crash, a kill, a hang and a normal exit apart (OR-4).
+
+### 7. Test channel gaps that block automated UI checks
+
+- `resize` yields a smaller grid than requested (U1-2); add clipboard read and a way to drive
+  detached windows (U3-3, U5-4). Every later task proves its screens through this channel.
+
+Open owner decision: `/mcp`. The 2026-11-11 rule gives every provider command name to the
+provider, but Concordia's MCP registry (2026-11-13) took `/mcp`, which hides Codex's and Claude's
+own `/mcp` (CX-1).
 
 ## Cleanup closeout
 
