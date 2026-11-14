@@ -1,6 +1,17 @@
 use super::reply_header;
 use super::*;
 
+fn card_copy_prefix(text: &str) -> usize {
+    let mut chars = text.chars();
+    if chars.next() != Some('\u{2502}') || chars.next() != Some(' ') {
+        return 0;
+    }
+    let rest: Vec<char> = chars.collect();
+    rest.iter()
+        .position(|c| c.is_alphanumeric())
+        .map_or(2, |index| index + 2)
+}
+
 pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.permission_rows.clear();
     app.areas.permissions_popup = Rect::default();
@@ -987,10 +998,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             runs: &msg_runs[i],
             header_files: msg_files[i],
             // The card border is decoration: selection skips it and copied text starts at the status mark.
-            decor_prefix: if m.role == MsgRole::Card
-                && displayed[i].as_deref().unwrap_or(&m.text).starts_with("│ ")
-            {
-                2
+            decor_prefix: if m.role == MsgRole::Card {
+                card_copy_prefix(displayed[i].as_deref().unwrap_or(&m.text))
             } else {
                 0
             },

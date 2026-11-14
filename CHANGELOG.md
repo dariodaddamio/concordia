@@ -1,5 +1,25 @@
 # Changelog
 
+### Fixed (2026-11-13aj)
+
+- Make End select the final question option and record the committed native frame when measuring
+  resize paints.
+
+### Fixed (2026-11-13ai)
+
+- Keep the last committed native frame through the transient resize paint and retain full
+  question-popup navigation evidence at small window sizes.
+
+### Fixed (2026-11-13ah)
+
+- Keep image blits inside their thumbnails, preserve the last frame during resize, copy tool
+  cards without status or tool glyphs, and make End select the final question option.
+
+### Fixed (2026-11-13ag)
+
+- Restore the native image backing surface before painting thumbnails so moved, resized, and
+  removed images cannot leave pixels in their attachment cards.
+
 ### Fixed (2026-11-13af)
 
 - Show the tab drop marker before the first tab and finish Home-tab renames with Enter.

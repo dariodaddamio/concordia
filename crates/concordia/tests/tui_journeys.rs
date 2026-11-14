@@ -2612,7 +2612,10 @@ fn render_timing_with_a_long_transcript_in_two_tabs() {
         })
         .collect();
     report.insert("tab_switch".into(), timing_summary(&tabs));
-    let resize: Vec<_> = (0..6)
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/preview/X5");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(evidence.join("check-6.txt"), s.screen()).unwrap();
+    let resize: Vec<_> = (0..30)
         .map(|i| {
             let (columns, rows) = if i % 2 == 0 { (100, 34) } else { (120, 40) };
             let t = s.measured(
@@ -2624,8 +2627,10 @@ fn render_timing_with_a_long_transcript_in_two_tabs() {
         })
         .collect();
     report.insert("resize".into(), timing_summary(&resize));
+    std::fs::write(evidence.join("check-5.txt"), s.screen()).unwrap();
     let activation: Vec<_> = (0..5).map(|_| s.measured_activation()).collect();
     report.insert("activation".into(), timing_summary(&activation));
+    std::fs::write(evidence.join("check-7.txt"), s.screen()).unwrap();
 
     let report = Value::Object(report);
     let artifact = std::env::temp_dir().join("concordia-render-timing.json");
@@ -2774,6 +2779,10 @@ fn assert_clean(check: &Value, label: &str) {
             image["stale"], 0,
             "{label}: stale pixels in an image area: {check}"
         );
+        assert_eq!(
+            image["actual_outside"], 0,
+            "{label}: actual pixels outside the thumbnail: {check}"
+        );
     }
 }
 
@@ -2802,6 +2811,21 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
         "image not painted: {banner}"
     );
 
+    let second = dir.path().join("workspace").join("second.png");
+    let third = dir.path().join("workspace").join("third.png");
+    image::RgbaImage::from_pixel(180, 180, image::Rgba([20, 220, 80, 255]))
+        .save(&second)
+        .unwrap();
+    image::RgbaImage::from_pixel(240, 80, image::Rgba([40, 100, 240, 255]))
+        .save(&third)
+        .unwrap();
+    s.paste(&format!("\"{}\" \"{}\"", second.display(), third.display()));
+    s.until("three attached image banners", |s| {
+        s.screen().contains("Image 2: second.png")
+            && s.screen().contains("Image 3: third.png")
+    });
+    assert_clean(&s.pixels("three image banners", magenta), "three image banners");
+
     s.request(serde_json::json!({"op":"resize","columns":96,"rows":32}));
     assert_clean(&s.pixels("banner resize", magenta), "banner resize");
 
@@ -2810,12 +2834,12 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     assert_clean(&s.pixels("banner move", magenta), "banner move");
 
     s.click_text("Image 1: wide.png", 0);
-    s.until("image modal", |s| s.screen().contains("cell preview"));
+    s.until("image modal", |s| s.screen().contains("Image preview"));
     assert_clean(&s.pixels("modal", magenta), "modal");
     s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
     assert_clean(&s.pixels("modal resize", magenta), "modal resize");
     s.send("\x1b");
-    s.until("modal closed", |s| !s.screen().contains("cell preview"));
+    s.until("modal closed", |s| !s.screen().contains("Image preview"));
     assert_clean(&s.pixels("modal close", magenta), "modal close");
 
     let screen = s.screen();

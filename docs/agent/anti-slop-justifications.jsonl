@@ -1,5 +1,13 @@
 ## This slice
 
+### X5 review fixes - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{native_window.rs,questions.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep image painting, popup navigation, copy decoration, and resize continuity in their existing owners; clip the existing raster blit and seed the existing backing surface without adding a subsystem. |
+| crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9, 10 | Extend the existing native journey's pixel evidence for one, two, and three attachments and lifecycle transitions. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible corrections using the existing release metadata. |
+
 ### Q9 test regression - anti-slop gate
 
 | path | tendency_check | justification |
@@ -97,3 +105,11 @@
 | crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 5, 10 | Keep title editing in the existing key owner; Enter completes the current rename attempt and preserves only the existing persistence error retry path. |
 | crates/concordia/src/tui/tests/draw.rs, crates/concordia/tests/tui_journeys.rs | ok: 5, 9, 10 | Extend existing screen-level and renderer regressions to cover both insertion-edge markers and Home-tab rename completion. |
 | CHANGELOG.md, crates/concordia/src/version.rs | ok: 10 | Record the user-facing correction and advance the required build identity. |
+
+### X5 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/questions.rs | ok: 1, 4, 5, 10 | Keep choice navigation at the existing question input owner; exclude the optional note action from End without adding popup state. |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 5, 9 | Record timing after the existing surface commit so the test channel reports the frame actually shown; no production render path is added. |
+| CHANGELOG.md, crates/concordia/src/version.rs | ok: 10 | Record the review correction and advance the required build identity. |

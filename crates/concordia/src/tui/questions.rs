@@ -686,7 +686,9 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.questions.selected = (app.questions.selected + 1) % count
         }
         KeyCode::Home => app.questions.selected = 0,
-        KeyCode::End => app.questions.selected = count - 1,
+        // End means the last actual choice. The optional note row is reached by
+        // moving down from that choice, so End never lands on a non-choice action.
+        KeyCode::End => app.questions.selected = choices.saturating_sub(1),
         KeyCode::PageUp => {
             app.questions.selected = app
                 .questions
@@ -2180,11 +2182,15 @@ mod tests {
         press(&mut app, KeyCode::Up);
         assert_eq!(app.questions.selected, 0);
         press(&mut app, KeyCode::End);
-        assert_eq!(app.questions.selected, 9, "End reaches the note row");
+        assert_eq!(app.questions.selected, 8, "End reaches the last option");
         let rows = popup_rows(&mut app, width, height);
         let screen = rows.join("\n");
-        assert!(screen.contains("Add a note"));
-        assert!(screen.contains("more above") && !screen.contains("more below"));
+        assert!(screen.contains("o9t000"));
+        assert!(screen.contains("more above"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.questions.selected, 9, "Down reaches the note row");
+        let rows = popup_rows(&mut app, width, height);
+        assert!(rows.join("\n").contains("Add a note"));
         press(&mut app, KeyCode::Up);
         let rows = popup_rows(&mut app, width, height);
         assert!(shown(&rows, 9, 19), "the selected option is fully visible");

@@ -536,6 +536,7 @@ struct Surface {
     cells: Vec<Cell>,
     columns: u16,
     rows: u16,
+    filled: usize,
 }
 impl Drop for Surface {
     fn drop(&mut self) {
@@ -837,12 +838,25 @@ impl Window {
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
         let surface_background = super::theme::native_default(false);
+        let mut seeded_previous = false;
         if self.surface.as_ref().is_none_or(|surface| {
             surface.width != client.right
                 || surface.height != client.bottom
                 || surface.background != surface_background
         }) {
-            self.surface = None;
+            // Keep the last committed frame visible while Windows delivers the resize event.
+            // The logical cell buffer is repainted immediately after the event, but it may be
+            // briefly empty while ratatui reflows the frame. Seeding the new bitmap from the
+            // previous one prevents that intermediate paint from exposing a blank window.
+            let previous_surface = self.surface.take();
+            seeded_previous = previous_surface.is_some();
+            let previous_cells = previous_surface
+                .as_ref()
+                .map(|surface| surface.cells.clone())
+                .unwrap_or_default();
+            let previous_columns = previous_surface.as_ref().map_or(0, |surface| surface.columns);
+            let previous_rows = previous_surface.as_ref().map_or(0, |surface| surface.rows);
+            let previous_filled = previous_surface.as_ref().map_or(0, |surface| surface.filled);
             let memory = CreateCompatibleDC(dc);
             let bitmap = CreateCompatibleBitmap(dc, client.right.max(1), client.bottom.max(1));
             if memory.is_null() || bitmap.is_null() {
@@ -858,8 +872,53 @@ impl Window {
                 return;
             }
             let previous_bitmap = SelectObject(memory, bitmap);
+            if let Some(previous) = previous_surface.as_ref() {
+                StretchBlt(
+                    memory,
+                    0,
+                    0,
+                    client.right,
+                    client.bottom,
+                    previous.dc,
+                    0,
+                    0,
+                    previous.width,
+                    previous.height,
+                    SRCCOPY,
+                );
+            } else {
+                SetDCBrushColor(memory, color(Color::Reset, false));
+                FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
+            // The old bitmap can extend into a partial cell at the new client edge. That strip
+            // is outside the logical frame and must match a fresh paint exactly.
             SetDCBrushColor(memory, color(Color::Reset, false));
-            FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+            let grid_right = (client.right / self.cell_width) * self.cell_width;
+            let grid_bottom = (client.bottom / self.cell_height) * self.cell_height;
+            if grid_right < client.right {
+                FillRect(
+                    memory,
+                    &RECT {
+                        left: grid_right,
+                        top: 0,
+                        right: client.right,
+                        bottom: client.bottom,
+                    },
+                    GetStockObject(DC_BRUSH) as HBRUSH,
+                );
+            }
+            if grid_bottom < client.bottom {
+                FillRect(
+                    memory,
+                    &RECT {
+                        left: 0,
+                        top: grid_bottom,
+                        right: grid_right,
+                        bottom: client.bottom,
+                    },
+                    GetStockObject(DC_BRUSH) as HBRUSH,
+                );
+            }
             self.surface = Some(Surface {
                 dc: memory,
                 bitmap,
@@ -867,10 +926,12 @@ impl Window {
                 width: client.right,
                 height: client.bottom,
                 background: surface_background,
-                cells: Vec::new(),
-                columns: 0,
-                rows: 0,
+                cells: previous_cells,
+                columns: previous_columns,
+                rows: previous_rows,
+                filled: previous_filled,
             });
+            drop(previous_surface);
         }
         // GDI rendering can be much slower than updating the cell buffer. Never keep
         // the application thread waiting on the screen mutex while painting.
@@ -882,9 +943,25 @@ impl Window {
             .clone();
         let surface = self.surface.as_mut().expect("surface initialized above");
         let memory = surface.dc;
+        // The resized logical buffer may still be the transient, partially drawn frame produced
+        // by WM_SIZE. Keep the committed bitmap while the incoming frame is materially emptier;
+        // the first complete frame then replaces the cache normally.
+        let incoming_filled = screen
+            .cells
+            .iter()
+            .filter(|cell| **cell != Cell::default())
+            .count();
+        // A resize can briefly expose an empty frame while the application catches up. Keep the
+        // seeded bitmap for that one transient paint, but repaint any non-empty frame completely.
+        // A density heuristic is unsafe here because a smaller, valid frame naturally contains
+        // fewer populated cells than the old one.
+        let preserve_seed = seeded_previous && incoming_filled == 0;
         let original_font = SelectObject(memory, self.fonts[0]);
         let same_grid = surface.columns == screen.size.width && surface.rows == screen.size.height;
         for y in 0..screen.size.height {
+            if preserve_seed {
+                break;
+            }
             let start = usize::from(y) * usize::from(screen.size.width);
             let end = start + usize::from(screen.size.width);
             if same_grid && surface.cells.get(start..end) == Some(&screen.cells[start..end]) {
@@ -969,38 +1046,27 @@ impl Window {
                 }
             }
         }
+        surface.columns = screen.size.width;
+        surface.rows = screen.size.height;
+        if !preserve_seed {
+            surface.cells = screen.cells;
+            surface.filled = incoming_filled;
+        }
         if let Some(test) = self.shared.test_control.as_ref() {
             let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some((_, started, _)) = &state.measure {
                 let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-                let filled = screen
-                    .cells
-                    .iter()
-                    .filter(|cell| cell.symbol() != " ")
-                    .count();
                 if state.paints.len() < 1024 {
-                    state.paints.push((elapsed, screen.seq, filled));
+                    state.paints.push((elapsed, screen.seq, surface.filled));
                 }
             }
         }
-        surface.columns = screen.size.width;
-        surface.rows = screen.size.height;
-        surface.cells = screen.cells;
         SelectObject(memory, original_font);
-        // Caret is an overlay, never part of the cached backing image. Expose and
-        // blink events therefore only copy cached pixels and repaint this rectangle.
-        // Images are overlays too: clip them out of the copy so the blank cells beneath
-        // never reach the screen between the copy and the image paint (visible flicker).
-        let saved = SaveDC(dc);
-        for image in &screen.images {
-            if let Some(rect) = self.image_rect(image, &client) {
-                ExcludeClipRect(dc, rect.left, rect.top, rect.right, rect.bottom);
-            }
-        }
+        // Caret is an overlay, never part of the cached backing image. Images are
+        // overlays too, but the backing surface must be copied without clipping: a
+        // previous image can have covered a larger or different rectangle, and leaving
+        // that rectangle out of the copy preserves the old raster pixels.
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
-        if saved != 0 {
-            RestoreDC(dc, saved);
-        }
         let [red, green, blue] = super::theme::image_background();
         let image_background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
         SetDCBrushColor(dc, image_background);
@@ -1016,6 +1082,33 @@ impl Window {
             }
         }
         self.paint_images(dc, &screen.images, &client);
+        // HALFTONE can touch a few edge pixels outside its destination rectangle.
+        // Restore the non-image part of every card after the blit so an old or
+        // antialiased edge can never become a second thumbnail fragment.
+        for image in &screen.images {
+            let area = RECT {
+                left: i32::from(image.area.x) * self.cell_width,
+                top: i32::from(image.area.y) * self.cell_height,
+                right: (i32::from(image.area.right()) * self.cell_width).min(client.right),
+                bottom: (i32::from(image.area.bottom()) * self.cell_height).min(client.bottom),
+            };
+            if area.right <= area.left || area.bottom <= area.top {
+                continue;
+            }
+            let drawn = self.image_rect(image, &client);
+            let fill = |rect: RECT| {
+                if rect.right > rect.left && rect.bottom > rect.top {
+                    FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
+                }
+            };
+            if let Some(drawn) = drawn {
+                fill(RECT { right: drawn.left, ..area });
+                fill(RECT { left: drawn.right, ..area });
+                fill(RECT { top: drawn.bottom, ..area });
+            } else {
+                fill(area);
+            }
+        }
         if self.focused
             && self.blink
             && screen.cursor_visible
@@ -1030,8 +1123,34 @@ impl Window {
                 right: left + 2,
                 bottom: top + self.cell_height - 2,
             };
-            SetDCBrushColor(dc, color(Color::Reset, true));
-            FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
+            let over_attachment = !screen.images.is_empty();
+            if !over_attachment {
+                SetDCBrushColor(dc, color(Color::Reset, true));
+                FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
+        }
+        // The caret and other overlays are painted last. Re-apply the card margins so no
+        // overlay can leave a fragment beside a thumbnail.
+        SetDCBrushColor(dc, image_background);
+        for image in &screen.images {
+            let area = RECT {
+                left: i32::from(image.area.x) * self.cell_width,
+                top: i32::from(image.area.y) * self.cell_height,
+                right: (i32::from(image.area.right()) * self.cell_width).min(client.right),
+                bottom: (i32::from(image.area.bottom()) * self.cell_height).min(client.bottom),
+            };
+            if let Some(drawn) = self.image_rect(image, &client) {
+                let fill = |rect: RECT| {
+                    if rect.right > rect.left && rect.bottom > rect.top {
+                        FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
+                    }
+                };
+                fill(RECT { right: drawn.left, ..area });
+                fill(RECT { left: drawn.right, ..area });
+                fill(RECT { top: drawn.bottom, ..area });
+            } else if area.right > area.left && area.bottom > area.top {
+                FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
+            }
         }
         if supplied_dc.is_none() {
             EndPaint(hwnd, &paint);
@@ -1071,7 +1190,12 @@ impl Window {
         Some(RECT {
             left,
             top,
-            right: left + (f64::from(width) * scale).floor().max(1.0) as i32,
+            // Leave a two-pixel safety margin for GDI's HALFTONE kernel. It samples adjacent
+            // source pixels at the destination edge even when the destination is clipped.
+            // HALFTONE contributes a two-pixel sampling fringe at the destination edge. Include
+            // that fringe in the thumbnail rectangle so it remains one continuous image.
+            right: (left + (f64::from(width) * scale).floor().max(1.0) as i32 + 2)
+                .min(left + available_width),
             bottom: top + (f64::from(height) * scale).floor().max(1.0) as i32,
         })
     }
@@ -1135,6 +1259,8 @@ impl Window {
             let previous_mode = SetStretchBltMode(dc, HALFTONE);
             let mut previous_origin: POINT = mem::zeroed();
             SetBrushOrgEx(dc, 0, 0, &mut previous_origin);
+            let saved = SaveDC(dc);
+            IntersectClipRect(dc, target.left, target.top, target.right, target.bottom);
             StretchDIBits(
                 dc,
                 target.left,
@@ -1150,6 +1276,7 @@ impl Window {
                 DIB_RGB_COLORS,
                 SRCCOPY,
             );
+            RestoreDC(dc, saved);
             SetBrushOrgEx(dc, previous_origin.x, previous_origin.y, null_mut());
             if previous_mode != 0 {
                 SetStretchBltMode(dc, previous_mode);
@@ -1310,9 +1437,6 @@ unsafe fn handle_test_control(window: &mut Window) {
                     RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOERASE,
                 );
                 UpdateWindow(hwnd);
-                if window.shared.test_control.is_some() {
-                    window.paint(hwnd, None);
-                }
             }
             Some("key") => {
                 if let Some(code) = request
@@ -1528,12 +1652,18 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
         };
         let drawn = window.image_rect(image, &client);
         let mut stale = 0usize;
+        let mut actual_outside = 0usize;
         for y in area.top..area.bottom {
             for x in area.left..area.right {
                 let inside =
                     drawn.is_some_and(|d| x >= d.left && x < d.right && y >= d.top && y < d.bottom);
-                if !inside && fresh.pixel(x, y) != background {
-                    stale += 1;
+                if !inside {
+                    if fresh.pixel(x, y) != background {
+                        stale += 1;
+                    }
+                    if actual.pixel(x, y) != background {
+                        actual_outside += 1;
+                    }
                 }
             }
         }
@@ -1541,6 +1671,7 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
             "area": [area.left, area.top, area.right, area.bottom],
             "drawn": drawn.map(|d| vec![d.left, d.top, d.right, d.bottom]),
             "stale": stale,
+            "actual_outside": actual_outside,
         }));
     }
     // Callers name the exact colour of a synthetic image to prove a closed image left no pixels.
