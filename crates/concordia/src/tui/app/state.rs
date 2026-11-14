@@ -146,6 +146,7 @@ pub(in crate::tui) struct PendingLogin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) enum PickerKind {
+    Guided,
     Doctor,
     DoctorConfirm,
     ChatRepair,
@@ -296,6 +297,7 @@ pub(crate) struct App {
     pub(in crate::tui) header_attention_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
     pub(in crate::tui) permission_rows: Vec<(Rect, usize)>,
+    pub(in crate::tui) picker_rows: Vec<(Rect, usize)>,
     pub(in crate::tui) permission_row_pressed: Option<usize>,
     pub(in crate::tui) card_header_pressed: Option<usize>,
     pub(in crate::tui) header_credits_pressed: bool,
@@ -423,6 +425,8 @@ pub(crate) struct App {
     pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) tab_close_hits: Vec<Rect>,
     pub(in crate::tui) rename_editor: Option<Editor>,
+    pub(in crate::tui) mcp_add_editor: bool,
+    pub(in crate::tui) mcp_add_preview: Option<(String, String, Vec<String>)>,
     pub(in crate::tui) user_cmds: Vec<crate::user_commands::UserCommand>,
     pub(in crate::tui) queue: queue::Queue,
     pub(in crate::tui) last_sent: Option<String>,
@@ -1715,6 +1719,7 @@ impl App {
             header_attention_pressed: false,
             permissions_pressed: false,
             permission_rows: Vec::new(),
+            picker_rows: Vec::new(),
             permission_row_pressed: None,
             card_header_pressed: None,
             header_credits_pressed: false,
@@ -1853,6 +1858,8 @@ impl App {
             tab_hits: Vec::new(),
             tab_close_hits: Vec::new(),
             rename_editor: None,
+            mcp_add_editor: false,
+            mcp_add_preview: None,
             user_cmds: crate::user_commands::scan(&state_root_for_cmds).commands,
             queue: queue::Queue::default(),
             last_sent: None,

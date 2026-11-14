@@ -21,13 +21,23 @@ fn rename_key(app: &mut App, key: KeyEvent) {
         return;
     }
     let mut editor = app.rename_editor.take().expect("active title editor");
+    let mcp_add = app.mcp_add_editor;
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
-        KeyCode::Esc => return,
+        KeyCode::Esc => {
+            app.mcp_add_editor = false;
+            return;
+        }
         KeyCode::Enter => {
+            if mcp_add {
+                app.mcp_add_editor = false;
+                app.finish_mcp_add_editor(editor.text());
+                return;
+            }
             if app.rename_session(&editor.text()) {
+                app.push_system("Chat title validated and saved. Undo: run /rename again with the previous title.");
                 return;
             }
         }
@@ -1189,6 +1199,19 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                     .state
                     .select(Some((picker.state.selected().unwrap_or(0) + 3).min(max))),
                 _ => {}
+            }
+        }
+        if m.kind == MouseEventKind::Up(MouseButton::Left) {
+            if let Some(index) = app
+                .picker_rows
+                .iter()
+                .find(|(rect, _)| contains(*rect, m.column, m.row))
+                .map(|(_, index)| *index)
+            {
+                if let Some(picker) = app.picker.as_mut() {
+                    picker.state.select(Some(index));
+                }
+                app.apply_picker_selection(None);
             }
         }
         return;

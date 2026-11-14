@@ -1483,6 +1483,7 @@ fn update_action_rows(blocked: bool, width: usize) -> Vec<Line<'static>> {
 }
 
 fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
+    app.picker_rows.clear();
     let agents_panel = app
         .picker
         .as_ref()
@@ -1906,6 +1907,24 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
+    let mut row_y = popup.y.saturating_add(1);
+    let offset = picker.state.offset();
+    for (index, row) in picker.filtered().into_iter().enumerate().skip(offset) {
+        let height = if row.label.contains('\n') {
+            row.label.lines().count().max(1) + usize::from(!row.detail.is_empty())
+        } else {
+            1
+        } as u16;
+        if row_y >= popup.bottom().saturating_sub(1) {
+            break;
+        }
+        let height = height.min(popup.bottom().saturating_sub(1).saturating_sub(row_y));
+        app.picker_rows.push((
+            Rect::new(popup.x.saturating_add(1), row_y, popup.width.saturating_sub(2), height),
+            index,
+        ));
+        row_y = row_y.saturating_add(height.max(1));
+    }
     app.related_files.targets.clear();
     if picker.kind == PickerKind::Files {
         let offset = picker.state.offset();

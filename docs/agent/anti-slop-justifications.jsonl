@@ -1,5 +1,21 @@
 ## This slice
 
+### Y2 guided commands - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/app/{state,pickers,slash}.rs` | ok: 1, 4, 5, 6, 10 | Reuse the existing picker, command parser and command-owned panels; add one small guided presentation kind only for argument commands that previously executed immediately. |
+| `docs/guided-commands.md`, `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Keep the registry-derived command table and real native journey as the observable acceptance boundary. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 5, 10 | Record the user-facing panel change under the required build identity. |
+
+### Y2 review-3 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/app/{state,pickers}.rs`, `crates/concordia/src/tui/input_dispatch.rs` | ok: 1, 4, 5, 6, 10 | Keep guided input, preview and registry mutation in the existing picker and command owners; remove the hardcoded MCP premise. |
+| `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5 | Align the existing rendered row hitboxes with the picker scroll offset; no second scroll model is added. |
+| `docs/guided-commands.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document and identify the review repairs. |
+
 ### Y3 continue after usage limit - anti-slop gate
 
 | path | tendency_check | justification |
@@ -88,4 +104,11 @@
 | path | tendency_check | justification |
 | ---- | -------------- | ------------- |
 | crates/concordia/src/tui/{app/state.rs,run.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep update actions, restart admission, and presentation in their existing owners; wait on the existing delegated-work state and expose the existing prepared-update action in the shared footer. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+### Y2 review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 5, 10 | Complete the existing guided picker dispatch for its already-rendered terminal and title rows; keep local terminal and session title modules as the canonical action owners. |
+| docs/guided-commands.md | ok: 5, 10 | Add the four active delegate argument forms to the existing command table rather than creating another catalog. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |

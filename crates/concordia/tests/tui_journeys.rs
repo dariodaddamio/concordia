@@ -448,6 +448,15 @@ impl Session {
         std::fs::write(folder.join(format!("check-{check}.txt")), self.screen()).unwrap();
     }
 
+    fn save_y2_panel(&self, name: &str) {
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("target"));
+        let folder = target.join("preview/y2-guided-commands");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(format!("{name}.txt")), self.screen()).unwrap();
+    }
+
     fn clone_request(&self, mut value: Value) -> Value {
         let mut stream = self.control.try_clone().unwrap();
         value["token"] = Value::String(self.token.clone());
@@ -2123,6 +2132,45 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     s.until("account switched", |s| {
         s.screen().contains("using Cursor") && s.draft().is_empty()
     });
+    assert!(s.prompts().is_empty());
+    s.exit();
+}
+
+#[test]
+#[ignore = "Y2 real-window guided command journey; fake provider only"]
+fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    s.request(serde_json::json!({"op":"resize","columns":180,"rows":34}));
+
+    for (name, command, marker) in [
+        ("terminal", "/terminal", "/terminal · This panel"),
+        ("delegate", "/delegate", "/delegate · This panel"),
+        ("native", "/native", "/native · This panel"),
+        ("use", "/use", "accounts"),
+        ("model", "/model", "model"),
+        ("rename", "/rename", "/rename · This panel"),
+        ("config", "/config", "Appearance"),
+        ("mode", "/mode", "permissions"),
+        ("usage", "/usage", "usage"),
+        ("help", "/help", "/help · This panel"),
+        ("harness", "/harness", "integrations"),
+        ("skills", "/skills", "Project vs user scope"),
+        ("hooks", "/hooks", "Project vs user scope"),
+        ("mcp", "/mcp", "/mcp · This panel"),
+        ("open", "/open", "Open"),
+        ("resume", "/resume", "continue an explicit recorded conversation"),
+        ("queue", "/queue", "/queue · This panel"),
+        ("close", "/close", "/close · This panel"),
+    ] {
+        s.submit(command);
+        s.until(name, |s| s.screen().contains(marker));
+        s.save_y2_panel(name);
+        s.send("\x1b");
+        s.until("guided panel cancelled", |s| s.screen().contains("Message Concordia"));
+    }
     assert!(s.prompts().is_empty());
     s.exit();
 }

@@ -1,5 +1,26 @@
 # Changelog
 
+### Fixed (2026-11-13aj)
+
+- Make guided panels state their purpose, keep mouse selection aligned after scrolling, and require validated MCP server details with a preview before saving.
+
+### Fixed (2026-11-13ai)
+
+- Apply guided title restoration and terminal choices from both keyboard and mouse selection, and document the active delegate argument forms.
+
+### Fixed (2026-11-13ah)
+
+- Complete guided panels for native transport, queues, resume and file panes, make title and terminal actions apply their validated choices, and correct multiline picker mouse hitboxes.
+
+### Fixed (2026-11-13ag)
+
+- Apply guided command choices for local terminals, MCP registry changes and help views, and document `/help`.
+
+### Added (2026-11-13af)
+
+- Open guided panels for argument-taking slash commands, with detected choices, validation,
+  change and undo guidance, and Esc cancellation.
+
 ### Fixed (2026-11-13ae)
 
 - Apply background update checks to restored and new tabs, and show restart actions only after

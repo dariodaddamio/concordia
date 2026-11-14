@@ -47,19 +47,33 @@ impl App {
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
         if trimmed == "/terminal" || trimmed.starts_with("/terminal ") {
-            local_terminal::command(self, trimmed.strip_prefix("/terminal").unwrap_or_default());
+            let args = trimmed.strip_prefix("/terminal").unwrap_or_default().trim();
+            if args.is_empty() {
+                self.open_guided_command("/terminal", vec![
+                    PickerRow { id: "terminal:open".into(), label: "Open local PowerShell".into(), detail: "validated for this project; starts a terminal pane; undo: close the pane".into() },
+                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; opens a separate provider session; undo: close that session".into() },
+                    PickerRow { id: "terminal:hide".into(), label: "Hide the running terminal".into(), detail: "validated when a terminal is running; keeps its process alive; undo: choose Open again".into() },
+                    PickerRow { id: "terminal:close".into(), label: "Close the terminal".into(), detail: "validated when a terminal exists; stops its process; undo: open a new terminal".into() },
+                ]);
+            } else {
+                local_terminal::command(self, args);
+            }
             return true;
         }
         if trimmed == "/rename" || trimmed.starts_with("/rename ") {
             let name = trimmed.strip_prefix("/rename").unwrap_or_default().trim();
-            if !self.rename_session(name) {
+            if name.is_empty() {
+                self.open_guided_command("/rename", vec![
+                    PickerRow { id: "rename:set".into(), label: "Set a title".into(), detail: "validated in the title editor; changes this chat title; undo: run /rename again with the previous title".into() },
+                    PickerRow { id: "rename:clear".into(), label: "Restore automatic title".into(), detail: "validated for the current chat; clears its custom title; undo: set the previous title again".into() },
+                ]);
+            } else if !self.rename_session(name) {
                 return true;
-            }
-            self.push_system(if self.session_ui.title.is_some() {
+            } else { self.push_system(if self.session_ui.title.is_some() {
                 "Chat renamed."
             } else {
                 "Chat title reset to automatic."
-            });
+            }); }
             return true;
         }
         if let Some(id) = trimmed
@@ -73,6 +87,23 @@ impl App {
             return true;
         }
         if line.trim() == "/native" || line.trim().starts_with("/native ") {
+            if line.trim() == "/native" {
+                let mut rows = Vec::new();
+                for account in accounts_with_auth(&self.state_root) {
+                    for (action, label, effect) in [("status", "Inspect native transport", "reads the saved transport state; undo: not needed"), ("on", "Enable native transport", "uses the provider native interface; undo: choose Disable"), ("off", "Disable native transport", "uses print mode; undo: choose Enable")] {
+                        rows.push(PickerRow {
+                            id: format!("native:{}:{}", account.account, action),
+                            label: format!("{} · {}", account.label, label),
+                            detail: format!("validated for account {}; {effect}", account.account),
+                        });
+                    }
+                }
+                if rows.is_empty() {
+                    rows.push(PickerRow { id: "native:none".into(), label: "No connected accounts".into(), detail: "connect an account with /use add; undo: Esc".into() });
+                }
+                self.open_guided_command("/native", rows);
+                return true;
+            }
             let parts: Vec<_> = line.split_whitespace().collect();
             let result = match parts.as_slice() {
                 ["/native", account] | ["/native", account, "status"] => {
@@ -91,6 +122,42 @@ impl App {
                 _ => Err("/native ACCOUNT on|off|status".into()),
             };
             self.push_system(result.unwrap_or_else(|error| format!("native input: {error}")));
+            return true;
+        }
+        if line.trim() == "/delegate" {
+            let mut rows = vec![
+                PickerRow {
+                    id: "delegate:fallback:on".into(),
+                    label: "Enable automatic worker returns".into(),
+                    detail: "validated against the current recovery policy; enables automatic returns; undo: choose Disable automatic worker returns".into(),
+                },
+                PickerRow {
+                    id: "delegate:fallback:off".into(),
+                    label: "Disable automatic worker returns".into(),
+                    detail: "validated against the current recovery policy; pauses automatic returns; undo: choose Enable automatic worker returns".into(),
+                },
+            ];
+            for job in &self.deleg.d.jobs {
+                let state = format!("{:?}", job.state);
+                if !job.native_inputs().is_empty() {
+                    rows.push(PickerRow {
+                        id: format!("delegate:input:{}", job.id),
+                        label: format!("Review input for worker #{}", job.id),
+                        detail: format!("validated for worker #{} ({}); opens its pending native request; undo: Esc", job.id, state),
+                    });
+                }
+                rows.push(PickerRow {
+                    id: format!("delegate:recover:{}", job.id),
+                    label: format!("Recover worker #{}", job.id),
+                    detail: format!("validated for worker #{} ({}); reads its exact native result; undo: Esc", job.id, state),
+                });
+                rows.push(PickerRow {
+                    id: format!("delegate:retry:{}", job.id),
+                    label: format!("Retry worker #{} after reconciliation", job.id),
+                    detail: format!("validated for worker #{} ({}); starts only the explicitly reconciled retry; undo: stop the new worker", job.id, state),
+                });
+            }
+            self.open_guided_command("/delegate", rows);
             return true;
         }
         if line.trim() == "/delegate input" {
@@ -129,7 +196,7 @@ impl App {
         if trimmed == "/config" || trimmed.starts_with("/config ") {
             let args = trimmed.strip_prefix("/config").unwrap_or("").trim();
             match args {
-                "" => settings::open(self),
+                "" => { settings::open(self); self.guide_open_picker("/config", "inspect or change saved settings", "reselect the previous setting"); },
                 "appearance" => appearance::open(self),
                 "skills" => settings::catalog(self, false),
                 "hooks" => settings::catalog(self, true),
@@ -138,8 +205,19 @@ impl App {
             return true;
         }
         if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
-            self.push_command(line);
-            self.run_mcp_command(trimmed.strip_prefix("/mcp").unwrap_or_default().trim());
+            let args = trimmed.strip_prefix("/mcp").unwrap_or_default().trim();
+            if args.is_empty() {
+                let servers = crate::mcp_registry::load(&self.state_root).ok().map(|r| r.servers.len()).unwrap_or(0);
+                self.open_guided_command("/mcp", vec![
+                    PickerRow { id: "mcp:add".into(), label: "Add a server".into(), detail: format!("validated against a command and argument array; adds one registry entry ({} detected); undo: /mcp remove NAME", servers) },
+                    PickerRow { id: "mcp:toggle".into(), label: "Enable or disable a server".into(), detail: "validated against a detected server; changes delivery state only; undo: choose the previous state".into() },
+                    PickerRow { id: "mcp:remove".into(), label: "Remove a server".into(), detail: "validated against a detected server; removes only the Concordia registry entry; undo: add it again".into() },
+                    PickerRow { id: "mcp:import".into(), label: "Inspect provider configuration".into(), detail: "read-only validation; changes nothing; undo: not needed".into() },
+                ]);
+            } else {
+                self.push_command(line);
+                self.run_mcp_command(args);
+            }
             return true;
         }
         if trimmed == "/version" || trimmed == "/ver" || trimmed == "/about" {
@@ -148,6 +226,13 @@ impl App {
             for report_line in crate::doctor::run_fast_report().lines() {
                 self.push_system(report_line.to_owned());
             }
+            return true;
+        }
+        if trimmed == "/help" {
+            self.open_guided_command("/help", vec![
+                PickerRow { id: "help:everyday".into(), label: "Show everyday commands".into(), detail: "validated against the command registry; shows the common commands and their arguments; undo: Esc closes the panel".into() },
+                PickerRow { id: "help:all".into(), label: "Show every command".into(), detail: "validated against the command registry; shows every registered command and its arguments; undo: Esc closes the panel".into() },
+            ]);
             return true;
         }
         if trimmed == "/use rename" || trimmed.starts_with("/use rename ") {
@@ -180,6 +265,7 @@ impl App {
         // replace them.
         if line.trim() == "/open" {
             self.open_related_files();
+            self.guide_open_picker("/open", "preview files mentioned in this chat", "Esc closes without editing");
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
@@ -197,6 +283,19 @@ impl App {
             } else {
                 target.parse::<u32>().ok()
             };
+            if target.is_empty() {
+                let rows = self.workspace.panes.iter().map(|pane| PickerRow {
+                    id: format!("close:{}", pane.id),
+                    label: format!("Close file pane #{}", pane.id),
+                    detail: "validated against this open pane; closes it; undo: reopen the file".into(),
+                }).collect::<Vec<_>>();
+                if rows.is_empty() {
+                    self.open_guided_command("/close", vec![PickerRow { id: "close:none".into(), label: "No open file panes".into(), detail: "nothing will change; undo: not needed".into() }]);
+                } else {
+                    self.open_guided_command("/close", rows);
+                }
+                return true;
+            }
             match id {
                 Some(id) if self.workspace.close(id) => {
                     if self.workspace.panes.iter().any(|p| p.id == id) {
@@ -207,6 +306,15 @@ impl App {
                 }
                 _ => self.flash("usage: /close PANE_ID (or /close with a file pane focused)"),
             }
+            return true;
+        }
+        if line.trim() == "/queue" {
+            let count = self.queue.items.len();
+            self.open_guided_command("/queue", vec![
+                PickerRow { id: "queue:list".into(), label: "Review queued prompts".into(), detail: format!("validated; shows {count} queued prompt(s); undo: Esc") },
+                PickerRow { id: "queue:resume".into(), label: "Resume the queue".into(), detail: "validated when prompts are queued; resumes automatic delivery; undo: pause the queue".into() },
+                PickerRow { id: "queue:clear".into(), label: "Clear the queue".into(), detail: "validated before deletion; removes queued prompts; undo: not available".into() },
+            ]);
             return true;
         }
         if let Some(arg) = queue::slash_arg(line) {
@@ -298,18 +406,27 @@ impl App {
             self.open_remove_picker(named.clone());
             return true;
         }
+        if matches!(&cmd, SlashCommand::Use) {
+            self.open_use_picker();
+            self.guide_open_picker("/use", "switch or manage accounts", "select the previous account");
+            return true;
+        }
+        if matches!(&cmd, SlashCommand::Model) {
+            self.open_model_picker();
+            self.guide_open_picker("/model", "choose the active provider model", "choose the previous model");
+            return true;
+        }
         if let SlashCommand::Mode(arg) = &cmd {
-            self.push_command(line);
-            self.run_mode_command(arg.as_deref());
+            if arg.is_none() { self.open_trust_picker(); self.guide_open_picker("/mode", "set permission for the next turn", "select the previous mode"); } else { self.push_command(line); self.run_mode_command(arg.as_deref()); }
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
             settings::catalog(self, *hooks);
+            self.guide_open_picker(if *hooks { "/hooks" } else { "/skills" }, if *hooks { "inspect native hook sources" } else { "inspect selected skill sources" }, "Esc leaves sources unchanged");
             return true;
         }
         if let SlashCommand::Harness(arg) = &cmd {
-            self.push_command(line);
-            integrations::command(self, arg);
+            if arg.is_empty() { integrations::open(self); self.guide_open_picker("/harness", "inspect connected local harnesses", "Esc leaves receipts and provider homes unchanged"); } else { self.push_command(line); integrations::command(self, arg); }
             return true;
         }
         if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
@@ -373,7 +490,7 @@ impl App {
         }
         match outcome {
             CommandOutcome::Exit => self.should_quit = true,
-            CommandOutcome::OpenResume => self.open_resume_picker(),
+            CommandOutcome::OpenResume => { self.open_resume_picker(); self.guide_open_picker("/resume", "continue an explicit recorded conversation", "Esc leaves the current chat unchanged"); },
             CommandOutcome::OpenUse => {
                 for l in crate::integration::refresh_summary(&self.state_root) {
                     self.push_system(l);
@@ -383,11 +500,11 @@ impl App {
             CommandOutcome::OpenAddProvider => self.open_add_provider_picker(),
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
-            CommandOutcome::OpenModel => self.open_model_picker(),
+            CommandOutcome::OpenModel => { self.open_model_picker(); self.guide_open_picker("/model", "choose the active provider model", "choose the previous model"); },
             CommandOutcome::OpenDoctor => self.open_doctor(),
             CommandOutcome::ShowUsage => self.show_usage(false),
             CommandOutcome::ShowUsageRefresh => self.show_usage(true),
-            CommandOutcome::OpenUsage => self.open_usage_picker(),
+            CommandOutcome::OpenUsage => { self.open_usage_picker(); self.guide_open_picker("/usage", "inspect provider-reported limits", "Esc closes without changing provider state"); },
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
                 Some(t) => {
                     self.write_clipboard(&t);
