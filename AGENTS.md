@@ -21,7 +21,7 @@ as verification for provider-facing changes (questions, diffs, usage, images, tr
 - Models: Cursor `auto`, Claude `haiku`, Codex `gpt-5.6-luna` with low reasoning effort (or the
   smallest model the account offers if those are unavailable).
 - Keep turns tiny: one-line prompts, a scratch folder under the temp dir, at most ~10 live turns
-  per task. Never run live turns in a loop, in CI, or from background workers.
+  per task. Background workers may run these live turns. Never run them in a loop or in CI.
 - Live tests stay `#[ignore]` and are opted in with `CONCORDIA_LIVE=1` (see `tests/live_*.rs`);
   report which live turns you ran and their results.
 - Keep the fake provider (`tests/support/fake_provider.rs`) and fixtures for the regular suite,
