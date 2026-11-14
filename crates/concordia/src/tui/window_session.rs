@@ -36,6 +36,8 @@ struct SavedTab {
     omitted: bool,
     #[serde(default)]
     scroll: usize,
+    #[serde(default)]
+    attention_pending: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -224,6 +226,7 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 app.messages
                     .retain(|message| message.text != super::super::START_HINT);
                 app.restore_state_for_record(Some(&saved.recovery));
+                app.restored_attention = saved.attention_pending;
                 let notices = std::mem::take(&mut app.messages);
                 let checkpoint = app.keep.turn_recovery_notice && app.continuation.waiting();
                 if checkpoint && !app.native_sources.is_empty() {
@@ -653,6 +656,7 @@ impl SavedTab {
             messages,
             omitted,
             scroll: app.view.scroll,
+            attention_pending: app.needs_you.items().any(|item| item.is_actionable()),
         })
     }
 }

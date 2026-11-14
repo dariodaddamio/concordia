@@ -313,6 +313,7 @@ pub(crate) struct App {
     pub(in crate::tui) chatref: chatref::ChatRef,
     pub(in crate::tui) related_files: related_files::State,
     pub(in crate::tui) questions: questions::State,
+    pub(in crate::tui) restored_attention: bool,
     pub(in crate::tui) images: images::State,
     pub(in crate::tui) raster: raster::State,
     pub(in crate::tui) history: Vec<String>,
@@ -920,6 +921,19 @@ impl App {
             .title
             .clone()
             .unwrap_or_else(|| "New chat".into());
+        let turn_identity = self
+            .submitted_prompt
+            .as_deref()
+            .or_else(|| self.continuation.prompt_text())
+            .or_else(|| {
+                self.messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.role == MsgRole::User)
+                    .map(|message| message.text.as_str())
+            })
+            .map(|prompt| format!("turn:{:x}", Sha256::digest(prompt.as_bytes())))
+            .unwrap_or_else(|| format!("turn:{}", self.continuation.run_id()));
         let approval = self.questions.native_approval_waiting();
         let current = [
             (
@@ -939,6 +953,19 @@ impl App {
                 self.queue.paused && !self.queue.items.is_empty(),
                 ItemKind::PausedQueue,
                 "resume paused prompt queue",
+            ),
+            (
+                "interrupted",
+                self.continuation.waiting()
+                    && self.restored_attention
+                    && self
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| !matches!(message.role, MsgRole::System | MsgRole::Meta))
+                        .is_some_and(|message| message.role == MsgRole::User),
+                ItemKind::InterruptedRequest,
+                "review interrupted request",
             ),
             (
                 "idle",
@@ -964,14 +991,16 @@ impl App {
             self.needs_you.remove(&legacy_id);
             crate::needs_you::withdraw(&legacy_id);
             let identity = match suffix {
-                "question" | "approval" => self
-                    .questions
-                    .attention_identity()
-                    .unwrap_or_else(|| suffix.into()),
+                // The continuation checkpoint is the durable identity of the turn.  The
+                // provider request identity is not available after a restart, when the same
+                // outstanding question is represented as an interrupted request.
+                "question" => format!("{turn_identity}:question"),
+                "approval" => format!("{turn_identity}:approval"),
                 "paused-queue" => format!(
                     "queue:{:x}",
                     Sha256::digest(self.queue.items.join("\0").as_bytes())
                 ),
+                "interrupted" => format!("{turn_identity}:question"),
                 "signed-out" => self
                     .signed_out_confirmation
                     .as_ref()
@@ -1107,7 +1136,8 @@ impl App {
                     self.questions.focused = true;
                 }
             }
-            crate::needs_you::ItemKind::PausedQueue => {
+            crate::needs_you::ItemKind::PausedQueue
+            | crate::needs_you::ItemKind::InterruptedRequest => {
                 self.queue.focused = true;
                 self.questions.focused = false;
             }
@@ -1741,6 +1771,7 @@ impl App {
             chatref: chatref::ChatRef::default(),
             related_files,
             questions: questions::State::default(),
+            restored_attention: false,
             native_owner: None,
             native_usage_model: None,
             native_usage_session: None,

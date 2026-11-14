@@ -546,6 +546,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut previous_title = String::new();
     let input_result = (|| -> Result<()> {
         loop {
+            let mut force_attention_save = false;
             for tab in tabs.tabs.iter_mut() {
                 dirty |= tab.refresh_chat_ownership();
             }
@@ -609,10 +610,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             .items()
                             .filter(|item| item.is_actionable())
                             .find(|item| {
-                                !crate::store::attention_notification_seen(
-                                    &state_root,
-                                    &item.id,
-                                )
+                                !crate::store::attention_notification_seen(&state_root, &item.id)
+                                    && !(item.kind
+                                        == crate::needs_you::ItemKind::InterruptedRequest
+                                        && crate::store::interrupted_attention_notification_seen(
+                                            &state_root,
+                                            &item.id,
+                                        ))
                             })
                             .map(|item| (item.id.clone(), item.notification_text()));
                     }
@@ -628,6 +632,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     terminal
                         .backend_mut()
                         .attention_notification(item_id, text);
+                    force_attention_save = true;
                 }
             }
             // The tab in front has been seen; only background tabs keep a finished mark.
@@ -1583,7 +1588,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             }
 
             if let Some(saved) = &mut saved_window {
-                if let Err(error) = saved.save(&tabs, false) {
+                if let Err(error) = saved.save(&tabs, force_attention_save) {
                     tabs.active_mut()
                         .app
                         .flash(format!("Could not save open tabs: {error}"));

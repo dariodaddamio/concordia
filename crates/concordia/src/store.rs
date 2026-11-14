@@ -571,6 +571,17 @@ pub fn attention_notification_seen(root: &Path, item_id: &str) -> bool {
     get_settings(root).attention_notifications.contains(item_id)
 }
 
+pub fn interrupted_attention_notification_seen(root: &Path, item_id: &str) -> bool {
+    let Some((_, turn)) = item_id.split_once(":interrupted:turn:") else {
+        return false;
+    };
+    let suffix = format!(":turn:{turn}");
+    get_settings(root)
+        .attention_notifications
+        .iter()
+        .any(|seen| seen.ends_with(&suffix))
+}
+
 pub fn mark_attention_notification(root: &Path, item_id: &str) -> anyhow::Result<()> {
     modify_store(root, |store| {
         store

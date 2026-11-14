@@ -31,7 +31,7 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW},
+        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW},
         WindowsAndMessaging::*,
     },
 };
@@ -96,7 +96,7 @@ struct Shared {
     closing: AtomicBool,
     screen: Mutex<Screen>,
     requested_status: Mutex<StatusDot>,
-    pending_attention: Mutex<Option<(String, String)>>,
+    pending_attention: Mutex<VecDeque<(String, String)>>,
     attention_target: Mutex<Option<String>>,
     notifications_enabled: AtomicBool,
     attention_state_root: Option<std::path::PathBuf>,
@@ -208,7 +208,7 @@ fn open_with_sender(
             seq: 0,
         }),
         requested_status: Mutex::new(StatusDot::Idle),
-        pending_attention: Mutex::new(None),
+        pending_attention: Mutex::new(VecDeque::new()),
         attention_target: Mutex::new(None),
         notifications_enabled: AtomicBool::new(true),
         attention_state_root,
@@ -273,24 +273,31 @@ impl WindowBackend {
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_attention_notification(&mut self, item_id: String, text: String) {
-        if let Some(test) = self.shared.test_control.as_ref() {
-            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.notification_ids.insert(item_id.clone()) {
-                state.notification_count = state.notification_count.saturating_add(1);
-                state.notification_texts.push(text.clone());
-            }
-        }
-        *self
+        let mut pending = self
             .shared
             .pending_attention
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some((item_id, text));
+            .unwrap_or_else(|e| e.into_inner());
+        let already_targeted = self
+            .shared
+            .attention_target
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            == Some(item_id.as_str());
+        if !already_targeted && !pending.iter().any(|(id, _)| id == &item_id) {
+            pending.push_back((item_id, text));
+        }
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_notifications_enabled(&mut self, enabled: bool) {
         self.shared.notifications_enabled.store(enabled, Ordering::Release);
         if !enabled {
-            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.shared
+                .pending_attention
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         let _ = self.post(UPDATE);
@@ -610,7 +617,11 @@ impl Window {
     unsafe fn set_status(&mut self, hwnd: HWND, status: StatusDot) {
         let notifications_enabled = self.shared.notifications_enabled.load(Ordering::Acquire);
         if !notifications_enabled {
-            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.shared
+                .pending_attention
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
             if self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
@@ -622,28 +633,11 @@ impl Window {
             .pending_attention
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if self.shared.test_control.is_some() && pending.is_some() {
-            *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        }
+            .front()
+            .cloned();
         if self.status_dot == status {
             if status == StatusDot::NeedsAttention && !self.focused && notifications_enabled {
-                if let Some((id, text)) = pending.as_ref() {
-                    let target_is_free = self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()).is_none();
-                    if self.tray_added && !target_is_free {
-                        return;
-                    }
-                    if target_is_free {
-                        *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
-                    }
-                    if notify_tray(
-                        hwnd,
-                        if self.tray_added { NIM_MODIFY } else { NIM_ADD },
-                        Some(text),
-                    ) {
-                        self.attention_delivered(id);
-                    }
-                }
+                self.deliver_pending_attention(hwnd, pending.as_ref());
             } else if self.focused && self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
                 self.tray_added = false;
@@ -669,19 +663,7 @@ impl Window {
             taskbar_overlay(self.taskbar, hwnd, null_mut());
         }
         if status == StatusDot::NeedsAttention && !self.focused && notifications_enabled {
-            let Some((id, text)) = pending.as_ref() else {
-                return;
-            };
-            let target_is_free = self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()).is_none();
-            if self.tray_added && !target_is_free {
-                return;
-            }
-            if target_is_free {
-                *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
-            }
-            if notify_tray(hwnd, if self.tray_added { NIM_MODIFY } else { NIM_ADD }, Some(text)) {
-                self.attention_delivered(id);
-            }
+            self.deliver_pending_attention(hwnd, pending.as_ref());
         } else if status != StatusDot::NeedsAttention && self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
             self.tray_added = false;
@@ -689,8 +671,56 @@ impl Window {
         }
     }
 
-    unsafe fn attention_delivered(&mut self, item_id: &str) {
-        *self.shared.pending_attention.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    unsafe fn deliver_pending_attention(
+        &mut self,
+        hwnd: HWND,
+        pending: Option<&(String, String)>,
+    ) {
+        let Some((item_id, text)) = pending else {
+            return;
+        };
+        // Windows exposes one callback target for this window. Replace an older displayed
+        // balloon before showing the next distinct item so a later actionable item is not
+        // blocked indefinitely by the previous tray target.
+        if self.tray_added {
+            notify_tray(hwnd, NIM_DELETE, None);
+            self.tray_added = false;
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        let operation = NIM_ADD;
+        let delivered = self.shared.test_control.is_some()
+            || notify_tray(hwnd, operation, Some(text));
+        if delivered {
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(item_id.clone());
+            self.attention_delivered(item_id, text);
+        }
+    }
+
+    unsafe fn attention_delivered(&mut self, item_id: &str, text: &str) {
+        let mut pending = self
+            .shared
+            .pending_attention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if pending.front().is_some_and(|(id, _)| id == item_id) {
+            pending.pop_front();
+        }
+        drop(pending);
+        if let Some(test) = self.shared.test_control.as_ref() {
+            let mut state = test.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.notification_ids.insert(item_id.to_owned()) {
+                state.notification_count = state.notification_count.saturating_add(1);
+                state.notification_texts.push(text.to_owned());
+            }
+        }
         if let Some(root) = &self.shared.attention_state_root {
             let _ = crate::store::mark_attention_notification(root, item_id);
         }
@@ -1351,6 +1381,7 @@ unsafe fn handle_test_control(window: &mut Window) {
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                 {
+                    window.tray_added = false;
                     window.emit_native(NativeEvent::Attention(item_id));
                 }
             }

@@ -460,7 +460,10 @@ record answers and open proposals; they are not approved final product wording o
   foregrounding, then selects that chat and focuses the item. Closed, finished, cancelled or
   resolved worker-native items do not contribute to the status. `/config` can disable Windows
   notifications while retaining the taskbar status. Test-controlled windows emit neither tray nor
-  taskbar shell signals.
+  taskbar shell signals. When a restart restores an unfinished request without a live native
+  question panel, it is represented as one actionable interrupted-request item until the user
+  reviews or resumes it. Windows balloons are delivered serially while their shared tray click
+  target is live, because the shell callback does not identify queued balloons.
 - Reported regressions (2026-11-11, user reports, causes not yet inspected): attachment image
   previews render squished again; streamed reasoning text is joined without separators
   (for example, "Await again.All 107 scenarios passed").

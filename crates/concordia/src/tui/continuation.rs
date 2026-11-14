@@ -133,6 +133,12 @@ impl State {
             .map(crate::attachments::Message::text)
     }
 
+    pub(super) fn prompt_text(&self) -> Option<&str> {
+        self.prompt
+            .as_deref()
+            .map(crate::attachments::Message::text)
+    }
+
     pub(super) fn same_account_allowed(&self) -> bool {
         self.recovered || self.context_limited
     }

@@ -574,19 +574,24 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     );
     assert!(s.notification_texts()[0].contains("has a question for you"));
 
+    s.request(serde_json::json!({"op":"notification_click"}));
+    s.until("notification click opens the waiting item", |s| {
+        s.screen().contains("Choose the route") && s.screen().contains("Direct")
+    });
+    s.save_check(3);
+
     s.request(serde_json::json!({"op":"deactivate"}));
     s.request(serde_json::json!({"op":"activate"}));
     s.until("needs attention survives focus changes", |s| {
         s.status_dot() == "needs_attention"
     });
     assert_eq!(s.notification_count(), 1);
-    s.save_check(1);
     s.request(serde_json::json!({"op":"deactivate"}));
-    s.request(serde_json::json!({"op":"notification_click"}));
-    s.until("notification click opens the waiting item", |s| {
-        s.screen().contains("Choose the route") && s.screen().contains("Direct")
-    });
-    s.save_check(3);
+    s.request(serde_json::json!({"op":"activate"}));
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.request(serde_json::json!({"op":"activate"}));
+    assert_eq!(s.notification_count(), 1);
+    s.save_check(1);
 
     s.send("\x0e");
     s.until("needs attention panel lists the question details", |s| {
@@ -604,9 +609,11 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     s.enter();
     s.request(serde_json::json!({"op":"key","code":"1"}));
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
-    s.until("second item produces a second notification", |s| {
+    s.request(serde_json::json!({"op":"deactivate"}));
+    s.until("second item produces its notification", |s| {
         s.notification_count() == 2
     });
+    assert!(s.notification_texts()[1].contains("is waiting for approval"));
     std::thread::sleep(Duration::from_millis(120));
     s.request(serde_json::json!({"op":"key","code":"Esc"}));
     std::thread::sleep(Duration::from_millis(120));
@@ -621,12 +628,54 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     s.until("app-server turn is idle", |s| s.status_dot() == "idle");
     s.save_check(4);
     s.save_check(6);
+    // Let the periodic tab snapshot record that the resolved item is no longer actionable.
+    std::thread::sleep(Duration::from_millis(1200));
     drop(s);
     let mut s = Session::launch(dir.path());
     s.until("resolved attention stays idle after restart", |s| {
         s.status_dot() == "idle"
     });
     s.exit();
+}
+
+#[test]
+fn outstanding_attention_is_not_notified_again_after_restart() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    concordia::native_input::command(dir.path(), "codex", "on").unwrap();
+    std::fs::write(
+        dir.path().join("workspace/appserver-fixture.json"),
+        serde_json::json!({
+            "question": true,
+            "finish_wait_for": "../gate"
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut first = Session::launch(dir.path());
+    first.submit("Restart with this question outstanding");
+    first.until("first process delivers one notification", |s| {
+        s.notification_count() == 1
+    });
+    assert!(
+        first.notification_texts()[0].contains("has a question for you"),
+        "notification text: {:?}",
+        first.notification_texts()
+    );
+    drop(first);
+
+    let mut restarted = Session::launch(dir.path());
+    restarted.until("restart restores the outstanding conversation", |s| {
+        s.screen().contains("Saved conversation kept")
+    });
+    restarted.until("restart restores outstanding attention", |s| {
+        s.status_dot() == "needs_attention"
+    });
+    assert_eq!(restarted.notification_count(), 0);
+    restarted.save_check(1);
+    restarted.exit();
 }
 
 #[test]

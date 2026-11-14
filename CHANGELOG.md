@@ -1,5 +1,28 @@
 # Changelog
 
+### Fixed (2026-11-13ay)
+
+- Keep one attention item from notifying again as an interrupted request after restart, and
+  continue delivering later actionable notifications while an earlier balloon is present.
+
+### Fixed (2026-11-13ax)
+
+- Restore unfinished requests in Needs attention after restart and serialize Windows balloons so
+  each queued notification keeps its own click target.
+
+### Fixed (2026-11-13aw)
+
+- Deliver each distinct actionable Needs attention item even when another notification tray icon remains present.
+
+### Fixed (2026-11-13av)
+
+- Keep one native notification click target and queue later actionable items until it is cleared.
+- Count test-control notifications only at the suppressed delivery point.
+
+### Fixed (2026-11-13au)
+
+- Deliver each actionable Needs attention item even when an earlier notification is still shown.
+
 ### Fixed (2026-11-13at)
 
 - Keep the command catalog current and route MCP stdio servers through Concordia's process helper.

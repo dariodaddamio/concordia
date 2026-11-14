@@ -34,6 +34,14 @@
 | `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 9, 10 | Extend the existing native journey for visible status, chat/action text, resolution and config behavior; test-controlled windows remain blocked from shell signals. |
 | `crates/concordia/src/version.rs`, `CHANGELOG.md`, `PLAN.md` | ok: 5, 10 | Record the decision and user-facing correction in existing project metadata. |
 
+### Q7 notifications review repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_window.rs` | ok: 1, 4, 5, 6, 10 | Keep tray delivery and click-target ownership in the native window; replace only the stale target guard so each durable item can be delivered. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Retain the existing native journey as the observable notification boundary; do not add a test-only production path. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 5, 10 | Record the focused user-facing repair under the required build identity. |
+
 ### Q9 test regression - anti-slop gate
 
 | path | tendency_check | justification |
@@ -99,6 +107,7 @@
 | crates/concordia/src/tui/persist.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 6, 10 | Keep recovery ownership in the existing persistence owner and make every live tab claim it before window snapshots. |
 | crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 10 | Let the existing composer own typed characters before interpreting the non-focused update notice shortcut. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+
 ### Y1 review-2 repairs - anti-slop gate
 
 | path | tendency_check | justification |
@@ -142,3 +151,20 @@
 | ---- | -------------- | ------------- |
 | README.md | ok: 5, 10 | Synchronize the generated command table with the existing `/terminal native` command; no new command surface. |
 | crates/concordia/src/mcp.rs | ok: 1, 4, 5, 10 | Route existing MCP child launches through the canonical process helper; no new process owner or transport behavior. |
+
+### Y4b notification delivery repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 6, 9, 10 | Keep the native window as the sole tray and click-target owner; queue only the existing item records and suppress shell delivery for test-controlled windows. |
+| crates/concordia/tests/tui_journeys.rs | ok: 4, 9 | Strengthen the existing native journey at the real delivery and restart boundaries; no fake provider or production test branch is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+
+### Y4b review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/needs_you.rs, crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 6, 10 | Project the existing durable interrupted-request checkpoint into the existing Needs attention queue; do not add a second persistence store. |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 6, 10 | Keep one native tray target and serialize balloon delivery until the target is consumed because Windows does not identify queued balloons in the callback. |
+| crates/concordia/tests/tui_journeys.rs | ok: 5, 9, 10 | Extend the real native journey to cover restart restoration and queued click targeting. |
+| crates/concordia/src/version.rs, CHANGELOG.md, PLAN.md | ok: 5, 10 | Record the review repair and the Needs attention decision in existing project metadata. |
