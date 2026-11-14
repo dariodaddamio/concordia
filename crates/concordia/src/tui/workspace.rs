@@ -22,6 +22,8 @@ struct Snapshot {
     stamp: Stamp,
     text: String,
     colors: syntax::Runs,
+    formatted: Option<String>,
+    preview_error: Option<String>,
 }
 type ReadJob = std::thread::JoinHandle<Result<Snapshot, String>>;
 type WatchJob = std::thread::JoinHandle<Vec<(u32, u64, Option<Stamp>)>>;
@@ -37,6 +39,7 @@ fn read_snapshot(path: &Path) -> Result<Snapshot, String> {
     let text = read_text(path)?;
     let lines = display_lines(&text)?;
     let colors = syntax::highlight(path, &text);
+    let (formatted, preview_error) = edit::preview_text(path, &text);
     if stamp(path) != Some(before) {
         return Err("file changed while reading; press r to reload".into());
     }
@@ -45,7 +48,20 @@ fn read_snapshot(path: &Path) -> Result<Snapshot, String> {
         stamp: before,
         text,
         colors,
+        formatted,
+        preview_error,
     })
+}
+
+fn raster_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
+            )
+        })
 }
 
 pub(super) struct Pane {
@@ -264,8 +280,11 @@ impl Workspace {
 
     pub fn preview(&mut self, id: u32, formatted: bool) {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
-            edit::refresh_preview(pane);
-            pane.formatted_mode = formatted;
+            if pane.formatted.is_some() {
+                pane.formatted_mode = formatted;
+                pane.scroll = 0;
+                pane.column = 0;
+            }
         }
     }
     fn reset_cuts(&mut self) {
@@ -321,14 +340,27 @@ impl Workspace {
         let job = std::thread::Builder::new()
             .name("concordia-file-read".into())
             .spawn(move || {
+                if raster_path(&path) {
+                    return Ok(Snapshot {
+                        lines: Vec::new(),
+                        stamp: stamp(&path).ok_or("file is unavailable")?,
+                        text: String::new(),
+                        colors: Vec::new(),
+                        formatted: None,
+                        preview_error: None,
+                    });
+                }
                 if let Some((text, stamp)) = text {
                     let lines = display_lines(&text)?;
                     let colors = syntax::highlight(&path, &text);
+                    let (formatted, preview_error) = edit::preview_text(&path, &text);
                     Ok(Snapshot {
                         lines,
                         stamp,
                         text,
                         colors,
+                        formatted,
+                        preview_error,
                     })
                 } else {
                     read_snapshot(&path)
@@ -502,7 +534,22 @@ impl Workspace {
 }
 
 impl Pane {
+    fn csv_formatted(&self) -> bool {
+        self.formatted_mode
+            && self.formatted.is_some()
+            && self.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+    }
     fn measure_columns(&mut self) -> usize {
+        if self.csv_formatted() {
+            return self
+                .formatted
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .map(|line| line.chars().map(crate::file_document::display_width).sum())
+                .max()
+                .unwrap_or(0);
+        }
         if let Some(doc) = &self.document {
             if self
                 .horizontal_measure
@@ -560,7 +607,11 @@ impl Pane {
     }
 
     fn row_count(&self) -> usize {
-        if self.formatted_mode && self.formatted.is_some() {
+        if self.csv_formatted() {
+            self.formatted
+                .as_deref()
+                .map_or(0, |text| text.lines().count())
+        } else if self.formatted_mode && self.formatted.is_some() {
             self.view.rows.len()
         } else {
             self.document
@@ -629,7 +680,6 @@ impl Pane {
         }
     }
     fn toggle_mode(&mut self) {
-        edit::refresh_preview(self);
         if self.formatted.is_some() {
             self.formatted_mode = !self.formatted_mode;
             self.scroll = 0;
@@ -792,6 +842,15 @@ pub(super) fn draw_in(f: &mut Frame, app: &mut App, screen: Rect) -> Rect {
             state.editor.error.as_ref(),
         );
     }
+    let raster_panes = state
+        .panes
+        .iter()
+        .filter(|pane| !pane.detached)
+        .map(|pane| (pane.area, pane.path.clone()))
+        .collect::<Vec<_>>();
+    for (area, path) in raster_panes {
+        crate::tui::raster::draw_file_pane(f, area, app, &path);
+    }
     chat
 }
 
@@ -810,6 +869,16 @@ fn draw_pane(
     } else {
         Color::DarkGray
     });
+    let raster = pane
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
+            )
+        });
     let title = format!(
         " #{} {}{} · {} ",
         pane.id,
@@ -819,7 +888,7 @@ fn draw_pane(
             ""
         },
         pane.path.file_name().unwrap_or_default().to_string_lossy(),
-        if pane.raw() { "raw" } else { "preview" }
+        if pane.raw() && !raster { "raw" } else { "preview" }
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -866,7 +935,7 @@ fn draw_pane(
     );
     inner.y += 1;
     inner.height = inner.height.saturating_sub(1);
-    if pane.raw() && !pane.loading {
+    if (pane.raw() || pane.csv_formatted()) && !pane.loading {
         let gutter = if pane.document.is_some() { 5 } else { 0 };
         let width = inner.width.saturating_sub(gutter).max(1);
         pane.horizontal_max = pane.measure_columns().saturating_sub(usize::from(width));
@@ -882,6 +951,16 @@ fn draw_pane(
         vec![Line::raw("Loading…")]
     } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
         vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
+    } else if pane.csv_formatted() {
+        pane.scroll = pane.scroll.min(pane.row_count().saturating_sub(1));
+        pane.formatted
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .skip(pane.scroll)
+            .take(inner.height as usize)
+            .map(|line| Line::raw(crate::file_document::visible_line(line, pane.column, inner.width as usize)))
+            .collect()
     } else if pane.formatted_mode && pane.formatted.is_some() {
         pane.view.link_root = pane.path.parent().map(Path::to_path_buf);
         pane.view.rebuild(
@@ -989,7 +1068,7 @@ fn draw_pane(
                 error.clone()
             } else if pane.searching {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
-            } else if pane.raw() {
+            } else if pane.raw() || pane.csv_formatted() {
                 if pane.detached {
                     "Ctrl+Shift+D dock · Ctrl+S save · Ctrl+F find".into()
                 } else if standalone {
@@ -1197,7 +1276,7 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
         .workspace
         .panes
         .iter_mut()
-        .find(|pane| pane.raw() && contains(pane.area, mouse.column, mouse.row))
+        .find(|pane| (pane.raw() || pane.csv_formatted()) && contains(pane.area, mouse.column, mouse.row))
     {
         let forward = match mouse.kind {
             MouseEventKind::ScrollRight => Some(true),

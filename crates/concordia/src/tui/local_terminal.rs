@@ -483,9 +483,12 @@ pub(super) fn command(app: &mut App, args: &str) {
     match args.trim() {
         "" | "open" => app.local_terminal.show(&app.cwd),
         "native" => native_controls(app),
+        "help" => app.flash(
+            "/terminal open shows the local shell; native opens the selected provider's own interface in a separate session; hide keeps it running; close stops it",
+        ),
         "hide" => app.local_terminal.view = View::Chat,
         "close" => app.local_terminal.stop(),
-        _ => app.flash("usage: /terminal [open|native|hide|close]"),
+        _ => app.flash("usage: /terminal [open|native|help|hide|close]"),
     }
 }
 
@@ -509,6 +512,9 @@ pub(super) fn native_controls(app: &mut App) {
                 program = native.program;
                 env = native.env;
             }
+            // Start the provider's documented interactive interface. Codex versions
+            // that use a daemon choose that transport internally; --no-daemon is not
+            // accepted by the installed interactive CLI.
         }
         if crate::provider::launch::is_batch_shim(&program.to_string_lossy()) {
             if let Some((node, script)) =
@@ -516,20 +522,13 @@ pub(super) fn native_controls(app: &mut App) {
             {
                 program = node;
                 args.push(script.into_os_string());
-            } else if app.provider == ProviderKind::Cursor {
-                let script =
-                    crate::provider::launch::cursor_ps1_beside(&program).ok_or_else(|| {
-                        anyhow::anyhow!("Cursor's native PowerShell launcher is unavailable")
-                    })?;
-                program = which::which("pwsh.exe").or_else(|_| which::which("powershell.exe"))?;
-                args.extend([
-                    "-NoLogo".into(),
-                    "-NoProfile".into(),
-                    "-File".into(),
-                    script.into_os_string(),
-                ]);
             } else {
-                anyhow::bail!("Native controls need a native executable or a verified npm launcher; this batch launcher is unsupported");
+                // Windows installs for opencode and the other CLIs can be published as
+                // .cmd shims. Run the selected shim in cmd.exe without changing the
+                // provider's arguments or account environment.
+                let shim = program;
+                program = which::which("cmd.exe")?;
+                args.extend(["/d".into(), "/c".into(), shim.into_os_string()]);
             }
         }
         let mut command = CommandBuilder::new(program);
@@ -545,14 +544,18 @@ pub(super) fn native_controls(app: &mut App) {
                     command.env(key, home);
                 }
             }
-            // opencode reads its own configuration; no per-account home variable is set here.
-            ProviderKind::Opencode => {}
-            ProviderKind::Cursor => {
-                let auth = crate::provider::cursor::account_auth(app.home_path.as_deref())?;
-                for key in auth.env_remove {
-                    command.env_remove(key);
+            ProviderKind::Opencode => {
+                if let Some(home) = &app.home_path {
+                    command.env("OPENCODE_HOME", home);
                 }
-                env.extend(auth.env);
+            }
+            ProviderKind::Cursor => {
+                if let Ok(auth) = crate::provider::cursor::account_auth(app.home_path.as_deref()) {
+                    for key in auth.env_remove {
+                        command.env_remove(key);
+                    }
+                    env.extend(auth.env);
+                }
             }
         }
         for (key, value) in env {
@@ -814,7 +817,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Rect::new(area.x, area.y, area.width, 1),
     );
     let hint = app.local_terminal.notice.as_deref().unwrap_or(
-        "F11 / Ctrl+` chat | Ctrl+C interrupt | Shift+PgUp/PgDn scroll | Ctrl+Shift+W stop shell",
+        "F11 / Ctrl+` chat | /terminal native provider UI | /terminal help | Ctrl+C interrupt | Shift+PgUp/PgDn scroll | Ctrl+Shift+W stop shell",
     );
     frame.render_widget(Paragraph::new(hint), footer);
 }

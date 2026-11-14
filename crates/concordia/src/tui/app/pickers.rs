@@ -786,7 +786,7 @@ impl App {
     }
 
     pub(in crate::tui) fn open_provider_picker(&mut self) {
-        let rows = crate::accounts::accounts_with_auth(&self.state_root)
+        let rows = crate::accounts::setup_accounts(&self.state_root)
             .into_iter()
             .filter_map(|account| {
                 let home = account.home_path?;
@@ -800,7 +800,14 @@ impl App {
                         account.provider.as_str(),
                         self.named_account(account.provider, &account.account)
                     ),
-                    detail: snap.used_left_text(),
+                    detail: if crate::accounts::accounts_with_auth(&self.state_root)
+                        .iter()
+                        .any(|signed_in| signed_in.account == account.account)
+                    {
+                        snap.used_left_text()
+                    } else {
+                        "not connected · native login available".into()
+                    },
                 })
             })
             .collect();

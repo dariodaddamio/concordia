@@ -3,6 +3,7 @@ use super::*;
 use image::ImageDecoder;
 use ratatui::widgets::Wrap;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -53,6 +54,7 @@ impl State {
     }
     pub fn close(&mut self) {
         self.view = None;
+        self.native_draws.borrow_mut().clear();
         if let Some(job) = &self.job {
             job.cancelled.store(true, Ordering::Relaxed);
         }
@@ -136,6 +138,9 @@ fn decode(
     let pdf = path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    let svg = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
     let bytes = if pdf {
         use std::io::Read;
         let mut bytes = Vec::new();
@@ -148,8 +153,19 @@ fn decode(
             return Err("PDF preview limit is 8 MiB".into());
         }
         bytes
+    } else if svg {
+        crate::attachments::read_svg(path)?
     } else {
-        crate::attachments::read(path)?
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| format!("Image file unavailable: {e}"))?
+            .take(crate::attachments::MAX_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("Image file read failed: {e}"))?;
+        if bytes.len() > crate::attachments::MAX_BYTES {
+            return Err("Image preview limit is 4 MiB".into());
+        }
+        bytes
     };
     let hash = format!("{:x}", Sha256::digest(&bytes));
     if expected.is_some_and(|expected| expected != hash) {
@@ -174,10 +190,7 @@ fn decode(
     let (image, pages) = if pdf {
         let (pixels, pages) = documents::pdf(&bytes, page)?;
         (image::DynamicImage::ImageRgba8(pixels), pages)
-    } else if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
-    {
+    } else if svg {
         (image::DynamicImage::ImageRgba8(documents::svg(&bytes)?), 1)
     } else {
         let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
@@ -226,6 +239,10 @@ impl App {
     pub(super) fn start_raster(&mut self, path: PathBuf, expected: Option<String>) {
         self.start_raster_mode(path, expected, false, 0);
     }
+
+    pub(super) fn start_raster_in_pane(&mut self, path: PathBuf) {
+        self.start_raster_mode(path, None, true, 0);
+    }
     pub(super) fn ensure_inline_raster(&mut self) {
         if self.raster.active() {
             return;
@@ -254,7 +271,11 @@ impl App {
                 .iter()
                 .any(|item| matches!(item, crate::attachments::Attachment::Image(_)))
             {
-                self.raster.close();
+                // A file-pane preview also uses the raster worker, but it is not an
+                // inline composer thumbnail. Keep it alive when the draft has no images.
+                if self.raster.view.as_ref().is_some_and(|view| view.inline) {
+                    self.raster.close();
+                }
             }
             return;
         };
@@ -276,11 +297,8 @@ impl App {
         page: u32,
     ) {
         self.raster.poll();
-        if self.raster.job.is_some() {
-            if !inline {
-                self.flash("An image preview is still finishing; try shortly");
-            }
-            return;
+        if let Some(job) = self.raster.job.take() {
+            job.cancelled.store(true, Ordering::Relaxed);
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -314,7 +332,16 @@ impl App {
     }
 }
 pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
-    if !app.raster.active() {
+    if app.raster.view.is_none() {
+        return false;
+    }
+    let inline = app.raster.view.as_ref().is_some_and(|view| view.inline);
+    if inline
+        && !matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown
+        )
+    {
         return false;
     }
     if worker_input::active(app) {
@@ -346,7 +373,7 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
                 (view.page + 1).min(pages.saturating_sub(1))
             };
             if page != view.page {
-                app.start_raster_mode(view.path.clone(), view.snapshot.clone(), false, page);
+                app.start_raster_mode(view.path.clone(), view.snapshot.clone(), inline, page);
             }
         }
         KeyCode::Char('e' | 'E') => {
@@ -374,7 +401,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     app.raster.native_draws.borrow_mut().clear();
     let area = f.area();
     f.render_widget(Clear, area);
-    let block = Block::bordered().title(" Image preview · Esc back · E system viewer ");
+    let block = Block::bordered().title(" File preview | Esc back | E system viewer ");
     let inner = block.inner(area);
     f.render_widget(block, area);
     if let Some(rect) = modal::draw_close_button(f, area) {
@@ -414,7 +441,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         thumb.height,
         &thumb.hash[..12],
         if thumb.pages > 1 {
-            format!("Page {} / {} ? ?/? change page", view.page + 1, thumb.pages)
+            format!("Page {} / {} | Left/Right or PgUp/PgDn", view.page + 1, thumb.pages)
         } else {
             "preview".into()
         }
@@ -427,6 +454,73 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             ..inner
         },
     );
+}
+
+pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) {
+    let Some(view) = &app.raster.view else { return };
+    if !view.inline || !same_preview_path(&view.path, path) || area.width < 3 || area.height < 4 {
+        return;
+    }
+    let content = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(2),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(4),
+    };
+    f.render_widget(Clear, content);
+    let Some(result) = &view.result else {
+        f.render_widget(Paragraph::new("Preparing bounded file preview..."), content);
+        return;
+    };
+    let thumb = match result {
+        Ok(thumb) => thumb,
+        Err(error) => {
+            f.render_widget(
+                Paragraph::new(error.as_str()).wrap(Wrap { trim: false }),
+                content,
+            );
+            return;
+        }
+    };
+    // File panes must remain visible in both the native window and the text-grid
+    // capture path. The dedicated full-screen/composer image paths may use native
+    // blits, but a pane owns its cell content and renders it directly.
+    paint(f, content, thumb, app.no_color);
+    f.render_widget(
+        Paragraph::new(format!("Image preview · {} × {}", thumb.width, thumb.height))
+            .style(Style::default().fg(Color::DarkGray)),
+        Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            height: 1,
+        },
+    );
+    if thumb.pages > 1 {
+        f.render_widget(
+            Paragraph::new(format!(
+                "Page {} / {} | Left/Right or PgUp/PgDn",
+                view.page + 1,
+                thumb.pages
+            )),
+            Rect {
+                x: area.x + 1,
+                y: area.bottom().saturating_sub(2),
+                width: area.width.saturating_sub(2),
+                height: 1,
+            },
+        );
+    }
+}
+
+fn same_preview_path(left: &Path, right: &Path) -> bool {
+    fn normalized(path: &Path) -> String {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+    normalized(left) == normalized(right)
 }
 
 #[cfg(test)]
@@ -552,19 +646,12 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
             if area.is_empty() || area.intersection(f.area()) != area {
                 return None;
             }
-            for y in area.y..area.bottom() {
-                for x in area.x..area.right() {
-                    let cell = &f.buffer_mut()[(x, y)];
-                    let marker = cell.symbol() == " "
-                        && cell.fg == super::theme::image_marker()
-                        && cell.bg == super::theme::image_marker();
-                    let fallback = cell.symbol() == "▀"
-                        && matches!(cell.fg, Color::Rgb(..))
-                        && matches!(cell.bg, Color::Rgb(..));
-                    if !marker && !fallback {
-                        return None;
-                    }
-                }
+            let cleared = (area.y..area.bottom()).all(|y| {
+                (area.x..area.right())
+                    .all(|x| f.buffer_mut()[(x, y)].symbol().trim().is_empty())
+            });
+            if cleared {
+                return None;
             }
             Some(super::native_window::RasterImage {
                 area,

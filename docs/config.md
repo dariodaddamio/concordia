@@ -85,6 +85,14 @@ explicitly; queued work stays paused until resumed.
 
 ## Internal file panes and terminal editor
 
+File panes preview UTF-8 Markdown, JSON and CSV files in a formatted view. CSV columns are
+aligned and can be scrolled vertically and horizontally. PNG, SVG and other supported raster
+files and PDF pages use the bounded background preview; PDF pages show their current page number
+and accept Left/Right or PageUp/PageDown. Invalid or oversized files remain in the pane with an
+explanatory message.
+Use `/terminal native` to open the selected provider's own interactive interface in a separate
+terminal session, including opencode.
+
 Click an underlined file reference in a sent user message or assistant reply to open it in an
 internal file pane; a drag still selects transcript text. Alt+click also previews. Paths can
 include a line/column (`src/main.rs:12:3`) or Markdown line fragment (`#L12`). Markdown labels

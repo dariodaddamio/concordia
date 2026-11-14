@@ -113,3 +113,11 @@
 | crates/concordia/src/tui/questions.rs | ok: 1, 4, 5, 10 | Keep choice navigation at the existing question input owner; exclude the optional note action from End without adding popup state. |
 | crates/concordia/src/tui/native_window.rs | ok: 1, 4, 5, 9 | Record timing after the existing surface commit so the test channel reports the frame actually shown; no production render path is added. |
 | CHANGELOG.md, crates/concordia/src/version.rs | ok: 10 | Record the review correction and advance the required build identity. |
+
+### X6 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/attachments.rs, crates/concordia/src/tui/raster.rs | ok: 1, 2, 4, 5, 10 | Extend the existing bounded raster reader for SVG instead of routing documents through the image-only validator. |
+| crates/concordia/src/tui/{workspace.rs,workspace_edit.rs} | ok: 1, 4, 5, 6, 10 | Keep formatting in the existing file-read worker, use the existing pane scroll state for CSV rows and columns, and remove duplicate UI-thread formatting. |
+| crates/concordia/src/tui/{local_terminal.rs,app/pickers.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep native launch and provider selection in their existing owners; use the same command path for every provider and expose unconnected native-login rows without adding a second terminal surface. |

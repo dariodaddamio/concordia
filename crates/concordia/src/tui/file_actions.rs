@@ -139,7 +139,12 @@ impl App {
                         "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
                     )
                 }) {
-                    self.start_raster(file.path, None);
+                    let path = file.path.clone();
+                    if let Err(error) = self.workspace.open(file) {
+                        self.flash(error);
+                        return false;
+                    }
+                    self.start_raster_in_pane(path);
                     return true;
                 }
                 let path = file.path.clone();

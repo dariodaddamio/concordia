@@ -306,6 +306,10 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     Ok(data)
 }
 
+pub(crate) fn read_svg(path: &Path) -> Result<Vec<u8>, String> {
+    read_regular(path, MAX_BYTES, "SVG")
+}
+
 fn read_regular(path: &Path, limit: usize, kind: &str) -> Result<Vec<u8>, String> {
     if crate::workspace_paths::sensitive(path) {
         return Err(format!("{kind} is excluded by workspace policy"));

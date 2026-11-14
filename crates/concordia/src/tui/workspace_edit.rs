@@ -283,9 +283,6 @@ fn restore(ws: &mut Workspace) {
         if let Some(d) = &mut pane.document {
             d.move_to(draft.cursor.0, draft.cursor.1);
         }
-        if recovered {
-            refresh_preview(&mut pane);
-        }
         {
             let path = draft.path;
             match std::thread::Builder::new()
@@ -497,33 +494,22 @@ pub(super) fn poll(ws: &mut Workspace) -> bool {
     visible_change
 }
 
-pub(super) fn refresh_preview(p: &mut Pane) {
-    let Some(doc) = &p.document else { return };
-    let source = text::terminal_text(doc.text()).0;
-    p.formatted = match p
-        .path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("md" | "markdown" | "mdx") => Some(source),
-        Some("csv") => match csv_preview(&source) {
-            Ok(table) => Some(table),
-            Err(error) => {
-                p.error = Some(format!(
-                    "CSV preview: {error}; raw editing remains available"
-                ));
-                None
-            }
-        },
-        Some("json") => {
-            serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
-                .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
-        }
-        _ => None,
+pub(super) fn preview_text(path: &Path, source: &str) -> (Option<String>, Option<String>) {
+    let result = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("md" | "markdown" | "mdx") => Ok(Some(source.to_owned())),
+        Some("csv") => csv_preview(source)
+            .map(Some)
+            .map_err(|error| error.to_string()),
+        Some("json") => serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
+            .map_err(|error| error.to_string())
+            .and_then(|value| serde_json::to_string_pretty(&value).map_err(|error| error.to_string()))
+            .map(Some),
+        _ => Ok(None),
     };
+    match result {
+        Ok(formatted) => (formatted, None),
+        Err(error) => (None, Some(format!("Formatted preview unavailable: {error}"))),
+    }
 }
 
 fn csv_preview(source: &str) -> Result<String, csv::Error> {
@@ -533,42 +519,49 @@ fn csv_preview(source: &str) -> Result<String, csv::Error> {
         .from_reader(source.trim_start_matches('\u{feff}').as_bytes());
     let records = reader.records().collect::<Result<Vec<_>, _>>()?;
     let columns = records.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut cells = Vec::with_capacity(records.len());
+    for record in &records {
+        cells.push((0..columns).map(|column| preview_cell(record.get(column).unwrap_or(""))).collect::<Vec<_>>());
+    }
+    let widths = (0..columns)
+        .map(|column| {
+            cells
+                .iter()
+                .map(|row| row[column].chars().map(crate::file_document::display_width).sum())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
     let mut table = String::new();
-    for start in (0..columns).step_by(16) {
-        let end = (start + 16).min(columns);
-        let displayed = (end - start).max(2);
-        if columns > 16 {
-            table.push_str(&format!("Columns {}?{}\n\n", start + 1, end));
-        }
-        for (index, record) in records.iter().enumerate() {
+    for row in cells {
+        table.push('|');
+        for (column, cell) in row.into_iter().enumerate() {
+            table.push(' ');
+            table.push_str(&cell);
+            let cell_width = cell.chars().map(crate::file_document::display_width).sum();
+            table.push_str(&" ".repeat(widths[column].saturating_sub(cell_width) + 1));
             table.push('|');
-            for column in start..start + displayed {
-                table.push(' ');
-                for character in record.get(column).unwrap_or("").chars() {
-                    match character {
-                        '\\' | '|' | '`' | '*' | '_' | '[' | ']' | '<' | '>' => {
-                            table.push('\\');
-                            table.push(character);
-                        }
-                        '\n' => table.push_str(" ↵ "),
-                        '\r' => {}
-                        _ => table.push(character),
-                    }
-                }
-                table.push_str(" |");
-            }
-            table.push('\n');
-            if index == 0 {
-                table.push('|');
-                for _ in 0..displayed {
-                    table.push_str(" --- |");
-                }
-                table.push('\n');
-            }
         }
         table.push('\n');
     }
     Ok(table)
+}
+
+fn preview_cell(value: &str) -> String {
+    let mut cell = value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\r' | '\t' => ' ',
+            character if character.is_control() => '�',
+            character => character,
+        })
+        .collect::<String>();
+    const MAX_CELL: usize = 80;
+    if cell.chars().count() > MAX_CELL {
+        cell = cell.chars().take(MAX_CELL - 1).collect();
+        cell.push('…');
+    }
+    cell
 }
 
 pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
@@ -601,7 +594,10 @@ pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
     } else {
         u64::MAX
     };
-    refresh_preview(p);
+    p.formatted = snapshot.formatted;
+    if let Some(error) = snapshot.preview_error {
+        p.error = Some(error);
+    }
     if p.formatted.is_none() {
         p.formatted_mode = false;
     }

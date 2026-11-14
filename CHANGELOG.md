@@ -1,5 +1,18 @@
 # Changelog
 
+- Keep file-pane raster previews and their error messages visible, show PDF page controls,
+  prevent modal image repainting, and make `/terminal help` describe native provider sessions.
+
+- Correct binary file previews and prevent native image layers from covering shortcut and modal
+  overlays. Codex native terminal sessions disable the shared daemon.
+
+- Keep raster file previews inside file panes, align CSV columns by terminal width, preserve
+  native image repainting across resize, and pass selected provider homes to native terminals.
+
+- File previews prepare formatted documents off the UI thread, render SVG files, align large CSV
+  files with bounded cells, show clearer raster/PDF controls, and `/terminal native` supports
+  every provider, including unconnected native-login accounts.
+
 ### Fixed (2026-11-13aj)
 
 - Make End select the final question option and record the committed native frame when measuring

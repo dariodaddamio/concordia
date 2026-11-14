@@ -128,6 +128,14 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     }
     if app.key_sheet {
         draw_key_sheet(f, app);
+        // Native image blits are submitted after the ratatui frame. Do not let an
+        // inline image repaint over the shortcut sheet.
+        raster::begin_frame(app);
+    }
+    if app.picker.is_some() || app.activity.detail.is_some() {
+        // The same rule applies to picker and activity overlays. Their Clear widgets
+        // only affect the cell buffer, while the native image layer is submitted later.
+        raster::begin_frame(app);
     }
     // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {
@@ -352,6 +360,8 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
         ("Ctrl+E", "open full activity detail"),
         ("F5", "toggle full activity"),
         ("F1 / ?", "open this shortcut sheet"),
+        ("/terminal native", "open the selected provider's native UI in a separate session"),
+        ("/terminal help", "show terminal modes and native-provider controls"),
     ] {
         lines.push(Line::from(format!("  {key:<14} {description}")));
     }
