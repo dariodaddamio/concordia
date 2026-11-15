@@ -290,6 +290,11 @@ pub struct Landing {
     provider_health: Vec<(crate::store::ProviderKind, bool)>,
     from_chat: bool,
     all_sessions: Vec<SessionSummary>,
+    /// Sessions the default view hides. Counted once when the sessions are loaded: the count
+    /// needs a filesystem lookup per session and must never run while drawing a frame.
+    hidden_total: usize,
+    /// Chat titles for `groups`, with the time they were resolved.
+    titles_cache: Option<(std::time::Instant, Vec<String>, Vec<Vec<String>>)>,
     show_all: bool,
     pub(crate) hidden_temp_root: Option<PathBuf>,
     groups: Vec<ChatGroup>,
@@ -366,6 +371,11 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
 pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
     if let Some(landing) = app.landing.as_mut() {
         landing.hidden_temp_root = Some(root);
+        landing.hidden_total = hidden_count(
+            &landing.all_sessions,
+            &app.cwd,
+            landing.hidden_temp_root.as_deref(),
+        );
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
@@ -476,7 +486,9 @@ fn open_with_mode(
         welcome,
         provider_health: crate::doctor::fast_provider_status(),
         from_chat,
+        hidden_total: hidden_count(&sessions, &app.cwd, hidden_temp_root.as_deref()),
         all_sessions: sessions,
+        titles_cache: None,
         show_all: false,
         hidden_temp_root,
         groups,
@@ -773,11 +785,7 @@ fn next(selected: usize, count: usize) -> usize {
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     if let Some(landing) = app.landing.as_ref() {
         let label = landing.pane == Pane::Chats
-            && hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            ) > 0
+            && landing.hidden_total > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
                 let start = app.footer_left[..byte_start].chars().count() as u16;
                 y == app.areas.footer.y && x >= start && x < app.footer_left.chars().count() as u16
@@ -820,11 +828,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
     let footer_label = landing.pane == Pane::Chats
-        && hidden_count(
-            &landing.all_sessions,
-            &app.cwd,
-            landing.hidden_temp_root.as_deref(),
-        ) > 0
+        && landing.hidden_total > 0
         && inside(app.areas.footer)
         && m.row == app.areas.footer.y
         && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -1096,18 +1100,8 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             landing.hint()
         }
         .to_string();
-        if landing.pane == Pane::Chats
-            && hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            ) > 0
-        {
-            let hidden = hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            );
+        if landing.pane == Pane::Chats && landing.hidden_total > 0 {
+            let hidden = landing.hidden_total;
             if landing.show_all {
                 app.footer_left.push_str(" · h hide");
             } else {
@@ -1120,15 +1114,56 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let titles: Vec<Vec<String>> = app
+    // A chat title is resolved from the account store and the title file on disk. Resolve the
+    // visible titles at most every two seconds, never once per frame.
+    // The key is the listed session ids in order, so any change to the list re-resolves at once.
+    let titles_key: Vec<String> = app
         .landing
         .as_ref()
         .map(|l| {
             l.groups
                 .iter()
-                .map(|g| g.sessions.iter().map(|s| chat_title(app, s)).collect())
+                .enumerate()
+                .flat_map(|(index, group)| {
+                    group
+                        .sessions
+                        .iter()
+                        .map(move |session| format!("{index}|{}", session.session_id))
+                })
                 .collect()
         })
+        .unwrap_or_default();
+    let titles_stale = app.landing.as_ref().is_some_and(|l| {
+        l.titles_cache.as_ref().is_none_or(|(at, key, _)| {
+            at.elapsed() >= std::time::Duration::from_secs(2) || *key != titles_key
+        })
+    });
+    if titles_stale {
+        // One account lookup per account, not per chat: each lookup loads the account store.
+        let mut homes = std::collections::HashMap::new();
+        let fresh: Vec<Vec<String>> = app
+            .landing
+            .as_ref()
+            .map(|l| {
+                l.groups
+                    .iter()
+                    .map(|g| {
+                        g.sessions
+                            .iter()
+                            .map(|s| chat_title(app, s, &mut homes))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(landing) = app.landing.as_mut() {
+            landing.titles_cache = Some((std::time::Instant::now(), titles_key, fresh));
+        }
+    }
+    let titles: Vec<Vec<String>> = app
+        .landing
+        .as_ref()
+        .and_then(|l| l.titles_cache.as_ref().map(|(_, _, titles)| titles.clone()))
         .unwrap_or_default();
     let Some(landing) = app.landing.as_mut() else {
         return;
@@ -1591,9 +1626,18 @@ fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
 }
 
 /// The provider's or Concordia's title for a chat, else its first words.
-fn chat_title(app: &App, session: &SessionSummary) -> String {
-    crate::accounts::get_account(&app.state_root, &session.account)
-        .and_then(|a| a.home_path)
+fn chat_title(
+    app: &App,
+    session: &SessionSummary,
+    homes: &mut std::collections::HashMap<String, Option<PathBuf>>,
+) -> String {
+    homes
+        .entry(session.account.clone())
+        .or_insert_with(|| {
+            crate::accounts::get_account(&app.state_root, &session.account)
+                .and_then(|a| a.home_path)
+        })
+        .clone()
         .and_then(|home| {
             crate::session_titles::get(
                 &app.state_root,

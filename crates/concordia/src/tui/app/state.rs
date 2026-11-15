@@ -350,6 +350,10 @@ pub(crate) struct App {
     pub(in crate::tui) pulse_on: bool,
     pub(in crate::tui) cancel_requested: bool,
     pub(in crate::tui) tick_count: u64,
+    /// The header label for the current model. Resolving it reads the model catalog from
+    /// disk, so the result is kept per (provider, account, model) and re-read at most once a
+    /// second instead of on every frame.
+    model_label_cache: std::sync::Mutex<Option<(ProviderKind, String, String, Instant, String)>>,
     pub(in crate::tui) should_quit: bool,
     pub(in crate::tui) provider: ProviderKind,
     pub(in crate::tui) account: String,
@@ -524,9 +528,31 @@ impl App {
         if self.model == "?" {
             return "model ?".into();
         }
-        crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
-            .map(|entry| format!("{} · {}", entry.display_name, self.model))
-            .unwrap_or_else(|| self.model.clone())
+        let mut cache = self
+            .model_label_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some((provider, account, model, at, label)) = cache.as_ref() {
+            if *provider == self.provider
+                && *account == self.account
+                && *model == self.model
+                && at.elapsed() < Duration::from_secs(1)
+            {
+                return label.clone();
+            }
+        }
+        let label =
+            crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+                .map(|entry| format!("{} · {}", entry.display_name, self.model))
+                .unwrap_or_else(|| self.model.clone());
+        *cache = Some((
+            self.provider,
+            self.account.clone(),
+            self.model.clone(),
+            Instant::now(),
+            label.clone(),
+        ));
+        label
     }
 
     pub(in crate::tui) fn refresh_account_email(&mut self) {
@@ -1904,6 +1930,7 @@ impl App {
             pulse_on: false,
             cancel_requested: false,
             tick_count: 0,
+            model_label_cache: std::sync::Mutex::new(None),
             should_quit: false,
             provider: ProviderKind::Codex,
             account: "codex".into(),

@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-15b)
+
+- Typing on Home is no longer delayed. Drawing a frame read the disk for every saved chat, every chat title and the model catalog; those results are now kept between frames. Measured key-to-paint fell from about 35 ms to about 5 ms.
+- The caret blink repaints only the caret cell, and the blink timer stops while the window is unfocused.
+- A running command card shows a timer only when the command has a timeout.
+
 ### Fixed (2026-11-15a)
 
 - Choosing a model now opens its reported effort choices before applying the pair. Escape keeps the previous selection; `/effort [LEVEL]` changes effort directly.

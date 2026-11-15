@@ -479,9 +479,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     #[cfg(windows)]
+    let wake_handle = terminal_input.wake_handle();
+    #[cfg(windows)]
     let mut detached_windows =
         use_window.then(|| detached::DetachedWindows::new(terminal_input.wake_handle()));
 
+    // `tick_count` is the clock for draft-save debounce, proposal polling and the spinner, so the
+    // tick keeps its 200 ms cadence. It only repaints when `on_tick` reports a visible change.
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
     let mut last_background_update_check = Instant::now();
@@ -691,12 +695,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     previous_title = title;
                 }
 
+                // Input wakes this poll immediately. The wait ends at the next tick, or at the
+                // next animation frame while work is active.
                 let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
-                // Keep the native input path inside one frame even when the idle tick is longer.
-                // Provider channels also stay responsive during a live turn.
-                timeout = timeout.min(Duration::from_millis(8));
                 if app.busy || app.deleg.d.any_active() {
                     timeout = timeout.min(Duration::from_millis(33));
+                } else if app.job.is_some() {
+                    timeout = timeout.min(Duration::from_millis(50));
                 }
                 if terminal_input.poll(timeout)? {
                     // Drain a burst (mouse drags, pastes) before redrawing; bounded so a flood can't
@@ -1184,6 +1189,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let done_tx = done_tx.clone();
                     let handle_tx = handle_tx.clone();
                     let progress_tx = progress_tx.clone();
+                    #[cfg(windows)]
+                    let wake_handle = wake_handle.clone();
                     app.live_cards.clear();
                     app.live_text.clear();
                     app.live_thinking.clear();
@@ -1615,6 +1622,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     original: original_range,
                                 });
                                 let _ = done_tx.send(outcome);
+                                #[cfg(windows)]
+                                wake_handle.wake();
                             }
                             Err(e) => {
                                 let _ = done_tx.send(TurnOutcome {
@@ -1622,6 +1631,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     stderr_tail: format!("{e:#}"),
                                     ..Default::default()
                                 });
+                                #[cfg(windows)]
+                                wake_handle.wake();
                             }
                         }
                     });
@@ -1656,11 +1667,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
 
                 if tick_due {
-                    let tick_changed = app.on_tick();
-                    // Running turns expose both elapsed time and an optional spinner.  The idle
-                    // notice also changes on ticks; motion-off deliberately suppresses spinner
-                    // cadence, while elapsed/status updates remain observable.
-                    dirty |= tick_changed;
+                    dirty |= app.on_tick();
                 }
             }
             if tick_due {

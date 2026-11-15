@@ -2449,7 +2449,6 @@ unsafe fn window_thread(
     window.fonts(hwnd, GetDpiForWindow(hwnd));
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);
-    SetTimer(hwnd, 1, 500, None);
     set_caption_color(hwnd);
     // Keep journey windows rendered at their off-screen position.  SW_HIDE prevents normal
     // paint delivery on some Windows versions, while NOACTIVATE and TOOLWINDOW keep this
@@ -2648,6 +2647,17 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_PAINT => {
+            let cursor_visible = window
+                .shared
+                .screen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cursor_visible;
+            if window.focused && cursor_visible {
+                SetTimer(hwnd, 1, 500, None);
+            } else {
+                KillTimer(hwnd, 1);
+            }
             window.paint(hwnd, None);
             0
         }
@@ -2735,16 +2745,30 @@ unsafe extern "system" fn window_proc(
             1
         }
         WM_TIMER => {
-            if window.focused
-                && window
+            let caret = {
+                let screen = window
                     .shared
                     .screen
                     .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .cursor_visible
-            {
+                    .unwrap_or_else(|e| e.into_inner());
+                screen.cursor_visible.then(|| {
+                    let left = i32::from(screen.cursor.x) * window.cell_width;
+                    let top = i32::from(screen.cursor.y) * window.cell_height;
+                    RECT {
+                        left,
+                        top,
+                        right: left + window.cell_width,
+                        bottom: top + window.cell_height,
+                    }
+                })
+            };
+            if !window.focused {
+                KillTimer(hwnd, 1);
+            } else if let Some(caret) = caret {
                 window.blink = !window.blink;
-                InvalidateRect(hwnd, null(), 0);
+                InvalidateRect(hwnd, &caret, 0);
+            } else {
+                KillTimer(hwnd, 1);
             }
             0
         }
@@ -2768,6 +2792,15 @@ unsafe extern "system" fn window_proc(
         }
         WM_SETFOCUS => {
             window.focused = true;
+            if window
+                .shared
+                .screen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cursor_visible
+            {
+                SetTimer(hwnd, 1, 500, None);
+            }
             window.blink = true;
             let status = *window
                 .shared
@@ -2781,6 +2814,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_KILLFOCUS => {
             window.focused = false;
+            KillTimer(hwnd, 1);
             let status = *window
                 .shared
                 .requested_status

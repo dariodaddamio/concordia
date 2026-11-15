@@ -107,8 +107,8 @@ pub(super) fn clock(duration: std::time::Duration) -> String {
     }
 }
 
-/// A running card's elapsed time and, when the provider set a timeout, the time left:
-/// ` · 0:42 · 9:18 left of 10:00`. Finished cards have no timer.
+/// A running card shows a timer only when the provider set a timeout:
+/// ` · 0:42 · 9:18 left of 10:00`. Cards without a timeout and finished cards have no timer.
 pub(super) fn card_timer(
     card: &StreamCard,
     started: Option<std::time::Instant>,
@@ -117,16 +117,14 @@ pub(super) fn card_timer(
     if card.status != CardStatus::Running {
         return None;
     }
+    let limit = crate::provider::stream_cards::reported_timeout(card)?;
     let elapsed = now.saturating_duration_since(started?);
-    let mut timer = format!(" · {}", clock(elapsed));
-    if let Some(limit) = crate::provider::stream_cards::reported_timeout(card) {
-        timer.push_str(&format!(
-            " · {} left of {}",
-            clock(limit.saturating_sub(elapsed)),
-            clock(limit)
-        ));
-    }
-    Some(timer)
+    Some(format!(
+        " · {} · {} left of {}",
+        clock(elapsed),
+        clock(limit.saturating_sub(elapsed)),
+        clock(limit)
+    ))
 }
 
 /// The title row is an accordion target; links retain their file/web actions.
