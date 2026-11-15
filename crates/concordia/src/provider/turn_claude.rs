@@ -15,7 +15,6 @@ const MAX_ID: usize = 512;
 const MAX_TOOL: usize = 256;
 const MAX_INPUT: usize = 256 * 1024;
 const DEFERRED_TASK_LIMIT: usize = 256;
-const RUN_END_CEILING: Duration = Duration::from_secs(600);
 
 async fn native_task_card(
     identity: (&str, Option<&str>, Option<&str>),
@@ -484,7 +483,6 @@ pub(super) async fn run(
     let mut seen_native: HashSet<String> = HashSet::new();
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(10));
     let mut result_seen = false;
-    let mut result_deadline = None;
     let mut session_state = None::<String>;
     let mut deferred_tasks = HashSet::new();
     let mut seen_deferred_tasks = HashSet::new();
@@ -507,11 +505,6 @@ pub(super) async fn run(
                 _ = handle.wake.notified() => anyhow::bail!("cancelled"),
                 n = &mut read => break n?,
                 _ = tokio::time::sleep_until(initialize_deadline), if !initialized => anyhow::bail!("Claude native initialize timed out before prompt dispatch"),
-                _ = async {
-                    if let Some(deadline) = result_deadline {
-                        tokio::time::sleep_until(deadline).await;
-                    }
-                }, if result_seen && result_deadline.is_some() => anyhow::bail!("Claude native run-end ceiling expired with deferred work"),
                 _ = poll.tick() => {
                     let mut finished = Vec::new();
                     for (id, request) in pending.iter_mut() {
@@ -759,7 +752,6 @@ pub(super) async fn run(
             }
             if result_seen && matches!(value["type"].as_str(), Some("assistant" | "stream_event")) {
                 result_seen = false;
-                result_deadline = None;
                 if session_state.is_some() {
                     session_state = Some("running".into());
                 }
@@ -794,7 +786,9 @@ pub(super) async fn run(
                 anyhow::ensure!(pending.is_empty(), "Claude ended with unresolved native permissions; completion is uncertain");
                 out.failed |= value["is_error"] == true || value["subtype"].as_str() != Some("success");
                 result_seen = true;
-                result_deadline.get_or_insert(tokio::time::Instant::now() + RUN_END_CEILING);
+                // Deferred background work may legitimately outlive the result by any amount of
+                // time (a long build). The turn stays open until Claude reports it idle or the
+                // user cancels; there is no wall-clock ceiling.
                 if out.failed
                     || (deferred_tasks.is_empty()
                         && ((!deferred_work_seen && session_state.as_deref() != Some("running"))

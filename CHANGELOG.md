@@ -5,6 +5,7 @@
 - Typing on Home is no longer delayed. Drawing a frame read the disk for every saved chat, every chat title and the model catalog; those results are now kept between frames. Measured key-to-paint fell from about 35 ms to about 5 ms.
 - The caret blink repaints only the caret cell, and the blink timer stops while the window is unfocused.
 - A running command card shows a timer only when the command has a timeout.
+- A Claude turn that left background work running is no longer ended after ten minutes. It stays open until Claude reports the work finished or you cancel with Esc.
 
 ### Fixed (2026-11-15a)
 
