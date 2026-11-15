@@ -34,9 +34,14 @@ codex_context = "provider" # provider | fresh; per-provider override
 claude_context = "provider" # provider | fresh; per-provider override
 cursor_context = "provider" # provider | fresh; fresh is disabled without a native usage signal
 context_threshold = 85 # fresh-session threshold, 50..=95 percent
-same_provider_automatic = false # opt in only after accepting the provider terms notice
+same_provider_automatic = false # same-provider cross-account automatic handoff requires provider terms acceptance
 automatic_handoff_cap = 3 # maximum automatic handoffs into one account per local day
 ```
+
+The model picker is also available from the clickable header model and effort controls. The choice
+is persisted per account/model. Codex sends `model_reasoning_effort` through app-server; Claude
+passes native `--effort` only when cached CLI capability says it is supported; Cursor and Grok use
+their provider-owned model-variant IDs. Unsupported or stale provider options are not invented.
 
 `fresh` uses only the provider's reported current-turn context usage and rotates at a turn
 boundary. The new native session receives the bounded map and resolvable source pointers. If a
@@ -48,7 +53,8 @@ A provider error explicitly reporting an exhausted usage limit triggers quota ha
 errors, cancellation and model prose do not. A recognized terminal context-capacity error can
 instead roll over once on the same account, with native-source pointers. It does not disable
 provider compaction or infer capacity from billed tokens. Each account/model pair is tried once, with at most
-three automatic handoffs per request. With an empty account list, automatic mode tries the other
+three automatic handoffs per request. The daily cap is reserved before automatic dispatch, so
+concurrent requests cannot oversubscribe it. With an empty account list, automatic mode tries the other
 connected accounts; when both preference lists are empty, it can then try another model from the
 current account's native catalog. Explicit model preferences must exist in that catalog. Unknown
 capacity is not treated as free capacity: another model may share the same quota and fail too. An unsent draft is preserved across automatic continuation. An open picker, background job or
@@ -79,6 +85,9 @@ the selected native session. Native tools and approvals are not restored from th
 Ctrl+G lists reported native child-agent activity and Concordia worker jobs. Enter
 opens the report; no model call is made by inspection. Native report detail depends on provider
 events. Delegated-agent account selection is owned by the always-on Agents MCP tool.
+
+Recovery guidance is intentionally limited to Ctrl+G and `/delegate` recovery. Removed delegation
+stop/use/collect commands are not part of the supported command surface.
 
 Cancellation leaves the prompt box unchanged. Use sent history to recall a submitted request
 explicitly; queued work stays paused until resumed.

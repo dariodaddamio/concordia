@@ -49,8 +49,17 @@ Ask your question and press Enter
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
-`/model` lists only models reported for the selected account. Provider-reported effort variants are
-shown with their supported efforts and selection keeps the exact provider model ID.
+`/model` lists only models reported for the selected account. The clickable header effort control
+opens the same provider-reported choices; the selection is persisted with the account/model choice.
+Codex sends the standard `model_reasoning_effort` setting and app-server `effort` field, Claude
+uses native cached `--effort` capability (with the provider's supported-value cap), while Cursor and Grok retain the
+provider's model-variant IDs. This is a projection of provider catalogs, not a universal effort API.
+
+Ctrl+G is the current recovery surface for native agent reports and Concordia worker runs. The
+`/delegate` recovery view inspects or retries a selected run; older stop/use/collect command names
+are not advertised. Same-provider automatic account handoff is disabled unless the user accepts
+the provider-specific terms; manual continuation remains available. Automatic handoff reserves its
+daily cap before dispatch.
 
 ## Providers
 

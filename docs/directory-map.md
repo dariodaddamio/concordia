@@ -9,6 +9,9 @@ provider account data and runtime records live outside it. There is no JavaScrip
 | --- | --- | --- |
 | `crates/concordia/src` | Product, CLI and local coordination | [Architecture](architecture.md) identifies module owners |
 | `crates/concordia/src/provider` | Native transport, launch and structured event adapters | Native authentication/approvals remain authoritative |
+| `crates/concordia/src/native_history.rs` | Bounded provider-history discovery and reads | Explicit provider/account/session identity; no provider-home writes |
+| `crates/concordia/src/agent_records.rs` | Durable delegated-agent identity and lifecycle records | Exact parent/workspace/run binding; bounded, redacted state |
+| `crates/concordia/src/mcp` | Local MCP proxy transports | Stdio and HTTP/SSE bounds; Windows HTTPS uses WinHTTP |
 | `crates/concordia/src/tui` | Shared ratatui UI, native window, input and conversation state, including the grouped Agents view | Each conversation tab retains its own App; provider-run rows remain read-only |
 | `crates/concordia/src/harness` | Local setup, shared project connections and verification | Native consent stays provider-owned |
 | `crates/concordia/assets` | Bundled artwork, icon and model catalog | Asset provenance is recorded beside the files |
