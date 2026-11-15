@@ -99,6 +99,36 @@ pub fn save(state_root: &Path, registry: &Registry) -> Result<(), String> {
     std::fs::rename(&temp, &file).map_err(|e| format!("cannot replace MCP registry: {e}"))
 }
 
+/// Serialize a registry read-modify-write under the repository's cross-process state lock.
+pub fn mutate<T>(
+    state_root: &Path,
+    change: impl FnOnce(&mut Registry) -> Result<T, String>,
+) -> Result<T, String> {
+    let lock = state_root.join("mcp.toml.lock");
+    crate::state_io::with_lock(&lock, || {
+        let mut registry = load(state_root).map_err(std::io::Error::other)?;
+        let value = change(&mut registry).map_err(std::io::Error::other)?;
+        save_unlocked(state_root, &registry).map_err(std::io::Error::other)?;
+        Ok(value)
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn save_unlocked(state_root: &Path, registry: &Registry) -> Result<(), String> {
+    for (name, server) in &registry.servers {
+        validate_server(name, server)?;
+    }
+    let text =
+        toml::to_string_pretty(registry).map_err(|e| format!("cannot encode MCP registry: {e}"))?;
+    if text.len() as u64 > MAX_BYTES {
+        return Err("MCP registry exceeds the 1 MiB limit".into());
+    }
+    std::fs::create_dir_all(state_root)
+        .map_err(|e| format!("cannot create state directory: {e}"))?;
+    crate::state_io::write_atomic(&path(state_root), text.as_bytes())
+        .map_err(|e| format!("cannot replace MCP registry: {e}"))
+}
+
 fn validate_server(name: &str, server: &Server) -> Result<(), String> {
     if has_inline_secret(server) {
         return Err(format!(

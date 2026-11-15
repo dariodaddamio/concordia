@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+const MAX_RECORD_BYTES: u64 = 256 * 1024;
 
 pub fn agents_dir(root: &Path) -> PathBuf {
     root.join("agents")
@@ -42,13 +43,26 @@ pub fn read_agent(root: &Path, id: &str) -> Result<AgentRecord, String> {
     if !valid_agent_id(id) {
         return Err(format!("unknown delegated agent: {id}"));
     }
-    let bytes = std::fs::read(record_path(root, id))
-        .map_err(|_| format!("unknown delegated agent: {id}"))?;
-    serde_json::from_slice(&bytes).map_err(|_| format!("delegated agent record is invalid: {id}"))
+    let path = record_path(root, id);
+    let meta =
+        std::fs::symlink_metadata(&path).map_err(|_| format!("unknown delegated agent: {id}"))?;
+    if !meta.file_type().is_file() || meta.len() > MAX_RECORD_BYTES {
+        return Err(format!("delegated agent record is invalid: {id}"));
+    }
+    let bytes = std::fs::read(path).map_err(|_| format!("unknown delegated agent: {id}"))?;
+    let record: AgentRecord = serde_json::from_slice(&bytes)
+        .map_err(|_| format!("delegated agent record is invalid: {id}"))?;
+    if record.agent_id != id {
+        return Err(format!("delegated agent record identity mismatch: {id}"));
+    }
+    Ok(record)
 }
 pub fn write_agent(root: &Path, record: &AgentRecord) -> Result<(), String> {
     if !valid_agent_id(&record.agent_id) {
         return Err("invalid delegated agent id".into());
+    }
+    if record.agent_id.len() > 128 {
+        return Err("delegated agent record is too large".into());
     }
     std::fs::create_dir_all(agents_dir(root)).map_err(|e| e.to_string())?;
     let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
@@ -58,13 +72,21 @@ pub fn write_agent(root: &Path, record: &AgentRecord) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())
 }
+pub fn update_agent_exact(
+    root: &Path,
+    id: &str,
+    status: &str,
+    result: Option<String>,
+    activity: &str,
+) -> Result<(), String> {
+    let mut record = read_agent(root, id)?;
+    record.status = status.into();
+    record.result = result;
+    record.activity.push(activity.into());
+    write_agent(root, &record)
+}
 pub fn update_agent(root: &Path, id: &str, status: &str, result: Option<String>, activity: &str) {
-    if let Ok(mut record) = read_agent(root, id) {
-        record.status = status.into();
-        record.result = result;
-        record.activity.push(activity.into());
-        let _ = write_agent(root, &record);
-    }
+    let _ = update_agent_exact(root, id, status, result, activity);
 }
 pub fn update_matching(
     root: &Path,
@@ -88,6 +110,6 @@ pub fn update_matching(
     // Completion is keyed by the exact run identity. A legacy text-only match is safe only
     // when it identifies one record; never let one result complete multiple runs.
     if matches.len() == 1 {
-        update_agent(root, &matches[0], status, result, "delegated run finished");
+        let _ = update_agent_exact(root, &matches[0], status, result, "delegated run finished");
     }
 }

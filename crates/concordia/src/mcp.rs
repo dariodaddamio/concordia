@@ -14,6 +14,29 @@ const MAX_PROPOSAL_FILE: u64 = 16 * 1024;
 const MAX_UPSTREAM_BYTES: usize = 2 * 1024 * 1024;
 const MAX_UPSTREAM_FRAME: usize = 256 * 1024;
 
+fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut out = Vec::with_capacity(limit.min(4096));
+    loop {
+        let chunk = input.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok((!out.is_empty()).then_some(out));
+        }
+        let take = chunk
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(chunk.len(), |i| i + 1);
+        if out.len().saturating_add(take) > limit {
+            input.consume(take);
+            return Ok(Some(Vec::new()));
+        }
+        out.extend_from_slice(&chunk[..take]);
+        input.consume(take);
+        if take < chunk.len() || out.last() == Some(&b'\n') {
+            return Ok(Some(out));
+        }
+    }
+}
+
 pub fn proposals_dir(root: &Path) -> PathBuf {
     root.join("proposals")
 }
@@ -75,17 +98,10 @@ pub fn serve<R: BufRead, W: Write>(
     root: &Path,
 ) -> std::io::Result<()> {
     loop {
-        let mut buf = Vec::new();
-        let n = (&mut input)
-            .take(MAX_REQUEST_BYTES as u64 + 1)
-            .read_until(b'\n', &mut buf)?;
-        if n == 0 {
+        let Some(buf) = bounded_line(&mut input, MAX_REQUEST_BYTES)? else {
             return Ok(());
-        }
-        let too_large = buf.len() > MAX_REQUEST_BYTES;
-        if too_large && !buf.ends_with(b"\n") {
-            input.read_until(b'\n', &mut buf)?;
-        }
+        };
+        let too_large = buf.is_empty();
         let reply = if too_large {
             Some(error_reply(Value::Null, -32600, "request too large"))
         } else if buf.iter().all(u8::is_ascii_whitespace) {
@@ -174,9 +190,9 @@ fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
         .ok_or_else(|| "unknown tool".to_string())?;
     let registry =
         crate::mcp_registry::load(root).map_err(|_| "MCP registry cannot be read".to_string())?;
-    let project = params
-        .get("project")
-        .and_then(Value::as_str)
+    // The caller cannot choose the policy scope. The proxy process binds its project at
+    // launch; absent an authenticated binding, use its own working directory.
+    let project = std::env::var_os("CONCORDIA_PROJECT_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
     let entry = crate::mcp_registry::effective(&registry, &project, server)
