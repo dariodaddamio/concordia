@@ -1391,8 +1391,9 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
     h.app.editor.set_text("preserved draft");
     h.app.handle_slash("/config");
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(h.app.settings_view.is_some());
     assert!(!h.app.window_title().contains('—'));
+    h.key(KeyCode::Right, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
     assert_eq!(h.app.editor.text(), "preserved draft");
@@ -1505,10 +1506,12 @@ fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
         h.app.landing.is_some(),
         "appearance keeps the Home destination"
     );
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(h.app.settings_view.is_some());
+    h.key(KeyCode::Right, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.window_title(), "Concordia | Home");

@@ -286,6 +286,19 @@ pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
     current().apply(buffer, no_color, native);
 }
 
+// Role names for draw code. `apply` turns these into the active theme's colors, so a role
+// follows the theme in every mode, including the terminal palette.
+pub(super) fn accent() -> Color {
+    Color::Cyan
+}
+pub(super) fn muted() -> Color {
+    Color::DarkGray
+}
+/// Background of the selected row.
+pub(super) fn selection() -> Color {
+    Color::Indexed(235)
+}
+
 pub(super) fn export_current(ui: &Ui) -> Result<crate::theme_library::ThemeFile, String> {
     if matches!(ui.theme, Theme::Default | Theme::Terminal) && ui.library_theme.is_none() {
         return Err("Choose a named theme before exporting; terminal-provided colors have no exact local palette".into());

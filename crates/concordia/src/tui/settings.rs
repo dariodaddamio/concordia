@@ -9,179 +9,445 @@ fn row(id: &str, label: impl Into<String>, detail: impl Into<String>) -> PickerR
     }
 }
 
-pub(super) fn open(app: &mut App) {
+pub(super) const FOOTER: &str =
+    "←/→ or Tab tabs · ↑/↓ rows · Enter or Space change · type to filter · Esc close";
+
+const TABS: [&str; 6] = [
+    "General",
+    "Appearance",
+    "Models and roles",
+    "Accounts",
+    "Updates",
+    "Advanced",
+];
+
+fn setting(
+    tab: usize,
+    id: &str,
+    label: &str,
+    value: String,
+    description: &str,
+) -> (usize, SettingsRow) {
+    (
+        tab,
+        SettingsRow {
+            action: id.into(),
+            label: label.into(),
+            value,
+            description: description.into(),
+        },
+    )
+}
+
+/// Every setting with its current value. Reads saved state, so call it on open and after a
+/// change, never per frame.
+fn settings_rows(app: &App) -> Vec<(usize, SettingsRow)> {
     let ui = &app.appearance.ui;
-    let settings = crate::store::get_settings(&app.state_root);
-    let enabled = |on| if on { "On" } else { "Off" };
-    let rows = vec![
-        row(
-            "appearance",
-            "Appearance",
-            "App-wide saved theme and window icon color",
-        ),
-        row(
-            "tokens",
-            format!("Response usage · {}", enabled(ui.token_line)),
-            "App-wide saved preference; provider-reported tokens only",
-        ),
-        row(
-            "tips",
-            format!("Idle tips · {}", enabled(ui.tips)),
-            "App-wide saved preference",
-        ),
-        row(
-            "stats",
-            format!("CPU and memory · {}", enabled(app.stats.is_some())),
-            "App-wide saved preference",
-        ),
-        row(
-            "motion",
-            format!("Interface animation · {}", enabled(ui.motion)),
-            "Saved; Windows reduced-motion preferences take precedence",
-        ),
-        row(
-            "notifications",
-            format!("Windows notifications · {}", enabled(ui.notifications)),
-            "Taskbar status remains active when notifications are off",
-        ),
-        row(
+    let saved = crate::store::get_settings(&app.state_root);
+    let config = crate::config::for_root(&app.state_root);
+    let on_off = |on: bool| String::from(if on { "On" } else { "Off" });
+    let opens = || String::from("Open ›");
+    let fallbacks = config.continuation.fallback_models;
+    let fallback_value = if fallbacks.is_empty() {
+        String::from("Not set ›")
+    } else {
+        let mut text = fallbacks
+            .into_iter()
+            .map(|(role, model)| format!("{role} → {model}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        text.push_str(" ›");
+        text
+    };
+    let file_links = match saved.file_action {
+        Some(crate::file_open::FileAction::Editor) => "External editor",
+        _ => "Preview here",
+    };
+    let same_provider = crate::store::same_provider_automatic(&app.state_root)
+        && crate::store::same_provider_terms_accepted(&app.state_root, app.provider);
+    vec![
+        setting(
+            0,
             "permissions",
             "Permissions",
-            "Saved default for future turns; running turns retain their permissions",
+            format!("{} ›", app.trust.as_str()),
+            "Default for future turns; a running turn keeps the permissions it started with",
         ),
-        row(
-            "accounts",
-            "Accounts",
-            "Saved selected provider/account; native sign-ins stay separate",
+        setting(
+            0,
+            "tokens",
+            "Response usage line",
+            on_off(ui.token_line),
+            "Show provider-reported tokens under each reply",
         ),
-        row(
+        setting(
+            0,
+            "tips",
+            "Idle tips",
+            on_off(ui.tips),
+            "Show a tip while nothing is running",
+        ),
+        setting(
+            0,
+            "stats",
+            "CPU and memory",
+            on_off(app.stats.is_some()),
+            "Show this window's processor and memory use in the header",
+        ),
+        setting(
+            0,
+            "notifications",
+            "Windows notifications",
+            on_off(ui.notifications),
+            "The taskbar status stays active when notifications are off",
+        ),
+        setting(
+            0,
+            "returns",
+            "Worker result delivery",
+            String::from(if saved.delegate_auto_return {
+                "Automatic"
+            } else {
+                "Manual"
+            }),
+            "Automatic delivery may start a main-agent turn when the chat is idle",
+        ),
+        setting(
+            1,
+            "appearance",
+            "Theme and colors",
+            opens(),
+            "Theme and window icon color for every window",
+        ),
+        setting(
+            1,
+            "motion",
+            "Interface animation",
+            on_off(ui.motion),
+            "The Windows reduced-motion preference takes precedence",
+        ),
+        setting(
+            1,
+            "files",
+            "File links open in",
+            file_links.into(),
+            "Where a clicked file link opens",
+        ),
+        setting(
+            2,
             "models",
             "Model",
-            "Saved selection for the current provider account",
+            format!("{} ›", app.model_label()),
+            "Model for the current provider account",
         ),
-        row(
+        setting(
+            2,
             "roles",
-            format!("Roles · {} configured", crate::store::get_settings(&app.state_root).roles.len()),
-            "Default provider, account, model and effort for delegated agents",
+            "Roles",
+            format!("{} configured ›", saved.roles.len()),
+            "Provider, account, model and effort for delegated agents",
         ),
-        row(
+        setting(
+            2,
+            "fallback",
+            "Fallback model per role",
+            fallback_value,
+            "First model offered after a provider usage limit; otherwise Concordia asks",
+        ),
+        setting(
+            3,
+            "accounts",
+            "Account",
+            format!("{} · {} ›", app.provider.as_str(), app.account),
+            "Provider and account for this chat; native sign-ins stay separate",
+        ),
+        setting(
+            3,
+            "continuation",
+            "When a limit is reached",
+            String::from(if app.continuation.automatic() {
+                "Continue automatically"
+            } else {
+                "Pause and ask"
+            }),
+            "Applies to future sessions; proactive rollover is Codex-only and off",
+        ),
+        setting(
+            3,
+            "same-provider",
+            "Continue on another account of the same provider",
+            on_off(same_provider),
+            "Turning this on confirms the provider's terms allow several accounts",
+        ),
+        setting(
+            3,
+            "session-handoff",
+            "This session's handoff",
+            opens(),
+            "Session only: choose the next provider, or automatic or manual behavior",
+        ),
+        setting(
+            4,
+            "updates",
+            "New versions",
+            String::from(if config.updates.install_on_launch {
+                "Install at next launch"
+            } else {
+                "Install in the background"
+            }),
+            "A background install loads by itself as soon as no work is running",
+        ),
+        setting(
+            5,
             "native-controls",
             "Native provider controls",
-            "Open the actual CLI for this account in a separate terminal session: settings, promotions and native appearance",
+            opens(),
+            "Open the provider's own CLI for this account in a separate terminal",
         ),
-        row(
-            "continuation",
-            format!(
-                "Default limit handoff · {}",
-                if app.continuation.automatic() {
-                    "Automatic"
-                } else {
-                    "Pause"
-                }
-            ),
-            "Saved for future sessions; proactive rollover is Codex-only and off by default",
-        ),
-        row(
-            "updates",
-            format!(
-                "Updates · {}",
-                if crate::config::for_root(&app.state_root).updates.install_on_launch {
-                    "install on next launch"
-                } else {
-                    "prepare in background"
-                }
-            ),
-            "Choose whether a prepared update waits for Restart now or installs at the next launch",
-        ),
-        row(
-            "fallback",
-            {
-                let fallbacks = crate::config::for_root(&app.state_root).continuation.fallback_models;
-                if fallbacks.is_empty() {
-                    "Fallback model per role · not configured".into()
-                } else {
-                    format!(
-                        "Fallback model per role · {}",
-                        fallbacks
-                            .into_iter()
-                            .map(|(role, model)| format!("{role} → {model}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            },
-            "First model offered after a provider usage limit; default is to ask",
-        ),
-        row(
-            "same-provider",
-            format!(
-                "Same-provider handoff ({}) · {}",
-                app.provider.as_str(),
-                enabled(
-                    crate::store::same_provider_automatic(&app.state_root)
-                        && crate::store::same_provider_terms_accepted(&app.state_root, app.provider)
-                )
-            ),
-            format!(
-                "Enter: when a {} account runs out, continue on your next {} account without asking. Turning it on confirms the provider's terms allow you to use several accounts",
-                app.provider.as_str(),
-                app.provider.as_str()
-            ),
-        ),
-        row(
-            "session-handoff",
-            "This session’s handoff",
-            "Session only: choose the next provider or automatic/manual behavior",
-        ),
-        row(
-            "returns",
-            format!(
-                "Worker result delivery · {}",
-                if settings.delegate_auto_return {
-                    "Automatic"
-                } else {
-                    "Manual"
-                }
-            ),
-            "Saved; automatic delivery may start a main-agent turn when idle",
-        ),
-        row(
-            "files",
-            "File links",
-            "Saved default: preview, split window or external editor",
-        ),
-        row(
+        setting(
+            5,
             "skills",
             "Skills",
-            "Inspect project and provider-account sources; opening does not invoke a skill",
+            opens(),
+            "Inspect project and account skill sources; nothing is run",
         ),
-        row(
+        setting(
+            5,
             "hooks",
             "Hooks",
-            "Inspect project and provider-account sources; hooks run in their native provider",
+            opens(),
+            "Inspect project and account hook sources; hooks run in their provider",
         ),
-        row(
+        setting(
+            5,
             "integrations",
             "Integrations",
-            "Inspect and manage explicitly connected tools",
+            opens(),
+            "Inspect and manage connected tools",
         ),
-        row(
+        setting(
+            5,
             "advanced",
-            "Advanced config.toml",
-            "Open the app-wide defaults file; manual changes apply after restarting",
+            "config.toml",
+            opens(),
+            "Open the defaults file; manual edits apply after a restart",
         ),
-    ];
-    app.show_picker(
-        PickerKind::Settings,
-        "Settings · saved on this device".into(),
-        rows,
-        true,
-    );
+    ]
+}
+
+/// Opens the settings screen, or rebuilds it in place after a change, keeping the tab, the
+/// selected row of every tab and the filter.
+pub(super) fn open(app: &mut App) {
+    let previous = app.settings_view.take();
+    let mut tabs: Vec<SettingsTab> = TABS
+        .iter()
+        .map(|name| SettingsTab {
+            name: (*name).into(),
+            rows: Vec::new(),
+        })
+        .collect();
+    for (tab, row) in settings_rows(app) {
+        tabs[tab].rows.push(row);
+    }
+    let mut view = SettingsView {
+        selected: vec![0; tabs.len()],
+        tabs,
+        active: 0,
+        filter: String::new(),
+        filter_selected: 0,
+        stale: false,
+        tab_areas: Vec::new(),
+        row_areas: Vec::new(),
+    };
+    if let Some(previous) = previous {
+        view.active = previous.active.min(view.tabs.len() - 1);
+        for (tab, selected) in previous.selected.iter().enumerate().take(view.tabs.len()) {
+            view.selected[tab] = (*selected).min(view.tabs[tab].rows.len().saturating_sub(1));
+        }
+        view.filter = previous.filter;
+        view.filter_selected = previous.filter_selected;
+    }
+    app.settings_view = Some(view);
+    app.picker = None;
+}
+
+/// Rebuilds the rows once a popup opened from the screen has closed.
+pub(super) fn refresh_if_stale(app: &mut App) {
+    if app.picker.is_none() && app.settings_view.as_ref().is_some_and(|view| view.stale) {
+        open(app);
+    }
+}
+
+/// The rows on screen as (tab, row): the active tab, or every match while a filter is typed.
+pub(super) fn visible(view: &SettingsView) -> Vec<(usize, usize)> {
+    if view.filter.is_empty() {
+        return (0..view.tabs[view.active].rows.len())
+            .map(|row| (view.active, row))
+            .collect();
+    }
+    let query = view.filter.to_lowercase();
+    let mut out = Vec::new();
+    for (tab, group) in view.tabs.iter().enumerate() {
+        for (row, item) in group.rows.iter().enumerate() {
+            if [&group.name, &item.label, &item.value, &item.description]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&query))
+            {
+                out.push((tab, row));
+            }
+        }
+    }
+    out
+}
+
+pub(super) fn selected_position(view: &SettingsView) -> usize {
+    if view.filter.is_empty() {
+        view.selected[view.active]
+    } else {
+        view.filter_selected
+    }
+}
+
+fn select_position(view: &mut SettingsView, position: usize) {
+    if view.filter.is_empty() {
+        view.selected[view.active] = position;
+    } else {
+        view.filter_selected = position;
+    }
+}
+
+fn switch_tab(view: &mut SettingsView, forward: bool) {
+    let count = view.tabs.len();
+    view.filter.clear();
+    view.filter_selected = 0;
+    view.active = if forward {
+        (view.active + 1) % count
+    } else {
+        (view.active + count - 1) % count
+    };
+}
+
+/// Runs the selected row: a switch flips in place, anything larger opens its popup over the
+/// screen, and a file or terminal leaves the screen.
+fn act(app: &mut App) {
+    let Some(view) = app.settings_view.as_ref() else {
+        return;
+    };
+    let Some(&(tab, row)) = visible(view).get(selected_position(view)) else {
+        return;
+    };
+    let action = view.tabs[tab].rows[row].action.clone();
+    match action.as_str() {
+        "files" => {
+            let next = match crate::store::get_settings(&app.state_root).file_action {
+                Some(crate::file_open::FileAction::Editor) => crate::file_open::FileAction::Preview,
+                _ => crate::file_open::FileAction::Editor,
+            };
+            if let Err(error) = crate::store::set_file_action(&app.state_root, next) {
+                app.flash(format!("Not saved: {error}"));
+            }
+            open(app);
+        }
+        "advanced" | "native-controls" => {
+            app.settings_view = None;
+            app.footer_left = FOOTER_HINT.into();
+            choose(app, PickerKind::SettingsView, &action);
+        }
+        _ => {
+            choose(app, PickerKind::SettingsView, &action);
+            let popup = app.picker.is_some();
+            if let Some(view) = app.settings_view.as_mut() {
+                view.stale = popup;
+            }
+        }
+    }
+}
+
+pub(super) fn key(app: &mut App, key: KeyEvent) {
+    let Some(view) = app.settings_view.as_mut() else {
+        return;
+    };
+    let count = visible(view).len();
+    let position = selected_position(view).min(count.saturating_sub(1));
+    match key.code {
+        KeyCode::Esc if !view.filter.is_empty() => {
+            view.filter.clear();
+            view.filter_selected = 0;
+        }
+        KeyCode::Esc => {
+            app.settings_view = None;
+            app.footer_left = FOOTER_HINT.into();
+        }
+        KeyCode::Right => switch_tab(view, true),
+        KeyCode::Left | KeyCode::BackTab => switch_tab(view, false),
+        KeyCode::Tab => switch_tab(view, !key.modifiers.contains(KeyModifiers::SHIFT)),
+        KeyCode::Up if count > 0 => select_position(
+            view,
+            if position == 0 {
+                count - 1
+            } else {
+                position - 1
+            },
+        ),
+        KeyCode::Down if count > 0 => select_position(view, (position + 1) % count),
+        KeyCode::Home => select_position(view, 0),
+        KeyCode::End => select_position(view, count.saturating_sub(1)),
+        KeyCode::Enter | KeyCode::Char(' ') => act(app),
+        KeyCode::Backspace => {
+            view.filter.pop();
+            view.filter_selected = 0;
+        }
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            view.filter.push(c);
+            view.filter_selected = 0;
+        }
+        _ => {}
+    }
+}
+
+/// A click selects a tab or a row; a click on the row that is already selected runs it.
+pub(super) fn mouse(app: &mut App, event: MouseEvent) {
+    let Some(view) = app.settings_view.as_mut() else {
+        return;
+    };
+    let count = visible(view).len();
+    match event.kind {
+        MouseEventKind::ScrollUp if count > 0 => {
+            let position = selected_position(view);
+            select_position(view, position.saturating_sub(1));
+        }
+        MouseEventKind::ScrollDown if count > 0 => {
+            let position = selected_position(view);
+            select_position(view, (position + 1).min(count - 1));
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            let at = Position::new(event.column, event.row);
+            if let Some(tab) = view.tab_areas.iter().position(|area| area.contains(at)) {
+                view.filter.clear();
+                view.filter_selected = 0;
+                view.active = tab;
+            } else if let Some(&(_, position)) =
+                view.row_areas.iter().find(|(area, _)| area.contains(at))
+            {
+                if position == selected_position(view) {
+                    act(app);
+                } else {
+                    select_position(view, position);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
     if kind == PickerKind::Customization {
         if let Some(path) = id.strip_prefix("file:") {
+            app.settings_view = None;
             app.file_command(path, false, true);
         }
         return;
@@ -233,25 +499,23 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 .roles
                 .into_iter()
                 .map(|(name, role)| {
-                    row(
-                        &format!("role:{name}"),
-                        name,
+                    row(&format!("role:{name}"), name, {
+                        let effective = |own: Option<&str>, inherited: &str| match own {
+                            Some(value) => value.to_string(),
+                            None if inherited.is_empty() || inherited == "?" => "not set".into(),
+                            None => format!("{inherited} (inherited)"),
+                        };
                         format!(
                             "{} · {} · {} · effort {}",
-                            role.provider.as_deref().unwrap_or("provider default"),
-                            role.account.as_deref().unwrap_or("account required"),
-                            role.model.as_deref().unwrap_or("model default"),
-                            role.effort.as_deref().unwrap_or("provider default")
-                        ),
-                    )
+                            effective(role.provider.as_deref(), app.provider.as_str()),
+                            effective(role.account.as_deref(), &app.account),
+                            effective(role.model.as_deref(), &app.model),
+                            effective(role.effort.as_deref(), app.effort.as_deref().unwrap_or("")),
+                        )
+                    })
                 })
                 .collect();
-            app.show_picker(
-                PickerKind::Settings,
-                "Roles · edit in local settings".into(),
-                rows,
-                true,
-            );
+            app.show_picker(PickerKind::SettingsView, "Roles".into(), rows, true);
         }
         "continuation" => {
             let next = !app.continuation.automatic();
@@ -291,7 +555,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 .continuation
                 .fallback_models;
             app.show_picker(
-                PickerKind::Settings,
+                PickerKind::SettingsView,
                 "Fallback model · choose a role".into(),
                 roles
                     .into_iter()
@@ -638,14 +902,14 @@ mod tests {
             root,
             app.provider
         ));
-        choose(&mut app, PickerKind::Settings, "same-provider");
+        choose(&mut app, PickerKind::SettingsView, "same-provider");
         assert!(crate::store::same_provider_automatic(root));
         assert!(crate::store::same_provider_terms_accepted(
             root,
             app.provider
         ));
         assert!(app.continuation.automatic());
-        choose(&mut app, PickerKind::Settings, "same-provider");
+        choose(&mut app, PickerKind::SettingsView, "same-provider");
         assert!(!crate::store::same_provider_terms_accepted(
             root,
             app.provider

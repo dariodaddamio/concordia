@@ -125,7 +125,7 @@ fn update_check_failure_is_visible_on_the_page() {
 }
 
 #[test]
-fn background_update_notice_is_visible_without_opening_the_update_panel() {
+fn a_background_update_queues_an_automatic_restart_without_opening_the_update_panel() {
     let mut h = Harness::new(90, 28);
     h.app.background_update = true;
     h.app.job = Some(spawn_job(JobKind::Update, |_| {
@@ -141,8 +141,10 @@ fn background_update_notice_is_visible_without_opening_the_update_panel() {
         h.app.poll_job();
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(h.transcript_text().contains("A Concordia update is ready"));
-    assert!(h.transcript_text().contains("Restart now (R) or Later (L)"));
+    assert!(
+        h.app.restart_when_idle,
+        "the window restarts by itself once idle"
+    );
     assert!(h.app.picker.is_none());
     assert_eq!(
         h.app.ready_update_path.as_deref(),

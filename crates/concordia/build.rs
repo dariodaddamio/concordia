@@ -55,7 +55,49 @@ fn resource_compiler() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+/// The commit this binary was built from, plus the UTC build time when the tree had
+/// uncommitted changes, so two builds of the same hand-written stamp can be told apart.
+fn build_revision(manifest: &Path) -> String {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(manifest)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    let Some(commit) = git(&["rev-parse", "--short", "HEAD"]).filter(|c| !c.is_empty()) else {
+        return String::new();
+    };
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
+        .is_some_and(|status| !status.is_empty());
+    if !dirty {
+        return commit;
+    }
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    format!(
+        "{commit}+{:02}{:02}",
+        (seconds / 3600) % 24,
+        (seconds / 60) % 60
+    )
+}
+
 fn main() {
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo manifest directory"));
+    println!(
+        "cargo:rustc-env=CONCORDIA_BUILD_REV={}",
+        build_revision(&manifest_dir)
+    );
+    // Source edits and commits both change the revision.
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    println!("cargo:rerun-if-changed=../../.git/index");
     println!("cargo:rerun-if-changed=assets/concordia.ico");
     println!("cargo:rerun-if-changed=assets/concordia.manifest");
     println!("cargo:rerun-if-env-changed=RC");

@@ -153,7 +153,7 @@ pub(in crate::tui) enum PickerKind {
     Doctor,
     DoctorConfirm,
     ChatRepair,
-    Settings,
+    SettingsView,
     FilePreferences,
     Customization,
     Idle,
@@ -212,6 +212,33 @@ pub(in crate::tui) struct Picker {
     pub(in crate::tui) usage_scroll: usize,
     /// Cards per row on the usage page, recorded by the last draw for arrow-key movement.
     pub(in crate::tui) usage_cols: usize,
+}
+
+pub(in crate::tui) struct SettingsRow {
+    pub(in crate::tui) action: String,
+    pub(in crate::tui) label: String,
+    pub(in crate::tui) value: String,
+    pub(in crate::tui) description: String,
+}
+
+pub(in crate::tui) struct SettingsTab {
+    pub(in crate::tui) name: String,
+    pub(in crate::tui) rows: Vec<SettingsRow>,
+}
+
+pub(in crate::tui) struct SettingsView {
+    pub(in crate::tui) tabs: Vec<SettingsTab>,
+    pub(in crate::tui) active: usize,
+    /// Selected row of each tab.
+    pub(in crate::tui) selected: Vec<usize>,
+    pub(in crate::tui) filter: String,
+    /// Selected match while a filter is typed.
+    pub(in crate::tui) filter_selected: usize,
+    /// A popup opened from a row may have changed a value; rebuild once it closes.
+    pub(in crate::tui) stale: bool,
+    /// Click targets recorded by the last draw: tabs, then visible rows by their position.
+    pub(in crate::tui) tab_areas: Vec<Rect>,
+    pub(in crate::tui) row_areas: Vec<(Rect, usize)>,
 }
 
 pub(in crate::tui) struct DoctorUi {
@@ -369,6 +396,7 @@ pub(crate) struct App {
     pub(in crate::tui) native_agents: native_agents::State,
     pub(in crate::tui) footer_left: String,
     pub(in crate::tui) picker: Option<Picker>,
+    pub(in crate::tui) settings_view: Option<SettingsView>,
     pub(in crate::tui) repair_task: Option<String>,
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
@@ -1358,25 +1386,12 @@ impl App {
         self.start_job(JobKind::Update);
     }
 
-    pub(in crate::tui) fn restart_ready_update(&mut self) {
-        if self.restart_blocked_by_work() {
-            self.restart_when_idle = true;
-            self.push_system(
-                "Restart is waiting for active work and will continue when it finishes.",
-            );
-            return;
-        }
-        if let Some(path) = self.ready_update_path.take() {
-            self.reexec_path = Some(path);
-            self.should_quit = true;
-        }
-    }
-
     pub(in crate::tui) fn restart_blocked_by_work(&self) -> bool {
         self.busy
             || self.deleg.d.any_active()
             || self.deleg.has_pending_prompt()
             || self.questions.waiting()
+            || self.workspace.has_unsaved()
     }
 
     pub(in crate::tui) fn queue_update_restart(&mut self, path: PathBuf) {
@@ -1443,7 +1458,13 @@ impl App {
                         String::new()
                     }
                 ));
-                self.queue_update_restart(result.install_path);
+                // The user asked for this update, so it loads at once unless work began meanwhile.
+                if self.restart_blocked_by_work() {
+                    self.queue_update_restart(result.install_path);
+                } else {
+                    self.reexec_path = Some(result.install_path);
+                    self.should_quit = true;
+                }
             }
             JobResult::Update(Ok(UpdateOutcome::UpToDate(msg))) => self.push_system(msg),
             JobResult::Update(Err(e)) if cancelled || e.to_string() == "cancelled" => {
@@ -1957,6 +1978,7 @@ impl App {
             native_agents: native_agents::State::default(),
             footer_left: FOOTER_HINT.into(),
             picker: None,
+            settings_view: None,
             repair_task: None,
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),

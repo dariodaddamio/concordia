@@ -108,6 +108,42 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             worker_panel::draw(f, panel_screen, app);
         }
     }
+    settings::refresh_if_stale(app);
+    if app.settings_view.is_some() {
+        // Large surface: the settings screen takes the full width; its popups draw over it.
+        app.areas = Areas::default();
+        let page = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(screen);
+        f.render_widget(Clear, screen);
+        draw_header(f, page[0], app);
+        draw_settings(f, page[1], app);
+        draw_footer(f, page[2], app);
+        raster::begin_frame(app);
+        if let Some(kind) = app.picker.as_ref().map(|picker| picker.kind) {
+            // Popups sit inside the settings frame; permissions anchors to its footer chip.
+            let inside = Rect::new(
+                page[1].x.saturating_add(1),
+                page[1].y.saturating_add(1),
+                page[1].width.saturating_sub(2),
+                page[1].height.saturating_sub(2),
+            );
+            let area = if kind == PickerKind::Trust {
+                screen
+            } else {
+                inside
+            };
+            draw_picker(f, area, app);
+        }
+        if app.key_sheet {
+            draw_key_sheet(f, app);
+        }
+        theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+        return;
+    }
     if app
         .picker
         .as_ref()
@@ -152,6 +188,172 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         f.set_cursor_position(cursor);
     }
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
+}
+
+/// Shortens `text` to `width` cells, cutting at a word boundary and ending with an ellipsis.
+fn ellipsis(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.into();
+    }
+    if width <= 1 {
+        return "…".chars().take(width).collect();
+    }
+    let mut value = text.chars().take(width - 1).collect::<String>();
+    if let Some(index) = value.rfind(char::is_whitespace).filter(|index| *index > 0) {
+        value.truncate(index);
+    }
+    value.push('…');
+    value
+}
+
+/// The settings screen: a tab strip, rows of `label … current value`, and the selected
+/// row's description. Key hints live in the footer only.
+fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
+    let popup_open = app.picker.is_some();
+    let Some(view) = app.settings_view.as_mut() else {
+        return;
+    };
+    let muted = Style::default().fg(theme::muted());
+    let block = Block::default()
+        .title(" Settings ")
+        .borders(Borders::ALL)
+        .border_style(muted);
+    let frame = block.inner(area);
+    f.render_widget(block, area);
+    // One column of padding inside the border on each side.
+    let inner = Rect::new(
+        frame.x.saturating_add(1),
+        frame.y,
+        frame.width.saturating_sub(2),
+        frame.height,
+    );
+    view.tab_areas.clear();
+    view.row_areas.clear();
+    if inner.width < 12 || inner.height < 5 {
+        return;
+    }
+    let width = inner.width as usize;
+
+    // Tab strip. When the names do not fit, the active tab stays whole and the rest shorten.
+    let filtering = !view.filter.is_empty();
+    let full: usize = view
+        .tabs
+        .iter()
+        .map(|tab| tab.name.chars().count() + 2)
+        .sum();
+    let short = |tab: &SettingsTab| tab.name.split_whitespace().next().unwrap_or("").to_string();
+    // Narrower still: drop the leading pad so every tab stays on screen.
+    let tight = full > width
+        && view
+            .tabs
+            .iter()
+            .map(|tab| short(tab).chars().count() + 2)
+            .sum::<usize>()
+            > width;
+    let mut spans = Vec::new();
+    let mut x = inner.x;
+    for (index, tab) in view.tabs.iter().enumerate() {
+        let active = index == view.active && !filtering;
+        let name = if full <= width || (active && !tight) {
+            tab.name.clone()
+        } else {
+            short(tab)
+        };
+        let text = if tight {
+            format!("{name} ")
+        } else {
+            format!(" {name} ")
+        };
+        let cells = text.chars().count() as u16;
+        if x + cells > inner.x + inner.width {
+            break;
+        }
+        let style = if active {
+            Style::default()
+                .fg(theme::accent())
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            muted
+        };
+        view.tab_areas.push(Rect::new(x, inner.y, cells, 1));
+        spans.push(Span::styled(text, style));
+        x += cells;
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    if filtering {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Filter  ", muted),
+                Span::raw(view.filter.clone()),
+            ])),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
+    }
+
+    // Rows, scrolled so the selected one stays in view. Exactly one blank row, then the
+    // selected row's description.
+    let rows = settings::visible(view);
+    let list = Rect::new(
+        inner.x,
+        inner.y + 2,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    let selected = settings::selected_position(view).min(rows.len().saturating_sub(1));
+    let height = list.height as usize;
+    let top = if height == 0 {
+        0
+    } else {
+        selected.saturating_sub(height - 1)
+    };
+    let mut lines = Vec::new();
+    for (position, (tab, row)) in rows.iter().enumerate().skip(top).take(height) {
+        let item = &view.tabs[*tab].rows[*row];
+        let is_selected = position == selected;
+        let label = if filtering {
+            format!("{} › {}", view.tabs[*tab].name, item.label)
+        } else {
+            item.label.clone()
+        };
+        let marker = if is_selected { "> " } else { "  " };
+        let room = width.saturating_sub(marker.chars().count());
+        // The value keeps up to half the row; the label gets the rest, with a gap between.
+        let value = ellipsis(&item.value, room / 2);
+        let label = ellipsis(&label, room.saturating_sub(value.chars().count() + 2));
+        let gap = room.saturating_sub(label.chars().count() + value.chars().count());
+        // Design system, list picker: the selected row is marked by `>` and accent on panel.
+        let style = if is_selected {
+            Style::default()
+                .fg(theme::accent())
+                .bg(theme::selection())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::styled(
+            format!("{marker}{label}{:gap$}{value}", ""),
+            style,
+        ));
+        view.row_areas.push((
+            Rect::new(list.x, list.y + (position - top) as u16, list.width, 1),
+            position,
+        ));
+    }
+    if rows.is_empty() {
+        lines.push(Line::styled("No setting matches", muted));
+    }
+    f.render_widget(Paragraph::new(lines), list);
+    if let Some((tab, row)) = rows.get(selected).filter(|_| !popup_open) {
+        let description = ellipsis(&view.tabs[*tab].rows[*row].description, width);
+        let shown = rows.len().min(height) as u16;
+        f.render_widget(
+            Paragraph::new(Line::styled(description, muted)),
+            Rect::new(inner.x, list.y + shown + 1, inner.width, 1),
+        );
+    }
 }
 
 /// Keep the title editor in the tab row, including a single-tab window during rename.
@@ -1309,7 +1511,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 app.activity.render_dirty = false;
             }
             let query = app.activity.query_with_cursor();
-            let block=Block::default().title(format!("Activity · Find: {query} · {} matches · Enter/Shift+Enter find · Alt+↑/↓ card · Ctrl+C copy · Esc close", app.activity.matches.len())).borders(Borders::ALL);
+            let block = Block::default()
+                .title(format!(
+                    "Activity · Find: {query} · {} matches",
+                    app.activity.matches.len()
+                ))
+                .borders(Borders::ALL);
             let inner = block.inner(popup);
             f.render_widget(block, popup);
             let max_scroll = app
@@ -2376,143 +2583,151 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         "{} saved drafts/requests retained",
         app.keep.recovery_choices.len()
     );
-    let (left, left_style) = if app.ready_update_path.is_some() {
-        (
-            "Update ready · R restart now · L later",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else if app.recovery_warning().is_some() {
-        (
-            "draft not saved locally · retrying persistence",
-            Style::default().fg(Color::Red),
-        )
-    } else if let Some(warning) = app.store_warning.as_deref() {
-        (warning, Style::default().fg(Color::Red))
-    } else if let Some(m) = flash {
-        (m, Style::default().fg(Color::Indexed(179)))
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Effort)
-    {
-        (
-            if w < 75 {
-                "Enter apply \u{b7} Esc cancel"
-            } else {
-                app.footer_left.as_str()
-            },
-            Style::default().fg(Color::DarkGray),
-        )
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Update)
-        && app.job.is_some()
-    {
-        (
-            if app
-                .job
-                .as_ref()
-                .is_some_and(|job| job.kind == JobKind::Update)
-            {
-                if w < 75 {
-                    if app.update_details {
-                        "D back \u{b7} Esc cancel \u{b7} \u{2193} more"
-                    } else {
-                        "D details \u{b7} Esc cancel \u{b7} \u{2193} more"
-                    }
-                } else if app.update_details {
-                    "D progress \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
-                } else {
-                    "D details \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
-                }
-            } else {
-                "\u{2191}\u{2193} scroll \u{b7} Esc cancels"
-            },
-            Style::default().fg(Color::DarkGray),
-        )
-    } else if let Some(job) = &app.job {
-        let what = match job.kind {
-            JobKind::Update => "updating",
-            JobKind::Check => "checking",
-        };
-        let line = job.status();
-        let shown: String = line.chars().take(60).collect();
-        job_line = format!(
-            "{} {what} \u{b7} {}{}{} \u{b7} Esc cancels",
-            spinner(app.tick_count),
-            crate::delegate::fmt_elapsed(job.started.elapsed()),
-            if shown.is_empty() { "" } else { " \u{b7} " },
-            shown
-        );
-        (job_line.as_str(), Style::default().fg(Color::Cyan))
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Update)
-        && app
-            .update_preview
-            .as_ref()
-            .is_some_and(|p| p.install_available)
-    {
-        if app.update_blocked_by_work() {
+    let (left, left_style) =
+        if app.settings_view.is_some() && app.picker.is_none() && flash.is_none() {
+            (settings::FOOTER, Style::default().fg(theme::muted()))
+        } else if app.ready_update_path.is_some() {
             (
-                "Update blocked: task running · Esc returns to task",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            (
-                "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
+                "Update installed · loads when current work finishes",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )
-        }
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Update)
-        && app.job.is_none()
-        && app.update_preview.is_some()
-    {
-        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
-    } else if !app.palette_entries().is_empty() {
-        (
-            "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
-            Style::default().fg(Color::DarkGray),
-        )
-    } else if app.has_selection() {
-        (
-            "right-click or Ctrl+C to copy \u{b7} click to clear",
-            Style::default().fg(Color::Indexed(179)),
-        )
-    } else if app.view.scroll > 0 {
-        (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
-    } else if app.busy {
-        (
-            if app.idle_notice.is_some() {
-                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
+        } else if app.recovery_warning().is_some() {
+            (
+                "draft not saved locally · retrying persistence",
+                Style::default().fg(Color::Red),
+            )
+        } else if let Some(warning) = app.store_warning.as_deref() {
+            (warning, Style::default().fg(Color::Red))
+        } else if let Some(m) = flash {
+            (m, Style::default().fg(Color::Indexed(179)))
+        } else if app.activity.detail.is_some() {
+            (
+                "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
+                Style::default().fg(theme::muted()),
+            )
+        } else if app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Effort)
+        {
+            (
+                if w < 75 {
+                    "Enter apply \u{b7} Esc cancel"
+                } else {
+                    app.footer_left.as_str()
+                },
+                Style::default().fg(Color::DarkGray),
+            )
+        } else if app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Update)
+            && app.job.is_some()
+        {
+            (
+                if app
+                    .job
+                    .as_ref()
+                    .is_some_and(|job| job.kind == JobKind::Update)
+                {
+                    if w < 75 {
+                        if app.update_details {
+                            "D back \u{b7} Esc cancel \u{b7} \u{2193} more"
+                        } else {
+                            "D details \u{b7} Esc cancel \u{b7} \u{2193} more"
+                        }
+                    } else if app.update_details {
+                        "D progress \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                    } else {
+                        "D details \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                    }
+                } else {
+                    "\u{2191}\u{2193} scroll \u{b7} Esc cancels"
+                },
+                Style::default().fg(Color::DarkGray),
+            )
+        } else if let Some(job) = &app.job {
+            let what = match job.kind {
+                JobKind::Update => "updating",
+                JobKind::Check => "checking",
+            };
+            let line = job.status();
+            let shown: String = line.chars().take(60).collect();
+            job_line = format!(
+                "{} {what} \u{b7} {}{}{} \u{b7} Esc cancels",
+                spinner(app.tick_count),
+                crate::delegate::fmt_elapsed(job.started.elapsed()),
+                if shown.is_empty() { "" } else { " \u{b7} " },
+                shown
+            );
+            (job_line.as_str(), Style::default().fg(Color::Cyan))
+        } else if app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Update)
+            && app
+                .update_preview
+                .as_ref()
+                .is_some_and(|p| p.install_available)
+        {
+            if app.update_blocked_by_work() {
+                (
+                    "Update blocked: task running · Esc returns to task",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
-                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
-            },
-            Style::default().fg(Color::DarkGray),
-        )
-    } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
-        (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
-    } else {
-        (
-            if app.idle_notice.is_some() && app.picker.is_none() {
-                idle_footer_hint.as_str()
-            } else {
-                app.footer_left.as_str()
-            },
-            Style::default().fg(Color::DarkGray),
-        )
-    };
+                (
+                    "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
+            }
+        } else if app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Update)
+            && app.job.is_none()
+            && app.update_preview.is_some()
+        {
+            ("Enter / Esc close", Style::default().fg(Color::DarkGray))
+        } else if !app.palette_entries().is_empty() {
+            (
+                "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
+                Style::default().fg(Color::DarkGray),
+            )
+        } else if app.has_selection() {
+            (
+                "right-click or Ctrl+C to copy \u{b7} click to clear",
+                Style::default().fg(Color::Indexed(179)),
+            )
+        } else if app.view.scroll > 0 {
+            (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
+        } else if app.busy {
+            (
+                if app.idle_notice.is_some() {
+                    "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
+                } else {
+                    "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
+                },
+                Style::default().fg(Color::DarkGray),
+            )
+        } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
+            (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
+        } else {
+            (
+                if app.idle_notice.is_some() && app.picker.is_none() {
+                    idle_footer_hint.as_str()
+                } else {
+                    app.footer_left.as_str()
+                },
+                Style::default().fg(Color::DarkGray),
+            )
+        };
     let left = if app.workspace.focused.is_some() && app.picker.is_none() {
         "File pane · Esc chat · F6 change focus · Ctrl+S save"
     } else {

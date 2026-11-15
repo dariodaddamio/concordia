@@ -189,6 +189,10 @@ pub(super) fn handle_key(
         }
         return false;
     }
+    if app.settings_view.is_some() && app.picker.is_none() {
+        settings::key(app, key);
+        return false;
+    }
     if app
         .picker
         .as_ref()
@@ -240,26 +244,6 @@ pub(super) fn handle_key(
     }
     if key.code != KeyCode::Enter || !key.modifiers.is_empty() {
         app.busy_send_confirmation = None;
-    }
-    if app.ready_update_path.is_some()
-        && app.picker.is_none()
-        && app.editor.text().is_empty()
-        && key.modifiers.is_empty()
-    {
-        match key.code {
-            KeyCode::Char('r' | 'R') => {
-                app.restart_ready_update();
-                return false;
-            }
-            KeyCode::Char('l' | 'L') => {
-                app.ready_update_path = None;
-                app.restart_when_idle = false;
-                // L postpones this update until the next app start or until another install arrives.
-                app.push_system("Update kept for a later restart.");
-                return false;
-            }
-            _ => {}
-        }
     }
     if raster::key(app, &key) {
         return false;
@@ -995,6 +979,10 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         app.rename_editor = None;
     }
     if local_terminal::mouse(app, m) {
+        return;
+    }
+    if app.settings_view.is_some() && app.picker.is_none() && !app.key_sheet {
+        settings::mouse(app, m);
         return;
     }
     if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {

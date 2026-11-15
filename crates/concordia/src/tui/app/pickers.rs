@@ -1659,7 +1659,7 @@ impl App {
                     _ => self.push_system(format!("{label} validated; no change was made. Esc cancels and leaves the current state unchanged.")),
                 }
             }
-            PickerKind::Settings | PickerKind::FilePreferences | PickerKind::Customization => {
+            PickerKind::SettingsView | PickerKind::FilePreferences | PickerKind::Customization => {
                 settings::choose(self, kind, &id)
             }
             PickerKind::Idle => match id.as_str() {

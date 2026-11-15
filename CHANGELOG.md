@@ -1,5 +1,19 @@
 # Changelog
 
+### Changed (2026-11-15d)
+
+- `/config` is now a settings screen with tabs. Left and Right (or Tab and Shift+Tab) move between General, Appearance, Models and roles, Accounts, Updates and Advanced; Up and Down move between rows; Enter or Space changes the selected row in place, and every row shows its current value. Typing filters across all tabs, and Esc clears the filter, then closes the screen with your draft untouched. Rows that need a list, such as the model or the theme, open their popup over the screen and return to the same row.
+- The R and L keys no longer act on a pending update. A new version loads by itself once no work is running, so the keys only risked swallowing the first letter of a message.
+- `concordia --version` names the commit the program was built from, and a build made from uncommitted changes shows its build time in the header.
+
+### Fixed (2026-11-15d)
+
+- The automatic restart into a new version now also waits while a file you edited is unsaved.
+- An update you start yourself restarts the window as soon as it is installed.
+- The caret keeps blinking while a reply streams.
+- Key hints appear only in the footer: the Activity panel title and the settings descriptions no longer repeat them.
+- Role rows show the provider, account, model and effort that will be used, marked "(inherited)" when they come from the current chat, instead of the words "provider default" and "model default".
+
 ### Fixed (2026-11-15c)
 
 - Concordia restarts into a new version by itself. A window notices when its installed program is replaced, by an in-app update, a background update, an update at launch or `concordia install` from another terminal, and restarts as soon as no turn, worker or question is active. Tabs, drafts and queues are kept. `L` postpones the restart until the next start.

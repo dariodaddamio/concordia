@@ -555,6 +555,8 @@ struct Window {
     pressed: Option<MouseButton>,
     focused: bool,
     blink: bool,
+    /// Whether the caret timer is armed; re-arming it on every paint would keep it from firing.
+    caret_timer: bool,
     wheel: i32,
     last_motion: Option<MouseEvent>,
     last_sub_row: u8,
@@ -2380,6 +2382,7 @@ unsafe fn window_thread(
         pressed: None,
         focused: false,
         blink: true,
+        caret_timer: false,
         wheel: 0,
         last_motion: None,
         last_sub_row: 0,
@@ -2654,9 +2657,13 @@ unsafe extern "system" fn window_proc(
                 .unwrap_or_else(|e| e.into_inner())
                 .cursor_visible;
             if window.focused && cursor_visible {
-                SetTimer(hwnd, 1, 500, None);
+                if !window.caret_timer {
+                    SetTimer(hwnd, 1, 500, None);
+                    window.caret_timer = true;
+                }
             } else {
                 KillTimer(hwnd, 1);
+                window.caret_timer = false;
             }
             window.paint(hwnd, None);
             0
@@ -2764,11 +2771,13 @@ unsafe extern "system" fn window_proc(
             };
             if !window.focused {
                 KillTimer(hwnd, 1);
+                window.caret_timer = false;
             } else if let Some(caret) = caret {
                 window.blink = !window.blink;
                 InvalidateRect(hwnd, &caret, 0);
             } else {
                 KillTimer(hwnd, 1);
+                window.caret_timer = false;
             }
             0
         }
@@ -2800,6 +2809,7 @@ unsafe extern "system" fn window_proc(
                 .cursor_visible
             {
                 SetTimer(hwnd, 1, 500, None);
+                window.caret_timer = true;
             }
             window.blink = true;
             let status = *window
@@ -2815,6 +2825,7 @@ unsafe extern "system" fn window_proc(
         WM_KILLFOCUS => {
             window.focused = false;
             KillTimer(hwnd, 1);
+            window.caret_timer = false;
             let status = *window
                 .shared
                 .requested_status
