@@ -18,25 +18,34 @@ pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
             "rate_limit_exceeded",
             "usage_limit_reached",
             "quota_exceeded",
+            "usage_limit_exceeded",
         ],
         ProviderKind::Codex => &[
             "UsageLimitExceeded",
             "usage_limit_reached",
             "quota_exceeded",
             "insufficient_quota",
+            "usage_limit_exceeded",
         ],
         ProviderKind::Cursor | ProviderKind::Grok => &[
             "rate_limit_exceeded",
             "quota_exceeded",
             "usage_limit_reached",
+            "usage_limit_exceeded",
         ],
-        ProviderKind::Opencode => &["rate_limit", "rate_limit_exceeded", "quota_exceeded"],
+        ProviderKind::Opencode => &[
+            "rate_limit",
+            "rate_limit_exceeded",
+            "quota_exceeded",
+            "usage_limit_exceeded",
+        ],
     };
     input.lines().any(|line| {
         let line = line.trim_start();
         if signals.iter().any(|signal| {
-            line.get(..signal.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(signal))
-                && line.as_bytes().get(signal.len()) == Some(&b':')
+            line.eq_ignore_ascii_case(signal)
+                || (line.get(..signal.len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case(signal))
+                    && line.as_bytes().get(signal.len()) == Some(&b':'))
         }) {
             return true;
         }

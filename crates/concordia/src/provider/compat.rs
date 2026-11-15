@@ -27,7 +27,7 @@ pub const OBSERVED_INTERFACES: &[(ProviderKind, &[&str])] = &[
 ];
 
 /// Bump when the help parsing below changes, so cached results are read again.
-const PARSER_REV: u32 = 2;
+const PARSER_REV: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_MAX: usize = 512 * 1024;
 
@@ -64,6 +64,9 @@ pub struct Caps {
     pub partial_messages: bool,
     /// `-s/--sandbox`.
     pub sandbox: bool,
+    /// Claude advertises the native `--effort` option.
+    #[serde(default)]
+    pub effort: bool,
     /// False when native help was unavailable or malformed.
     pub known: bool,
 }
@@ -76,6 +79,7 @@ impl Caps {
             plan_mode: false,
             partial_messages: false,
             sandbox: false,
+            effort: false,
             known: false,
         }
     }
@@ -180,6 +184,7 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             plan_mode: permission_mode && has("\"plan\""),
             partial_messages: has("--include-partial-messages"),
             sandbox: has("--sandbox"),
+            effort: has("--effort"),
             known: true,
         },
         ProviderKind::Codex => Caps {
@@ -189,6 +194,7 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             plan_mode: has("--sandbox"),
             partial_messages: false,
             sandbox: has("--sandbox"),
+            effort: false,
             known: true,
         },
         ProviderKind::Cursor => Caps {
@@ -197,6 +203,7 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             plan_mode: has("--mode") && has("plan") || has("--plan"),
             partial_messages: has("--stream-partial-output"),
             sandbox: has("--sandbox"),
+            effort: false,
             known: true,
         },
         ProviderKind::Grok => Caps {
@@ -205,6 +212,7 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             plan_mode: false,
             partial_messages: false,
             sandbox: false,
+            effort: false,
             known: true,
         },
         ProviderKind::Opencode => Caps {
@@ -213,6 +221,7 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
             plan_mode: false,
             partial_messages: false,
             sandbox: false,
+            effort: false,
             known: true,
         },
     };

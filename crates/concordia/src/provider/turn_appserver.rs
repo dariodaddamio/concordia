@@ -589,7 +589,7 @@ pub(super) async fn run(
         let mut params=json!({"threadId":id,"input":content,"cwd":plan.cwd,"approvalPolicy":approval,"approvalsReviewer":"user","sandboxPolicy":policy});
         if let Some(model)=req.model {params["model"]=json!(model);}
         if let Some(effort)=req.effort.filter(|effort| !effort.trim().is_empty()) {
-            params["reasoningEffort"] = json!(effort);
+            params["effort"] = json!(effort);
         }
         let turn=tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"turn/start",params)).await??;
         conn.turn=Some(turn["turn"]["id"].as_str().filter(|id|!id.is_empty()&&id.len()<=4096).context("Native turn ID missing")?.into());

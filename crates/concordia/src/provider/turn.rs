@@ -761,11 +761,7 @@ async fn run_provider_turn_inner(
     }
     let mut plan = plan_provider_turn(req)?;
     if req.provider == ProviderKind::Claude {
-        super::claude::add_effort_if_supported(
-            Path::new(&plan.command),
-            &mut plan.argv,
-            req.effort,
-        )?;
+        super::claude::add_effort_if_supported(&mut plan.argv, req.effort)?;
     }
     let documents = pdf_message(req)?;
     if documents.is_some() && mode == crate::native_input::Mode::Standard {
