@@ -276,7 +276,8 @@ impl App {
             .home_path
             .as_ref()
             .map(|home| home.to_string_lossy().into_owned());
-        let prior_provider = self.provider;
+        let prior_provider = self.prior_provider;
+        let prior_account = self.prior_account.clone();
         let prior_session = self.native_session_id.clone();
         self.refresh_binding();
         let new_home = self
@@ -306,7 +307,8 @@ impl App {
         {
             self.push_system(decision.reason);
         }
-        self.prior_provider = self.provider;
+        self.prior_provider = prior_provider;
+        self.prior_account = prior_account;
         self.prior_home = self.continuity_home();
     }
     pub(in crate::tui) fn open_use_picker(&mut self) {
@@ -723,6 +725,7 @@ impl App {
                         }
                         None => {
                             self.prior_provider = self.provider;
+                            self.prior_account = self.account.clone();
                             self.prior_home = self.continuity_home();
                             self.account.clear();
                             self.home_path = None;

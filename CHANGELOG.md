@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-14k)
+
+- Handoff cards now retain the source account identity, and Ctrl+O expands the handoff card when
+  later provider activity would otherwise take focus.
+
 ### Fixed (2026-11-14j)
 
 - `/model` rows, headers and using lines now show the display name with the full model ID;

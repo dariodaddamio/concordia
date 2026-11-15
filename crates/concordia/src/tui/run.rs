@@ -170,6 +170,7 @@ fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
     // The normal persist tick still retries a real dirty lease when the tab is used.
     app.prior_provider = app.provider;
+    app.prior_account = app.account.clone();
     app.prior_home = app.continuity_home();
     app.workspace.set_native_windows(use_window);
     app
@@ -1148,10 +1149,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     app.native_usage_session = app.native_session_id.clone();
                     let session = app.native_session_id.clone();
                     let prior_prov = app.prior_provider;
-                    let prior_account = app.account.clone();
+                    let prior_account = app.prior_account.clone();
                     let prior_home = app.prior_home.clone();
                     // This dispatch carries any pending switch; later turns resume the new session.
                     app.prior_provider = app.provider;
+                    app.prior_account = app.account.clone();
                     app.prior_home = owner
                         .home
                         .as_ref()

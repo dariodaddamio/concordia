@@ -1,5 +1,13 @@
 ## This slice
 
+### FIX3b live handoff proof repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,run.rs,app/pickers.rs,continuation.rs,session_ui.rs,window_session.rs} | ok: 1, 4, 5, 6, 10 | Store the prior account beside the existing prior provider so the handoff card reads the canonical switch boundary; no second account registry is introduced. |
+| crates/concordia/src/tui/activity.rs | ok: 1, 4, 5, 7, 10 | Reuse the existing Ctrl+O activity selection and prioritize the one handoff card only when present; no new shortcut or activity store is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible handoff correction under the required build metadata. |
+
 ### FIX1b model picker details - anti-slop gate
 
 | path | tendency_check | justification |

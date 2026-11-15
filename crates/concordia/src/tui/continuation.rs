@@ -532,6 +532,7 @@ impl App {
             return;
         }
         let previous_provider = self.provider;
+        let previous_account = self.account.clone();
         let previous_home = self.continuity_home();
         let trust = self.trust;
         if let Err(error) = select_account(&self.state_root, target) {
@@ -556,6 +557,7 @@ impl App {
         self.native_session_id = None;
         self.native_agents = native_agents::State::default();
         self.prior_provider = previous_provider;
+        self.prior_account = previous_account;
         self.prior_home = previous_home;
         self.need_context_pack = true;
         self.log_switch(previous_provider);
