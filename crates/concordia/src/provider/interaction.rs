@@ -1047,7 +1047,10 @@ impl InteractionConnection {
 
     /// Called only after a successful native stdio initialization, before sending a prompt.
     pub fn initialized_claude(&mut self, version: &str) -> Result<(), String> {
-        if version != crate::capacity::claude_capacity::CLI_VERSION
+        if !crate::provider::compat::version_at_least(
+            version,
+            crate::capacity::claude_capacity::CLI_VERSION,
+        )
             || self
                 .owner
                 .as_ref()
@@ -1105,8 +1108,17 @@ impl InteractionConnection {
             "claude/can_use_tool" | "claude/ask_question"
         );
         let claude_bound = self.capabilities.permissions.transport == "claude-stdio"
-            && self.capabilities.permissions.cli_version.as_deref()
-                == Some(crate::capacity::claude_capacity::CLI_VERSION)
+            && self
+                .capabilities
+                .permissions
+                .cli_version
+                .as_ref()
+                .is_some_and(|version| {
+                    crate::provider::compat::version_at_least(
+                        version,
+                        crate::capacity::claude_capacity::CLI_VERSION,
+                    )
+                })
             && params["sessionId"].as_str() == Some(session)
             && params
                 .pointer("/toolCall/toolCallId")
@@ -1414,6 +1426,7 @@ mod tests {
             .is_err());
         assert!(claude.initialized_claude("unknown").is_err());
         assert!(claude.initialized_claude("2.1.318").is_err());
+        claude.initialized_claude("2.1.325").unwrap();
         claude
             .initialized_claude(crate::capacity::claude_capacity::CLI_VERSION)
             .unwrap();

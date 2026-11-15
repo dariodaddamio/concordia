@@ -257,3 +257,13 @@
 | crates/concordia/src/tui/native_window.rs | ok: 1, 4, 6, 10 | Keep one native tray target and serialize balloon delivery until the target is consumed because Windows does not identify queued balloons in the callback. |
 | crates/concordia/tests/tui_journeys.rs | ok: 5, 9, 10 | Extend the real native journey to cover restart restoration and queued click targeting. |
 | crates/concordia/src/version.rs, CHANGELOG.md, PLAN.md | ok: 5, 10 | Record the review repair and the Needs attention decision in existing project metadata. |
+
+### FIX1 model picker - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/models.rs, crates/concordia/src/provider/compat.rs | ok: 1, 2, 4, 5, 10 | Keep provider metadata parsing and version comparison in the existing model/compat owners; accept only the pinned numeric minimum or newer native Claude releases and retain the batch-shim rejection. |
+| crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 6, 10 | Make the existing picker row projection show the one provider-reported display name and full ID; no second model catalog or UI-side model list is added. |
+| crates/concordia/src/tui/settings.rs, crates/concordia/src/tui/local_terminal.rs | ok: 1, 5, 10 | Repair confirmed mojibake literals in place; no formatting layer or duplicate text source is introduced. |
+| crates/concordia/src/tui/activity_tests.rs, crates/concordia/src/tui/tests/input_dispatch.rs | ok: 5, 9 | Supply the existing picker layout field in two compile-only fixtures so the requested all-target check reaches the changed code; no production behavior is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing picker correction under the existing build metadata owners. |

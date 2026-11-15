@@ -396,8 +396,10 @@ pub(super) async fn run(
     })
     .await?
     .map_err(anyhow::Error::msg)?;
+    let observed_version = crate::provider::compat::version_token(&version)
+        .ok_or_else(|| anyhow::anyhow!("Claude native permission transport returned no version"))?;
     anyhow::ensure!(
-        crate::provider::compat::version_token(&version).as_deref() == Some(SUPPORTED_VERSION),
+        crate::provider::compat::version_at_least(&observed_version, SUPPORTED_VERSION),
         "Claude native permission transport requires CLI {SUPPORTED_VERSION}"
     );
     let mut launch = crate::provider::launch::prepare(plan)?;
@@ -564,10 +566,11 @@ pub(super) async fn run(
                 if value.pointer("/response/request_id").and_then(Value::as_str) == Some(initialize_id.as_str()) {
                     anyhow::ensure!(value["type"] == "control_response" && value["response"]["subtype"] == "success"
                         && value["response"]["response"].is_object(), "Claude native initialize was rejected");
-                    anyhow::ensure!(value.pointer("/response/response/claude_code_version").and_then(Value::as_str) == Some(SUPPORTED_VERSION),
+                    anyhow::ensure!(value.pointer("/response/response/claude_code_version").and_then(Value::as_str)
+                        .is_some_and(|version| crate::provider::compat::version_at_least(version, SUPPORTED_VERSION)),
                         "Claude native initialize version differs from the selected CLI");
                     initialized = true;
-                    interactions.initialized_claude(SUPPORTED_VERSION).map_err(anyhow::Error::msg)?;
+                    interactions.initialized_claude(observed_version.as_str()).map_err(anyhow::Error::msg)?;
                     write_frame(&mut input, &message).await?;
                     sent_prompt = true;
                 }

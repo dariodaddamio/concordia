@@ -1970,8 +1970,9 @@ pub(in crate::tui) fn model_picker_rows(
             PickerRow {
                 id: format!("model:{}", model.id),
                 label: format!(
-                    "{}{}",
+                    "{} · {}{}",
                     model.display_name,
+                    model.id,
                     if current { " · current" } else { "" }
                 ),
                 detail: if model.efforts.is_empty() {

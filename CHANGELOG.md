@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-14c)
+
+- `/model` now accepts the pinned Claude CLI version and newer native releases, and shows each
+  provider-reported display name with its full model ID and reported effort levels.
+- Corrected two settings separators that contained mojibake instead of a middle dot.
+
 ### Fixed (2026-11-14b)
 
 - The usage page moves between account cards with all four arrow keys, and keeps one heading and
