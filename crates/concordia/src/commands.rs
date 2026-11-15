@@ -12,6 +12,8 @@ pub enum SlashCommand {
     UseRemove(Option<String>),
     Model,
     ModelSet(String),
+    /// `/effort [level]`: choose a provider-reported reasoning effort.
+    Effort(Option<String>),
     /// `/usage`: limits for the current account.
     Usage,
     /// `/usage all`: limits for every ready account.
@@ -222,6 +224,10 @@ pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
         },
         "model" if rest.is_empty() => Some((SlashCommand::Model, false)),
         "model" => Some((SlashCommand::ModelSet(rest.to_string()), false)),
+        "effort" => Some((
+            SlashCommand::Effort((!rest.is_empty()).then(|| rest.to_string())),
+            false,
+        )),
         "usage"
             if (rest.eq_ignore_ascii_case("all") || rest.eq_ignore_ascii_case("refresh"))
                 && parts.next().is_none() =>
@@ -289,7 +295,7 @@ pub fn is_provider_passthrough(line: &str) -> bool {
 
 /// Concordia commands that run the provider's own feature for the active account, so they never
 /// need the shared-command picker.
-const REUSES_PROVIDER: &[&str] = &["/model"];
+const REUSES_PROVIDER: &[&str] = &["/model", "/effort"];
 
 /// Returns the command name when the typed slash command is registered by both Concordia and
 /// the selected provider. Arguments remain in the original line and are routed by the caller.
@@ -383,6 +389,11 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         CommandCategory::Settings,
         None,
         None
+    ),
+    command!(
+        "/effort", [], "[LEVEL]", "choose reasoning effort",
+        "Choose a provider-reported effort for the active model.",
+        true, CommandCategory::Settings, None, None
     ),
     command!(
         "/rename",
@@ -689,9 +700,10 @@ pub fn dispatch_slash(
         ),
         SlashCommand::Resume => (CommandOutcome::OpenResume, Vec::new()),
         // Handled by the TUI (it owns the live mode); nothing to do headless.
-        SlashCommand::Mode(_) | SlashCommand::UseAccount(_) | SlashCommand::ModelSet(_) => {
-            (CommandOutcome::Ok, Vec::new())
-        }
+        SlashCommand::Mode(_)
+        | SlashCommand::UseAccount(_)
+        | SlashCommand::ModelSet(_)
+        | SlashCommand::Effort(_) => (CommandOutcome::Ok, Vec::new()),
         SlashCommand::Use => (CommandOutcome::OpenUse, Vec::new()),
         SlashCommand::UseAdd(None) => (CommandOutcome::OpenAddProvider, Vec::new()),
         SlashCommand::UseRemove(_) => (CommandOutcome::OpenRemovePicker, Vec::new()),

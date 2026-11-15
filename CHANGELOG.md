@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-15a)
+
+- Choosing a model now opens its reported effort choices before applying the pair. Escape keeps the previous selection; `/effort [LEVEL]` changes effort directly.
+- Model and effort header controls show dropdown arrows and a hand cursor.
+- Update progress separates Prepare, Build/Download, Verify, Install and Restart. Compiler warnings have a count and inspectable details (`D`), with readable failure feedback instead of raw messages replacing the current step.
+
 ### Fixed (2026-11-14p)
 
 - Selected reasoning effort now reaches Codex turns and supported Claude launches; worker requests retain their selected effort.

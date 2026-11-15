@@ -32,6 +32,7 @@ Ask your question and press Enter
 | `/terminal` | `[open\|native\|hide\|close]` | open the local terminal or selected provider interface | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
+| `/effort` | `[LEVEL]` | choose reasoning effort | everyday |
 | `/rename` | `[TITLE]` | rename the current chat | advanced |
 | `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
 | `/mode` | `[plan\|ask\|edit\|full]` | how much the agent may do without asking | everyday |
@@ -49,11 +50,16 @@ Ask your question and press Enter
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
-`/model` lists only models reported for the selected account. The clickable header effort control
-opens the same provider-reported choices; the selection is persisted with the account/model choice.
+`/model` lists only models reported for the selected account. Choosing a model with multiple effort
+levels opens its effort choices next; Enter applies the model and effort together, and Esc keeps
+the previous pair. `/effort` opens those choices for the current model, or `/effort high` applies a
+reported level directly. The header model and effort controls have dropdown arrows and a hand cursor.
 Codex sends the standard `model_reasoning_effort` setting and app-server `effort` field, Claude
 uses native cached `--effort` capability (with the provider's supported-value cap), while Cursor and Grok retain the
 provider's model-variant IDs. This is a projection of provider catalogs, not a universal effort API.
+
+During `/update`, the progress page shows the actual Prepare, Build/Download, Verify, Install and
+Restart stages. Warnings stay separate from progress; press D for compiler details and Esc to cancel.
 
 Ctrl+G is the current recovery surface for native agent reports and Concordia worker runs. The
 `/delegate` recovery view inspects or retries a selected run; older stop/use/collect command names

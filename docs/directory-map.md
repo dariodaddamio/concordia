@@ -13,6 +13,7 @@ provider account data and runtime records live outside it. There is no JavaScrip
 | `crates/concordia/src/agent_records.rs` | Durable delegated-agent identity and lifecycle records | Exact parent/workspace/run binding; bounded, redacted state |
 | `crates/concordia/src/mcp` | Local MCP proxy transports | Stdio and HTTP/SSE bounds; Windows HTTPS uses WinHTTP |
 | `crates/concordia/src/tui` | Shared ratatui UI, native window, input and conversation state, including the grouped Agents view | Each conversation tab retains its own App; provider-run rows remain read-only |
+| `crates/concordia/src/tui/update_ui.rs` | Update progress and diagnostic presentation | Reads the bounded job snapshot; execution stays in `update.rs` and `release.rs` |
 | `crates/concordia/src/harness` | Local setup, shared project connections and verification | Native consent stays provider-owned |
 | `crates/concordia/assets` | Bundled artwork, icon and model catalog | Asset provenance is recorded beside the files |
 | `crates/concordia/tests` | Integration, fixture and opt-in live checks | Support executables are never installed |

@@ -34,15 +34,13 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         let page = Layout::vertical([
             Constraint::Length(2),
             Constraint::Min(1),
-            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .split(screen);
         f.render_widget(Clear, screen);
         draw_header(f, page[0], app);
         draw_picker(f, page[1], app);
-        draw_input(f, page[2], app);
-        draw_footer(f, page[3], app);
+        draw_footer(f, page[2], app);
     } else {
         let (chat_screen, panel_screen) =
             if worker_panel::visible(screen.width, app.worker_panel_open) {
@@ -636,14 +634,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
-    let brand = if app.header_email_revealed && area.width < 100 {
+    let brand = if app.effort.is_some() && area.width < 75 {
+        String::new()
+    } else if app.header_email_revealed && area.width < 100 {
         " ".into()
     } else if area.width >= 75 {
         format!(" concordia {}   ", short_stamp())
     } else {
         " concordia  ".into()
     };
-    let model = format!("  {model}");
     let navigation = if landing::visible(app) {
         " → Chat "
     } else {
@@ -670,19 +669,48 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(provider_text.clone()).width() as u16,
         1,
     ));
-    if left.iter().map(Span::width).sum::<usize>() + model.len() <= available {
+    let effort_text = app
+        .effort
+        .as_deref()
+        .map(|effort| format!("  Effort {effort} \u{25be}"));
+    let effort_width = effort_text
+        .as_deref()
+        .map_or(0, |text| Line::from(text).width());
+    let model_budget =
+        available.saturating_sub(left.iter().map(Span::width).sum::<usize>() + effort_width);
+    if model_budget >= 5 {
+        let full_width = Line::from(model.as_str()).width();
+        let mut used = 0;
+        let clipped: String = model
+            .chars()
+            .take_while(|c| {
+                used += text::char_width(*c);
+                used <= model_budget - if full_width + 4 > model_budget { 5 } else { 4 }
+            })
+            .collect();
+        let model = format!(
+            "  {clipped}{} \u{25be}",
+            if full_width + 4 > model_budget {
+                "\u{2026}"
+            } else {
+                ""
+            }
+        );
         let model_x = left.iter().map(Span::width).sum::<usize>();
-        let model_width = model.len() as u16;
+        let model_width = Line::from(model.clone()).width() as u16;
         left.push(Span::styled(model, bar.fg(Color::Gray)));
         app.areas.header_model = Some(Rect::new(area.x + model_x as u16, area.y, model_width, 1));
-        if let Some(effort) = app.effort.as_deref() {
-            let text = format!("  effort:{effort}");
-            let x = left.iter().map(Span::width).sum::<usize>();
-            if x + text.len() <= available {
-                left.push(Span::styled(text.clone(), bar.fg(Color::Magenta)));
-                app.areas.header_effort =
-                    Some(Rect::new(area.x + x as u16, area.y, text.len() as u16, 1));
-            }
+    }
+    if let Some(text) = effort_text {
+        let x = left.iter().map(Span::width).sum::<usize>();
+        if x + Line::from(text.clone()).width() <= available {
+            left.push(Span::styled(text.clone(), bar.fg(Color::Magenta)));
+            app.areas.header_effort = Some(Rect::new(
+                area.x + x as u16,
+                area.y,
+                Line::from(text).width() as u16,
+                1,
+            ));
         }
     }
     let agent_count = app.native_agents.count() + app.deleg.d.jobs.len();
@@ -1487,12 +1515,22 @@ fn update_rows(line: &crate::update::PreviewLine, width: usize) -> Vec<Line<'sta
     let dim = Style::default().add_modifier(Modifier::DIM);
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let (lead, lead_style, text, style) = match line {
-        P::Field(label, value) => (
-            format!("{label:<10} "),
-            dim,
-            value.clone(),
-            Style::default(),
-        ),
+        P::Field(label, value) => {
+            let (label_style, value_style) = match *label {
+                "Done" => (bold.fg(Color::Green), dim),
+                "Now" => (bold.fg(Color::Cyan), bold),
+                "Next" => (dim, dim),
+                "Warnings" if value != "0" => (bold.fg(Color::Yellow), bold.fg(Color::Yellow)),
+                "Errors" if value != "0" => (bold.fg(Color::Red), bold.fg(Color::Red)),
+                _ => (dim, Style::default()),
+            };
+            (
+                format!("{label:<10} "),
+                label_style,
+                value.clone(),
+                value_style,
+            )
+        }
         P::Title(t) => (String::new(), bold, t.clone(), bold.fg(Color::Cyan)),
         P::Kind(k) => {
             let color = if k.eq_ignore_ascii_case("Fixed") {
@@ -2357,11 +2395,42 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     } else if app
         .picker
         .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Effort)
+    {
+        (
+            if w < 75 {
+                "Enter apply \u{b7} Esc cancel"
+            } else {
+                app.footer_left.as_str()
+            },
+            Style::default().fg(Color::DarkGray),
+        )
+    } else if app
+        .picker
+        .as_ref()
         .is_some_and(|p| p.kind == PickerKind::Update)
         && app.job.is_some()
     {
         (
-            "\u{2191}\u{2193} scroll \u{b7} Esc cancels",
+            if app
+                .job
+                .as_ref()
+                .is_some_and(|job| job.kind == JobKind::Update)
+            {
+                if w < 75 {
+                    if app.update_details {
+                        "D back \u{b7} Esc cancel \u{b7} \u{2193} more"
+                    } else {
+                        "D details \u{b7} Esc cancel \u{b7} \u{2193} more"
+                    }
+                } else if app.update_details {
+                    "D progress \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                } else {
+                    "D details \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                }
+            } else {
+                "\u{2191}\u{2193} scroll \u{b7} Esc cancels"
+            },
             Style::default().fg(Color::DarkGray),
         )
     } else if let Some(job) = &app.job {

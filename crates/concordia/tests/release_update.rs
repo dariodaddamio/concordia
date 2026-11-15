@@ -463,10 +463,10 @@ fn full_update(feed_content_type: &'static str) {
     });
     let cfg = local_cfg(server.port);
 
-    match check(&cfg, "0.0.0", &PowerShellFetcher).unwrap() {
+    match check(&cfg, "0.0.0", &PowerShellFetcher::default()).unwrap() {
         Check::Available(rel) => {
             assert_eq!(rel.tag, tag);
-            let res = install_release(&cfg, &rel, "0.0.0", &PowerShellFetcher).unwrap();
+            let res = install_release(&cfg, &rel, "0.0.0", &PowerShellFetcher::default()).unwrap();
             assert!(
                 res.summary.starts_with("updated 0.0.0 ->"),
                 "{}",
@@ -480,7 +480,7 @@ fn full_update(feed_content_type: &'static str) {
     // Already current: nothing to do.
     let current = real_version();
     assert!(matches!(
-        check(&cfg, &current, &PowerShellFetcher).unwrap(),
+        check(&cfg, &current, &PowerShellFetcher::default()).unwrap(),
         Check::UpToDate { .. }
     ));
 }
@@ -492,12 +492,17 @@ fn a_dead_or_wrong_feed_fails_cleanly_without_installing() {
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
-    let err = check(&local_cfg(port), "0.0.0", &PowerShellFetcher).unwrap_err();
+    let err = check(&local_cfg(port), "0.0.0", &PowerShellFetcher::default()).unwrap_err();
     assert!(format!("{err:#}").contains("GET"), "{err:#}");
 
     // A server that answers 404 (wrong repo).
     let server = Server::start(HashMap::new());
-    let err = check(&local_cfg(server.port), "0.0.0", &PowerShellFetcher).unwrap_err();
+    let err = check(
+        &local_cfg(server.port),
+        "0.0.0",
+        &PowerShellFetcher::default(),
+    )
+    .unwrap_err();
     assert!(!format!("{err:#}").is_empty());
     sb.assert_nothing_installed();
 }
@@ -681,20 +686,25 @@ fn the_powershell_hasher_matches_a_known_sha256_and_handles_odd_paths() {
     let p = dir.path().join("with space [and] 'quote'.bin");
     std::fs::write(&p, b"abc").unwrap();
     assert_eq!(
-        PowerShellFetcher.sha256(&p).unwrap(),
+        PowerShellFetcher::default().sha256(&p).unwrap(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
     // The empty file, and agreement with the independent Rust implementation on real bytes.
     let e = dir.path().join("empty.bin");
     std::fs::write(&e, b"").unwrap();
     assert_eq!(
-        PowerShellFetcher.sha256(&e).unwrap(),
+        PowerShellFetcher::default().sha256(&e).unwrap(),
         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     );
     let big = real_concordia();
     let f = dir.path().join("orc.bin");
     std::fs::write(&f, &big).unwrap();
-    assert_eq!(PowerShellFetcher.sha256(&f).unwrap(), sha_hex(&big));
+    assert_eq!(
+        PowerShellFetcher::default().sha256(&f).unwrap(),
+        sha_hex(&big)
+    );
     // A missing file is an error, never an empty hash.
-    assert!(PowerShellFetcher.sha256(&dir.path().join("nope")).is_err());
+    assert!(PowerShellFetcher::default()
+        .sha256(&dir.path().join("nope"))
+        .is_err());
 }

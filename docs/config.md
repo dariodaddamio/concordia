@@ -38,8 +38,10 @@ same_provider_automatic = false # same-provider cross-account automatic handoff 
 automatic_handoff_cap = 3 # maximum automatic handoffs into one account per local day
 ```
 
-The model picker is also available from the clickable header model and effort controls. The choice
-is persisted per account/model. Codex sends `model_reasoning_effort` through app-server; Claude
+The model picker is also available from the clickable header model control. After choosing a model
+with multiple reported effort levels, choose an effort and press Enter to persist both; Esc keeps
+the previous model/effort pair. `/effort` or the header effort control opens the current model's
+choices; `/effort LEVEL` accepts only a reported level. Codex sends `model_reasoning_effort` through app-server; Claude
 passes native `--effort` only when cached CLI capability says it is supported; Cursor and Grok use
 their provider-owned model-variant IDs. Unsupported or stale provider options are not invented.
 

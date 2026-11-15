@@ -502,6 +502,14 @@ impl App {
             self.apply_picker_selection(None);
             return true;
         }
+        if let SlashCommand::Effort(level) = &cmd {
+            if let Some(level) = level {
+                self.choose_effort(level.trim());
+            } else {
+                self.open_effort_picker();
+            }
+            return true;
+        }
         if let SlashCommand::ModelSet(model) = &cmd {
             if !valid_model_id(model) {
                 self.push_system("model id contains unsupported characters");

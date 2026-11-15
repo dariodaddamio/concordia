@@ -127,9 +127,14 @@ fn update_check_failure_is_visible_on_the_page() {
 #[test]
 fn background_update_notice_is_visible_without_opening_the_update_panel() {
     let mut h = Harness::new(90, 28);
-    h.app.background_update_checks = true;
-    h.app.job = Some(spawn_job(JobKind::Check, |_| {
-        JR::Check(Ok(update_preview(true, 0)))
+    h.app.background_update = true;
+    h.app.job = Some(spawn_job(JobKind::Update, |_| {
+        JR::Update(Ok(UO::Installed(crate::update::UpdateResult {
+            install_path: std::path::PathBuf::from("prepared.exe"),
+            built_from: std::path::PathBuf::from("fixture"),
+            log_tail: String::new(),
+            summary: String::new(),
+        })))
     }));
     let deadline = Instant::now() + Duration::from_secs(5);
     while h.app.job.is_some() && Instant::now() < deadline {
@@ -137,9 +142,12 @@ fn background_update_notice_is_visible_without_opening_the_update_panel() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(h.transcript_text().contains("A Concordia update is ready"));
-    assert!(h.transcript_text().contains("restart now (R) or Later (L)"));
+    assert!(h.transcript_text().contains("Restart now (R) or Later (L)"));
     assert!(h.app.picker.is_none());
-    h.app.job.as_ref().unwrap().cancel();
+    assert_eq!(
+        h.app.ready_update_path.as_deref(),
+        Some(std::path::Path::new("prepared.exe"))
+    );
 }
 
 #[test]
@@ -793,7 +801,12 @@ fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
         "the page owns progress; footer has controls only: {screen}"
     );
     assert!(screen.contains("Compiling concordia"), "{screen}");
-    assert!(screen.contains("Esc cancels the update"), "{screen}");
+    assert!(screen.contains("Esc cancel"), "{screen}");
+    h.key(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(h.app.update_details);
+    assert!(h.screen().contains("Build details"));
+    h.key(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(!h.app.update_details);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none());
     assert!(h
@@ -801,6 +814,97 @@ fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
         .job
         .as_ref()
         .is_some_and(crate::update::Job::is_cancelled));
+
+    let snapshot = crate::update::JobSnapshot {
+        stage: Some(crate::update::UpdateStage::Building),
+        status: "Building Concordia".into(),
+        detail: "Using Cargo's build cache".into(),
+        warning_count: 1,
+        diagnostics: vec![crate::update::JobDiagnostic {
+            severity: "warning".into(),
+            message: "unused variable: fixture".into(),
+            code: Some("unused_variables".into()),
+            source: Some("src/fixture.rs".into()),
+            detail: "warning: unused variable: fixture\n --> src/fixture.rs:2:5".into(),
+        }],
+        ..Default::default()
+    };
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/preview/model-effort-update");
+    std::fs::create_dir_all(&evidence).unwrap();
+    for (width, height) in [(40, 12), (90, 28), (150, 45)] {
+        let mut h = Harness::new(width, height);
+        h.app.job = Some(fake_update_job());
+        update_screen(
+            &mut h,
+            update_ui::running(&snapshot, Duration::from_secs(14), false),
+        );
+        let screen = h.screen();
+        assert!(
+            screen.contains("Building") && screen.contains("Concordia"),
+            "{screen}"
+        );
+        assert!(
+            !screen.contains("unused variable"),
+            "warnings must not replace progress: {screen}"
+        );
+        std::fs::write(
+            evidence.join(format!("progress-{width}x{height}.txt")),
+            screen,
+        )
+        .unwrap();
+        std::fs::write(
+            evidence.join(format!("progress-{width}x{height}.svg")),
+            screenshots::buffer_to_svg(h.term.backend().buffer(), "Update progress"),
+        )
+        .unwrap();
+        h.app.update_details = true;
+        update_screen(
+            &mut h,
+            update_ui::running(&snapshot, Duration::from_secs(14), true),
+        );
+        let screen = h.screen();
+        assert!(
+            screen.contains("Warnings") && screen.contains("Build details"),
+            "{screen}"
+        );
+        std::fs::write(
+            evidence.join(format!("details-{width}x{height}.txt")),
+            screen,
+        )
+        .unwrap();
+        std::fs::write(
+            evidence.join(format!("details-{width}x{height}.svg")),
+            screenshots::buffer_to_svg(h.term.backend().buffer(), "Compiler details"),
+        )
+        .unwrap();
+        h.app.no_color = true;
+        h.draw();
+        assert!(h.screen().contains("Warnings") && h.screen().contains("Build details"));
+        h.key(KeyCode::End, KeyModifiers::NONE);
+        assert!(
+            h.screen().contains("unused variable: fixture"),
+            "details must be reachable: {}",
+            h.screen()
+        );
+        h.app.job.as_ref().unwrap().cancel();
+        h.app.job = None;
+        update_screen(
+            &mut h,
+            update_ui::failed(&snapshot, "cargo build failed (101)"),
+        );
+        assert!(h.screen().contains("Update could not finish"));
+        h.key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(h.app.picker.is_none() && !h.app.should_quit);
+        h.app.model = "provider-reported-model-with-a-long-name".into();
+        h.app.effort = Some("high".into());
+        h.draw();
+        assert!(
+            h.app.areas.header_effort.is_some(),
+            "effort must stay visible at {width}: {}",
+            h.screen()
+        );
+    }
 }
 
 #[test]

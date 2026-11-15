@@ -1518,6 +1518,7 @@ fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Va
         "focused_tab": state.focused_tab,
         "overlays": state.overlays,
         "status_dot": shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()).as_str(),
+        "pointer": match shared.pointer.load(Ordering::Relaxed) { 1 => "pointer", 2 => "text", 3 => "ew-resize", 4 => "ns-resize", _ => "default" },
         "notification_count": state.notification_count,
         "notification_texts": state.notification_texts,
         "columns": screen.size.width,

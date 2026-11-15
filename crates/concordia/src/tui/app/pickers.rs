@@ -921,36 +921,132 @@ impl App {
     }
 
     pub(in crate::tui) fn open_effort_picker(&mut self) {
+        if self.busy {
+            self.push_system("Finish or cancel the current turn before changing effort.");
+            return;
+        }
+        let model = self.model.clone();
+        self.open_model_efforts(&model);
+    }
+
+    fn open_model_efforts(&mut self, model_id: &str) {
+        let Some(model) =
+            crate::models::find_at(&self.state_root, self.provider, &self.account, model_id)
+        else {
+            self.push_system("No provider-reported effort options for this model. Refresh /model to check its catalog.");
+            return;
+        };
+        if model.efforts.is_empty() {
+            self.push_system(format!(
+                "{} does not report adjustable effort.",
+                model.display_name
+            ));
+            return;
+        }
+        let preferred = model
+            .efforts
+            .iter()
+            .find(|effort| effort.model_id.as_deref() == Some(model_id))
+            .map(|effort| effort.name.as_str())
+            .or(self
+                .effort
+                .as_deref()
+                .filter(|selected| model.efforts.iter().any(|effort| effort.name == *selected)))
+            .or(model.default_effort.as_deref());
+        let selected = model
+            .efforts
+            .iter()
+            .position(|effort| Some(effort.name.as_str()) == preferred)
+            .unwrap_or(0);
+        let rows = model
+            .efforts
+            .iter()
+            .map(|effort| PickerRow {
+                id: format!("effort:{}", effort.name),
+                label: effort.name.clone(),
+                detail: if self.model == model_id && self.effort.as_deref() == Some(&effort.name) {
+                    "Current effort".into()
+                } else if model.default_effort.as_deref() == Some(&effort.name) {
+                    "Provider default".into()
+                } else {
+                    String::new()
+                },
+            })
+            .collect();
+        self.show_picker_at(
+            PickerKind::Effort,
+            format!("{} \u{b7} Choose effort", model.display_name),
+            rows,
+            false,
+            selected,
+        );
+        self.effort_model = Some(model_id.to_owned());
+        self.footer_left = "\u{2191}\u{2193} choose effort \u{b7} Enter applies model + effort \u{b7} Esc keeps current selection".into();
+    }
+
+    pub(in crate::tui) fn choose_effort(&mut self, effort: &str) {
+        if self.busy {
+            self.push_system("Finish or cancel the current turn before changing effort.");
+            return;
+        }
         let Some(model) =
             crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
         else {
-            self.push_system("effort - provider did not report options for this model");
+            self.push_system("Choose a provider-reported model with /model before setting effort.");
             return;
         };
-        let rows = model
-            .efforts
-            .into_iter()
-            .map(|effort| PickerRow {
-                id: format!("effort:{}", effort.name),
-                label: format!(
-                    "{}{}",
-                    effort.name,
-                    if self.effort.as_deref() == Some(effort.name.as_str()) {
-                        " · current"
-                    } else {
-                        ""
-                    }
-                ),
-                detail: "provider-reported model effort".into(),
-            })
-            .collect();
-        self.show_picker(
-            PickerKind::Effort,
-            format!("effort · {}", model.display_name),
-            rows,
-            false,
-        );
+        if let Err(error) = self.commit_model_effort(&model, Some(effort)) {
+            self.push_system(error);
+        }
     }
+
+    fn commit_model_effort(
+        &mut self,
+        model: &crate::models::ModelEntry,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        if effort.is_some_and(|selected| {
+            !model
+                .efforts
+                .iter()
+                .any(|candidate| candidate.name == selected)
+        }) {
+            return Err(format!(
+                "Unsupported effort for {}. Available: {}",
+                model.display_name,
+                model.effort_names().join(", ")
+            ));
+        }
+        let selected_model = model.id_for_effort(effort).to_owned();
+        let selection = UseSelection {
+            provider: self.provider,
+            account: self.account.clone(),
+            home_path: self
+                .home_path
+                .as_ref()
+                .map(|home| home.to_string_lossy().into_owned()),
+            model: Some(selected_model.clone()),
+            effort: effort.map(str::to_owned),
+            updated_at: now_stamp(),
+        };
+        set_use_selection(&self.state_root, selection)
+            .map_err(|error| format!("Model and effort were not changed: {error}"))?;
+        self.model = selected_model;
+        self.effort = effort.map(str::to_owned);
+        self.messages.retain(|message| {
+            !(message.role == MsgRole::System && message.text.starts_with("using "))
+        });
+        self.push_system(format!(
+            "using {} \u{b7} {}{}",
+            self.account_label(),
+            self.model_label(),
+            effort
+                .map(|effort| format!(" \u{b7} effort {effort}"))
+                .unwrap_or_default()
+        ));
+        Ok(())
+    }
+
     pub(in crate::tui) fn refresh_model_picker(&mut self) {
         if self.model_refresh.is_some() {
             return;
@@ -1136,33 +1232,14 @@ impl App {
         if !showing {
             return;
         }
-        let status = job.status();
-        let step = if status.is_empty() {
-            "starting".to_string()
-        } else {
-            status.chars().take(120).collect()
-        };
-        use crate::update::PreviewLine as P;
-        self.update_preview = Some(crate::update::UpdatePreview {
-            history: Vec::new(),
-            history_expanded: false,
-            lines: vec![
-                P::Title(format!("{} Updating Concordia", spinner(self.tick_count))),
-                P::Field(
-                    "Elapsed",
-                    crate::delegate::fmt_elapsed(job.started.elapsed()),
-                ),
-                P::Field("Step", step),
-                P::Blank,
-                P::Text("Messages are paused until Concordia restarts on the new build.".into()),
-                P::Blank,
-                P::Hint("Esc cancels the update".into()),
-            ],
-            install_available: false,
-            release_url: None,
-        });
-        self.footer_left = "Esc cancels the update".into();
+        self.update_preview = Some(update_ui::running(
+            &job.snapshot(),
+            job.started.elapsed(),
+            self.update_details,
+        ));
+        self.footer_left = "D build details \u{b7} Esc cancel update".into();
     }
+
     pub(in crate::tui) fn close_update_screen(&mut self) {
         if self
             .picker
@@ -1209,6 +1286,7 @@ impl App {
                 job.cancel();
             }
         }
+        self.effort_model = None;
         self.picker = None;
         self.update_preview = None;
         self.footer_left = FOOTER_HINT.into();
@@ -1441,11 +1519,16 @@ impl App {
             self.toggle_agents_row(&id);
             return;
         }
+        let effort_model = self.effort_model.take();
         self.dismiss_picker();
         if self.busy
             && matches!(
                 kind,
-                PickerKind::Resume | PickerKind::Use | PickerKind::Model | PickerKind::Usage
+                PickerKind::Resume
+                    | PickerKind::Use
+                    | PickerKind::Model
+                    | PickerKind::Effort
+                    | PickerKind::Usage
             )
         {
             self.push_system("finish or cancel the current turn before switching conversation, provider or model");
@@ -1842,91 +1925,27 @@ impl App {
                 }
             }
             PickerKind::Model => {
-                if let Some(model) = id.strip_prefix("model:") {
-                    let Some(entry) = crate::models::find_at(
-                        &self.state_root,
-                        self.provider,
-                        &self.account,
-                        model,
-                    ) else {
-                        self.push_system("model is not in the provider list for this account");
+                if let Some(model_id) = id.strip_prefix("model:") {
+                    let Some(model) = crate::models::find_at(&self.state_root, self.provider, &self.account, model_id) else {
+                        self.push_system("Model is no longer in this account's catalog. Refresh /model and choose again.");
                         return;
                     };
-                    let requested_effort = entry
-                        .efforts
-                        .iter()
-                        .find(|effort| effort.model_id.as_deref() == Some(model))
-                        .map(|effort| effort.name.as_str());
-                    let effort = requested_effort
-                        .or(self.effort.as_deref().filter(|effort| {
-                            entry.efforts.iter().any(|candidate| candidate.name == *effort)
-                        }))
-                        .or(entry.default_effort.as_deref())
-                        .or_else(|| entry.efforts.first().map(|effort| effort.name.as_str()));
-                    let selected_model = entry.id_for_effort(effort).to_owned();
-                    // A first run has no saved selection yet; save the account already shown.
-                    if get_use_selection(&self.state_root).is_none() {
-                        let shown = UseSelection {
-                            provider: self.provider,
-                            account: self.account.clone(),
-                            home_path: self
-                                .home_path
-                                .as_ref()
-                                .map(|p| p.to_string_lossy().into_owned()),
-                            model: None,
-                            effort: None,
-                            updated_at: now_stamp(),
-                        };
-                        if let Err(e) = set_use_selection(&self.state_root, shown) {
-                            self.push_system(format!("model save failed — {e}"));
-                            return;
-                        }
-                    }
-                    if let Err(e) = set_model(&self.state_root, &selected_model) {
-                        self.push_system(format!("model save failed — {e}"));
-                        return;
-                    }
-                    self.effort = effort.map(str::to_owned);
-                    if let Some(mut selection) = get_use_selection(&self.state_root) {
-                        selection.effort = self.effort.clone();
-                        let _ = set_use_selection(&self.state_root, selection);
-                    }
-                    self.model = if selected_model.is_empty() {
-                        "?".to_string()
+                    if model.efforts.len() > 1 {
+                        self.open_model_efforts(model_id);
                     } else {
-                        selected_model.clone()
-                    };
-                    self.messages.retain(|message| {
-                        !(message.role == MsgRole::System && message.text.starts_with("using "))
-                    });
-                    if selected_model.is_empty() {
-                        self.push_system("model → provider default");
-                    } else {
-                        self.push_system(format!("model → {selected_model}"));
+                        let effort = model.efforts.first().map(|effort| effort.name.as_str());
+                        if let Err(error) = self.commit_model_effort(&model, effort) { self.push_system(error); }
                     }
-                    self.push_system(format!("using {} · {}", self.account_label(), self.model_label()));
                 }
             }
             PickerKind::Effort => {
                 if let Some(effort) = id.strip_prefix("effort:") {
-                    self.effort = Some(effort.to_owned());
-                    if let Some(entry) = crate::models::find_at(
-                        &self.state_root,
-                        self.provider,
-                        &self.account,
-                        &self.model,
-                    ) {
-                        let selected_id = entry.id_for_effort(Some(effort)).to_owned();
-                        if selected_id != self.model && !selected_id.is_empty() {
-                            let _ = set_model(&self.state_root, &selected_id);
-                            self.model = selected_id;
-                        }
+                    let model_id = effort_model.as_deref().unwrap_or(&self.model);
+                    if let Some(model) = crate::models::find_at(&self.state_root, self.provider, &self.account, model_id) {
+                        if let Err(error) = self.commit_model_effort(&model, Some(effort)) { self.push_system(error); }
+                    } else {
+                        self.push_system("Model choices changed. Open /model again; the previous selection was kept.");
                     }
-                    if let Some(mut selection) = get_use_selection(&self.state_root) {
-                        selection.effort = self.effort.clone();
-                        let _ = set_use_selection(&self.state_root, selection);
-                    }
-                    self.push_system(format!("effort → {effort}"));
                 }
             }
             PickerKind::Provider => {

@@ -108,6 +108,7 @@ mod token_line;
 mod tokens;
 mod transcript;
 mod turn_checkpoint;
+mod update_ui;
 mod usage_style;
 #[cfg(test)]
 mod ux_tests;

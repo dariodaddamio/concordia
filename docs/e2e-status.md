@@ -1,7 +1,36 @@
 # Verification
 
-The local audit-remediation candidate is **2026-11-14p**, based on `a35932b`. It has not been
-installed or published. The earlier installed-build record below is historical.
+The current source candidate is **2026-11-15a**, based on audit repair `3239abe`. This qualification
+does not install or publish it. Local runtime logs confirm the earlier **14p** installation succeeded.
+
+## Model, effort and update feedback qualification
+
+| Check | Covered behavior | Result |
+| --- | --- | --- |
+| Native Windows journey | Model opens effort; Esc preserves the pair; keyboard commit; `/effort` and direct value; invalid value preservation; persisted selection; header hand cursor | Pass |
+| 54 update-related library checks | Worker progress, structured diagnostics, restart/failure, Escape and close-button cancellation, preview controls and background readiness | Pass |
+| Existing update presentation check | Progress/details/failure at 40×12, 90×28 and 150×45; no-color; scroll to diagnostics; long-model effort visibility | Pass |
+| 5 model-picker and 11 command checks | Reported catalogs, filtering, command parsing and README registry synchronization | Pass |
+| 19 release integration checks | Real loopback HTTP/PowerShell, hashing, verified installation into isolated sandboxes and failure preservation | Pass |
+| Native Codex app-server | One tiny `gpt-5.6-luna` low-effort turn; reply `OK` | Pass |
+
+Compiler warnings no longer replace progress. Cargo reports existing unused-variable, unnecessary
+`mut` and dead-code warnings; successful compilation is not a warnings-clean claim. Diagnostics
+remain bounded/redacted, and failed Cargo JSON is projected as readable errors. The existing
+process cancellation check also cancels an actual PowerShell HTTP request against a delayed
+loopback peer. Release checks, downloads and hashing use that process owner.
+
+Observable artifacts are generated under `target/preview/model-effort-update`: native-window
+text snapshots for model/effort and rendered-buffer SVGs for update progress/details. The SVGs
+use synthetic job state; they are not screenshots of a real installation. The screenshot helper
+now preserves spaces explicitly in SVG text so browser rendering retains terminal cell geometry.
+
+The broader 28-case `tui::tests::run` group exposed four unrelated unresolved expectations:
+landing arrow navigation, streamed command expansion, wait-card expansion and thinking-card
+expansion. Their owning behavior is unchanged by this slice; no baseline execution or full-suite
+pass is claimed. Two update-specific stale fixtures were corrected and the update checks pass.
+No Claude inference ran, no credentials changed, and no real installation was performed.
+Formatting, Cargo check, documentation, OSS privacy, hidden-process and static cycle gates pass.
 
 ## Audit repair qualification
 

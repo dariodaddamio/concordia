@@ -19,6 +19,13 @@ or downloads the update, saves the draft and queued messages, and restarts on th
 build. Other tabs keep running their existing build. Esc closes the preview without
 updating; while installation is running, Esc cancels it.
 
+The progress page marks completed, current and upcoming stages: Prepare, Build or Download,
+Verify, Install and Restart. Elapsed time is measured; no completion percentage is estimated.
+Compiler warnings and errors have separate counts and do not replace the current stage. Press D
+to inspect retained compiler diagnostics or return to progress. Failure keeps Concordia running
+and leaves an explanation with details; Esc returns to chat. Warning details are also written to
+the existing diagnostic log before a successful restart.
+
 Release downloads are cached by SHA-256 and rechecked against fresh release checksums before
 reuse. The installer and updater prune a bounded number of verified, owned obsolete artifacts,
 retaining the selected release and one rollback. Active Windows executables and unknown files

@@ -1251,7 +1251,7 @@ fn update_page_close_button_cancels_its_job_and_preserves_draft() {
     h.app.job = Some(fake_update_job());
     h.app.update_progress();
     h.draw();
-    assert!(h.screen().contains("Esc or X cancels the update"));
+    assert!(h.screen().contains("Esc cancel") && h.screen().contains("D details"));
     let (rect, _) = h.app.areas.modal_close.unwrap();
     h.down(rect.x, rect.y);
     h.up(rect.x, rect.y);

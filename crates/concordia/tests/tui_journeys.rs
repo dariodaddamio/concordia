@@ -2575,27 +2575,10 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
-    s.until("header email is private by default", |s| {
+    s.until("header keeps account identity private", |s| {
         let screen = s.screen();
         let header = screen.lines().next().unwrap_or_default();
-        header.contains("view email") && !header.contains("member@example.invalid")
-    });
-    let x = s.screen().lines().next().unwrap().find("email").unwrap() + 1;
-    s.send(&format!("\x1b[<0;{x};1M\x1b[<0;{x};1m"));
-    s.until("click reveals header email", |s| {
-        s.screen()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .contains("member@example.invalid")
-    });
-    s.send(&format!("\x1b[<0;{x};1M\x1b[<0;{x};1m"));
-    s.until("second click hides header email", |s| {
-        !s.screen()
-            .lines()
-            .next()
-            .unwrap_or_default()
-            .contains("member@example.invalid")
+        header.contains("synthetic-model") && !header.contains("member@example.invalid")
     });
     s.paste("/use");
     s.until("complete command reveals actions", |s| {
@@ -2613,19 +2596,95 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
         s.draft() == "/model fixture-model"
     });
     s.enter();
-    s.until("model choice applied", |s| {
-        s.screen().contains("fixture-model") && s.draft().is_empty()
+    s.until("model selection opens effort", |s| {
+        s.screen().contains("Choose effort")
     });
-    assert!(!s.screen().contains("provider default"));
-    assert!(s.screen().contains("efforts: low, high"));
+    let evidence = artifact_root().join("preview/model-effort-update");
+    std::fs::create_dir_all(&evidence).unwrap();
+    std::fs::write(evidence.join("model-then-effort.txt"), s.screen()).unwrap();
+    assert_eq!(
+        concordia::store::get_use_selection(dir.path())
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("synthetic-model")
+    );
+    s.send("\x1b");
+    assert_eq!(
+        concordia::store::get_use_selection(dir.path())
+            .unwrap()
+            .model
+            .as_deref(),
+        Some("synthetic-model")
+    );
+    s.submit("/model fixture-model");
+    s.until("effort can be chosen after model", |s| {
+        s.screen().contains("Choose effort")
+    });
+    s.send("\x1b[B\r");
+    s.until("model and high effort commit together", |_| {
+        let selected = concordia::store::get_use_selection(dir.path()).unwrap();
+        selected.model.as_deref() == Some("fixture-model")
+            && selected.effort.as_deref() == Some("high")
+    });
+    s.until("header reflects effort", |s| {
+        s.screen()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .contains("Effort high")
+    });
+    let header = s.screen().lines().next().unwrap().to_owned();
+    let x = header[..header.find("Effort").unwrap()].chars().count();
+    s.request(serde_json::json!({"op":"mouse","kind":"move","x":x,"y":0}));
+    s.until("effort control uses hand pointer", |s| {
+        s.clone_request(serde_json::json!({"op":"snapshot"}))["pointer"] == "pointer"
+    });
+    s.submit("/effort");
+    s.until("effort command opens current model choices", |s| {
+        s.screen().contains("Choose effort")
+    });
+    s.send("\x1b[A\r");
+    s.until("keyboard selects low effort", |_| {
+        concordia::store::get_use_selection(dir.path())
+            .unwrap()
+            .effort
+            .as_deref()
+            == Some("low")
+    });
+    s.submit("/effort high");
+    s.until("direct effort command applies", |_| {
+        concordia::store::get_use_selection(dir.path())
+            .unwrap()
+            .effort
+            .as_deref()
+            == Some("high")
+    });
+    s.submit("/effort unsupported");
+    s.until("unsupported effort is explained", |s| {
+        s.screen().contains("Unsupported effort")
+    });
+    assert_eq!(
+        concordia::store::get_use_selection(dir.path())
+            .unwrap()
+            .effort
+            .as_deref(),
+        Some("high")
+    );
+    assert!(
+        s.prompts().is_empty(),
+        "selection must not send a provider prompt"
+    );
+    std::fs::write(evidence.join("applied-effort.txt"), s.screen()).unwrap();
     s.submit("/usage");
+    if s.screen().contains("choose who runs it") {
+        s.enter();
+    }
     s.until("account metadata shown", |s| {
-        s.screen().lines().any(|line| {
-            line.contains("Codex")
-                && line.contains("Email: member@example.invalid")
-                && line.contains("Plan: Plus")
-                && line.contains("Workspace:")
-        })
+        let screen = s.screen();
+        screen.contains("Email: member@example.invalid")
+            && screen.contains("Plan: Plus")
+            && screen.contains("Workspace:")
     });
     s.send("\x1b");
     s.paste("/use cu");

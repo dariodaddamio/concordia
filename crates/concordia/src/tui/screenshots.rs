@@ -157,7 +157,7 @@ fn resolve_cells(buf: &Buffer) -> Vec<Vec<SvgCell>> {
 }
 
 /// Converts a rendered buffer into a standalone SVG with window chrome.
-fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
+pub(super) fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
     let cols = buf.area.width as u32;
     let nrows = buf.area.height as u32;
     let w = cols * CELL_W + 2 * PAD;
@@ -239,7 +239,7 @@ fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
             }
             let trimmed = text.trim_end();
             let ink_cols = UnicodeWidthStr::width(trimmed) as u32;
-            let mut attrs = format!("fill=\"{}\"", style.fg);
+            let mut attrs = format!("fill=\"{}\" style=\"white-space:pre\"", style.fg);
             if style.bold {
                 attrs.push_str(" font-weight=\"700\"");
             }

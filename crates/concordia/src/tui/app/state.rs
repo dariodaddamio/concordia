@@ -369,11 +369,13 @@ pub(crate) struct App {
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
+    pub(in crate::tui) effort_model: Option<String>,
     pub(in crate::tui) token_reads: tokens::State,
     pub(in crate::tui) integrations: integrations::State,
     pub(in crate::tui) artifacts: artifacts::State,
     pub(in crate::tui) landing: Option<landing::Landing>,
     pub(in crate::tui) update_preview: Option<UpdatePreview>,
+    pub(in crate::tui) update_details: bool,
     pub(in crate::tui) ready_update_path: Option<PathBuf>,
     pub(in crate::tui) background_update: bool,
     pub(in crate::tui) background_update_checks: bool,
@@ -1318,6 +1320,7 @@ impl App {
             return;
         }
         crate::logging::info(&format!("job-start {kind:?}"));
+        self.update_details = false;
         self.job = Some(match kind {
             JobKind::Update => start_update(self.cwd.clone()),
             JobKind::Check => start_check(self.cwd.clone()),
@@ -1355,6 +1358,17 @@ impl App {
             return false;
         };
         let cancelled = self.job.as_ref().is_some_and(Job::is_cancelled);
+        let snapshot = self.job.as_ref().map(Job::snapshot).unwrap_or_default();
+        let showing_update = self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Update);
+        for diagnostic in &snapshot.diagnostics {
+            crate::logging::warn(&format!(
+                "update {}: {}\n{}",
+                diagnostic.severity, diagnostic.message, diagnostic.detail
+            ));
+        }
         self.job = None;
         if matches!(result, JobResult::Update(_)) {
             self.close_update_screen();
@@ -1375,22 +1389,22 @@ impl App {
                     "update-installed {}",
                     result.install_path.display()
                 ));
-                if result.summary.is_empty() {
-                    self.push_system(format!(
-                        "built \u{2192} {} \u{b7} restarting into {}",
-                        result.built_from.display(),
-                        result.install_path.display()
-                    ));
+                let summary = if result.summary.is_empty() {
+                    "Concordia update installed".into()
                 } else {
-                    self.push_system(format!(
-                        "{} \u{b7} restarting into {}",
-                        result.summary,
-                        result.install_path.display()
-                    ));
-                }
-                for line in result.log_tail.lines().take(4) {
-                    self.push_system(line.to_string());
-                }
+                    result.summary
+                };
+                self.push_system(format!(
+                    "{summary} - restarting{}",
+                    if snapshot.warning_count > 0 {
+                        format!(
+                            " - {} build warnings recorded in concordia.log",
+                            snapshot.warning_count
+                        )
+                    } else {
+                        String::new()
+                    }
+                ));
                 self.reexec_path = Some(result.install_path);
                 self.should_quit = true;
             }
@@ -1402,6 +1416,11 @@ impl App {
             JobResult::Update(Err(e)) => {
                 crate::logging::error(&format!("update-failed {e:#}"));
                 self.push_system(format!("update failed - {e:#}"));
+                if showing_update {
+                    self.show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
+                    self.update_preview = Some(update_ui::failed(&snapshot, &format!("{e:#}")));
+                    self.footer_left = "Esc returns to your chat".into();
+                }
             }
             JobResult::Check(Ok(preview)) => {
                 if preview.install_available
@@ -1904,11 +1923,13 @@ impl App {
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
+            effort_model: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
             artifacts: artifacts::State::default(),
             landing: None,
             update_preview: None,
+            update_details: false,
             ready_update_path: None,
             background_update: false,
             background_update_checks: false,

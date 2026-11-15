@@ -396,13 +396,28 @@ pub trait Fetcher {
 
 /// Real network and hashing through Windows PowerShell. Scripts are constants; URLs and paths
 /// arrive in the environment, so nothing is ever interpolated into a command.
-pub struct PowerShellFetcher;
+#[derive(Default)]
+pub struct PowerShellFetcher {
+    control: Option<crate::update::JobControl>,
+}
+
+impl PowerShellFetcher {
+    pub(crate) fn controlled(control: &crate::update::JobControl) -> Self {
+        Self {
+            control: Some(control.clone()),
+        }
+    }
+}
 
 const PS_PREAMBLE: &str = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; \
     [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
     [Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
 
-fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
+fn run_ps(
+    script: &str,
+    env: &[(&str, &str)],
+    control: Option<&crate::update::JobControl>,
+) -> Result<String> {
     use std::process::Stdio;
     let mut cmd = crate::process_ui::command("powershell.exe");
     cmd.args([
@@ -417,10 +432,16 @@ fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out =
-        crate::process_lifetime::capture(cmd, std::time::Duration::from_secs(210), 4 * 1024 * 1024)
-            .map_err(anyhow::Error::msg)
-            .context("run powershell.exe")?;
+    let timeout = std::time::Duration::from_secs(210);
+    let limit = 4 * 1024 * 1024;
+    let out = match control {
+        Some(control) => {
+            crate::process_lifetime::capture_cancellable(cmd, timeout, limit, control.cancel_flag())
+        }
+        None => crate::process_lifetime::capture(cmd, timeout, limit),
+    }
+    .map_err(anyhow::Error::msg)
+    .context("run powershell.exe")?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let first = err
@@ -441,6 +462,7 @@ impl Fetcher for PowerShellFetcher {
              -Uri $env:CONCORDIA_URL).Content; \
              if ($c -is [byte[]]) { [Text.Encoding]::UTF8.GetString($c) } else { $c }",
             &[("CONCORDIA_URL", url)],
+            self.control.as_ref(),
         )
         .with_context(|| format!("GET {url}"))
     }
@@ -450,6 +472,7 @@ impl Fetcher for PowerShellFetcher {
             "Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 \
              -Headers @{'User-Agent'='concordia-updater'} -Uri $env:CONCORDIA_URL -OutFile $env:CONCORDIA_OUT",
             &[("CONCORDIA_URL", url), ("CONCORDIA_OUT", &dest.to_string_lossy())],
+            self.control.as_ref(),
         )
         .with_context(|| format!("download {url}"))
         .map(drop)
@@ -464,6 +487,7 @@ impl Fetcher for PowerShellFetcher {
                    ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-','').ToLower() } \
              finally { $s.Dispose() }",
             &[("CONCORDIA_FILE", &path.to_string_lossy())],
+            self.control.as_ref(),
         )?;
         Ok(out.trim().to_string())
     }
@@ -712,6 +736,13 @@ pub(crate) fn install_release_controlled(
         fetch.download(&rel.asset_url, &exe)?;
     }
     ensure_active()?;
+    if let Some(control) = control {
+        control.stage(
+            crate::update::UpdateStage::Verifying,
+            "Verifying release",
+            "Checking size, checksum and executable identity",
+        );
+    }
     let len = fs::metadata(&exe).context("downloaded file missing")?.len();
     if !(MIN_EXE_BYTES..=MAX_EXE_BYTES).contains(&len) {
         bail!("downloaded file is {len} bytes, which is not a plausible concordia binary");
@@ -722,13 +753,6 @@ pub(crate) fn install_release_controlled(
     }
 
     // It must run and be the version the release claims, or every launcher would break.
-    if let Some(control) = control {
-        control.stage(
-            crate::update::UpdateStage::Verifying,
-            "Verifying release",
-            "Checking the downloaded executable identity",
-        );
-    }
     let reported = verify_binary(&exe)?;
     let want = format!("concordia {} ", rel.version);
     if !reported.starts_with(&want) {

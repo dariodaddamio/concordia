@@ -412,6 +412,20 @@ pub(super) fn handle_key(
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
             match key.code {
+                KeyCode::Char('d' | 'D')
+                    if picker.kind == PickerKind::Update
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && app
+                            .job
+                            .as_ref()
+                            .is_some_and(|job| job.kind == JobKind::Update) =>
+                {
+                    app.update_details = !app.update_details;
+                    picker.state.select(Some(0));
+                    app.update_progress();
+                }
                 KeyCode::Char('h' | 'H')
                     if picker.kind == PickerKind::Update
                         && !key
@@ -460,6 +474,8 @@ pub(super) fn handle_key(
                 KeyCode::PageDown => picker.state.select(Some(
                     (picker.state.selected().unwrap_or(0) + visible).min(last),
                 )),
+                KeyCode::Home => picker.state.select(Some(0)),
+                KeyCode::End => picker.state.select(Some(last)),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.dismiss_picker()
                 }

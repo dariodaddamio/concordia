@@ -127,6 +127,7 @@ pub struct JobDiagnostic {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct JobSnapshot {
     pub stage: Option<UpdateStage>,
+    pub download: bool,
     pub status: String,
     pub detail: String,
     pub diagnostics: Vec<JobDiagnostic>,
@@ -142,6 +143,9 @@ pub struct JobControl {
 }
 
 impl JobControl {
+    pub(crate) fn cancel_flag(&self) -> &AtomicBool {
+        &self.cancel
+    }
     pub fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
@@ -157,6 +161,12 @@ impl JobControl {
     pub fn stage(&self, stage: UpdateStage, status: &str, detail: impl AsRef<str>) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
             snapshot.stage = Some(stage);
+            if stage == UpdateStage::Downloading {
+                snapshot.download = true;
+            }
+            if stage == UpdateStage::Building {
+                snapshot.download = false;
+            }
             snapshot.status = bounded_redacted(status, 512);
             snapshot.detail = bounded_redacted(detail.as_ref(), 4096);
         }
@@ -457,7 +467,7 @@ fn run_child_with_format(
                                         &if fresh {
                                             format!("Ready: {target}")
                                         } else {
-                                            format!("Compiling {target}")
+                                            format!("Built: {target}")
                                         },
                                         "Preparing the verified build",
                                     );
@@ -664,7 +674,7 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
     let cfg = crate::release::config_from_env(current).context(
         "invalid release repository override; CONCORDIA_UPDATE_REPO must be owner/name (unset it to use the official feed)",
     )?;
-    let fetch = crate::release::PowerShellFetcher;
+    let fetch = crate::release::PowerShellFetcher::controlled(ctl);
     ctl.stage(
         UpdateStage::Preparing,
         "Checking for a newer release",
@@ -939,7 +949,11 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
         format!("github.com/{} · checksum verified before install", cfg.repo),
     );
     Ok(
-        match crate::release::check(&cfg, current, &crate::release::PowerShellFetcher)? {
+        match crate::release::check(
+            &cfg,
+            current,
+            &crate::release::PowerShellFetcher::controlled(ctl),
+        )? {
             crate::release::Check::UpToDate { current, .. } => UpdatePreview {
                 history: Vec::new(),
                 history_expanded: false,
@@ -1660,10 +1674,6 @@ fn run_cargo_build(
         cmd.arg("--target-dir").arg(dir);
     }
     let (ok, code, log_tail) = run_child_with_format(cmd, ctl, true)?;
-    if !ok {
-        bail!("cargo build failed ({code})\n{log_tail}");
-    }
-    let built = cargo_executable(root, &log_tail)?;
     let display = log_tail
         .lines()
         .filter_map(
@@ -1677,6 +1687,16 @@ fn run_cargo_build(
         )
         .collect::<Vec<_>>()
         .join("\n");
+    if !ok {
+        if ctl.snapshot().error_count > 0 {
+            bail!("cargo build failed ({code}); see compiler errors in build details");
+        }
+        bail!(
+            "cargo build failed ({code})\n{}",
+            bounded_redacted(&display, 4096)
+        );
+    }
+    let built = cargo_executable(root, &log_tail)?;
     Ok((built, display))
 }
 
@@ -2015,6 +2035,40 @@ mod tests {
         assert!(ctl.status().starts_with("Compiling"), "{}", ctl.status());
         let (ok, code, _) = run_child_with_cancel(ps("exit 7"), &ctl).unwrap();
         assert!(!ok && code == 7);
+
+        // Cargo warnings remain inspectable without replacing the active build stage.
+        ctl.stage(
+            UpdateStage::Building,
+            "Building Concordia",
+            "Using Cargo's cache",
+        );
+        let warning = serde_json::json!({
+            "reason":"compiler-message",
+            "message":{"level":"warning","message":"unused variable: fixture",
+                "code":{"code":"unused_variables"},
+                "spans":[{"file_name":"src/fixture.rs","is_primary":true}],
+                "rendered":"warning: unused variable: fixture\n --> src/fixture.rs:2:5\n"}
+        });
+        let script = format!("Write-Output '{}'", warning);
+        assert!(run_child_with_format(ps(&script), &ctl, true).unwrap().0);
+        let snapshot = ctl.snapshot();
+        assert_eq!(snapshot.stage, Some(UpdateStage::Building));
+        assert_eq!(snapshot.status, "Building Concordia");
+        assert_eq!(snapshot.warning_count, 1);
+        assert_eq!(snapshot.error_count, 0);
+        assert_eq!(
+            snapshot.diagnostics[0].source.as_deref(),
+            Some("src/fixture.rs")
+        );
+        assert!(snapshot.diagnostics[0]
+            .detail
+            .contains(" --> src/fixture.rs:2:5"));
+        ctl.stage(UpdateStage::Downloading, "Downloading", "");
+        ctl.stage(UpdateStage::Verifying, "Verifying", "");
+        assert!(
+            ctl.snapshot().download,
+            "later stages retain the actual update route"
+        );
     }
 
     #[test]
@@ -2034,6 +2088,42 @@ mod tests {
             start.elapsed()
         );
         t.join().unwrap();
+
+        // The release fetch uses the same owned cancellation while HTTP is in flight.
+        use crate::release::Fetcher;
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/delayed", listener.local_addr().unwrap());
+        listener.set_nonblocking(true).unwrap();
+        let ctl = JobControl::default();
+        let c2 = ctl.clone();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(10) {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut byte = [0];
+                    let received = stream.read(&mut byte).unwrap_or(0) > 0;
+                    c2.cancel.store(true, Ordering::SeqCst);
+                    let _ = finished_rx.recv_timeout(Duration::from_secs(5));
+                    return received;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            c2.cancel.store(true, Ordering::SeqCst);
+            false
+        });
+        let start = Instant::now();
+        let error = crate::release::PowerShellFetcher::controlled(&ctl)
+            .get_text(&url)
+            .unwrap_err();
+        let _ = finished_tx.send(());
+        assert!(peer.join().unwrap(), "local HTTP request never started");
+        assert!(format!("{error:#}").contains("cancelled"), "{error:#}");
+        assert!(start.elapsed() < Duration::from_secs(15));
     }
 
     #[test]
