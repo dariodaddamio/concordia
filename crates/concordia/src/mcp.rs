@@ -444,7 +444,14 @@ impl<'a> HttpSession<'a> {
     }
     fn request(&mut self, request: &Value) -> Result<Value, String> {
         if self.url.starts_with("https://") {
-            return Err("HTTPS MCP session requires the WinHTTP session path".into());
+            #[cfg(windows)]
+            {
+                return remote_https_request(self.url, self.headers, request);
+            }
+            #[cfg(not(windows))]
+            {
+                return Err("HTTPS MCP proxy requires Windows WinHTTP".into());
+            }
         }
         let rest = self.url.strip_prefix("http://").ok_or("invalid MCP URL")?;
         let (host_path, path) = rest
@@ -505,25 +512,29 @@ impl<'a> HttpSession<'a> {
         if status == 202 || payload.trim().is_empty() {
             return Ok(json!({}));
         }
-        if head.to_ascii_lowercase().contains("text/event-stream") {
-            for line in payload.lines() {
-                if let Some(data) = line.strip_prefix("data:") {
-                    if let Ok(value) = serde_json::from_str::<Value>(data.trim()) {
-                        if value.get("id") == request.get("id") {
-                            return Ok(value);
-                        }
+        parse_mcp_payload(payload, head, request)
+    }
+}
+
+fn parse_mcp_payload(payload: &str, headers: &str, request: &Value) -> Result<Value, String> {
+    if headers.to_ascii_lowercase().contains("text/event-stream") {
+        for line in payload.lines() {
+            if let Some(data) = line.strip_prefix("data:") {
+                if let Ok(value) = serde_json::from_str::<Value>(data.trim()) {
+                    if value.get("id") == request.get("id") {
+                        return Ok(value);
                     }
                 }
             }
-            return Err("remote MCP SSE response had no matching response ID".into());
         }
-        let value: Value =
-            serde_json::from_str(payload).map_err(|_| "remote MCP response was not JSON")?;
-        if request.get("id").is_some() && value.get("id") != request.get("id") {
-            return Err("remote MCP response ID mismatch".into());
-        }
-        Ok(value)
+        return Err("remote MCP SSE response had no matching response ID".into());
     }
+    let value: Value =
+        serde_json::from_str(payload).map_err(|_| "remote MCP response was not JSON")?;
+    if request.get("id").is_some() && value.get("id") != request.get("id") {
+        return Err("remote MCP response ID mismatch".into());
+    }
+    Ok(value)
 }
 
 #[cfg(windows)]
@@ -585,7 +596,7 @@ fn remote_https_request(
         }
         return Err("HTTPS MCP request could not start".into());
     }
-    let mut header_text = String::from("Content-Type: application/json\r\n");
+    let mut header_text = format!("Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {LATEST_PROTOCOL}\r\n");
     for (key, reference) in headers {
         let value = crate::mcp_registry::resolve_secret(reference).ok_or(
             "remote MCP credential is not available; sign in through Windows Credential Manager",
@@ -618,6 +629,9 @@ fn remote_https_request(
             if size == 0 {
                 break;
             }
+            if bytes.len().saturating_add(size as usize) > MAX_UPSTREAM_BYTES {
+                break;
+            }
             let mut chunk = vec![0u8; size as usize];
             let mut read = 0u32;
             if unsafe { WinHttpReadData(handle, chunk.as_mut_ptr() as _, size, &mut read) } == 0 {
@@ -634,7 +648,11 @@ fn remote_https_request(
     if !ok {
         return Err("HTTPS MCP request failed".into());
     }
-    serde_json::from_slice(&bytes).map_err(|_| "HTTPS MCP response was not JSON".into())
+    if bytes.len() > MAX_UPSTREAM_BYTES {
+        return Err("HTTPS MCP response exceeded the size limit".into());
+    }
+    let payload = String::from_utf8_lossy(&bytes);
+    parse_mcp_payload(&payload, "application/json", &request)
 }
 fn text_result(text: String, is_error: bool) -> Value {
     json!({"content":[{"type":"text","text":crate::redact::redact(&text).chars().take(MAX_RESULT_CHARS).collect::<String>()}],"isError":is_error})
