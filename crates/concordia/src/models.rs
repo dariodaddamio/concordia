@@ -124,7 +124,10 @@ pub(crate) fn available_at(root: &Path, provider: ProviderKind, account: &str) -
     }
     let mut out = Vec::new();
     let mut ids = HashSet::new();
-    for model in native_entries(provider, catalog::list_model_details(provider, &identity.home)) {
+    for model in native_entries(
+        provider,
+        catalog::list_model_details(provider, &identity.home),
+    ) {
         add(&mut out, &mut ids, model);
     }
     out
@@ -203,7 +206,10 @@ pub(crate) fn refresh_at(
         ProviderKind::Claude => list_claude(&identity.home)?,
         ProviderKind::Cursor => list_cursor(&identity.home)?,
         ProviderKind::Codex => {
-            let models = native_entries(provider, catalog::list_model_details(provider, &identity.home));
+            let models = native_entries(
+                provider,
+                catalog::list_model_details(provider, &identity.home),
+            );
             if models.is_empty() {
                 return Err(
                     "Codex native model metadata is unavailable; no listing was invented".into(),
@@ -349,7 +355,9 @@ fn list_claude(home: &Path) -> Result<Vec<ModelEntry>, String> {
     let version = crate::provider::compat::run_cli(Path::new(&program), &["--version"])?;
     let required = crate::capacity::claude_capacity::CLI_VERSION;
     let Some(observed) = crate::provider::compat::version_token(&version) else {
-        return Err(format!("Claude model metadata requires current CLI {required}"));
+        return Err(format!(
+            "Claude model metadata requires current CLI {required}"
+        ));
     };
     if !crate::provider::compat::version_at_least(&observed, required) {
         return Err(format!(

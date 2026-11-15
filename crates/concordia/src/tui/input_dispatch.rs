@@ -1261,8 +1261,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                     let selected = picker.state.selected().unwrap_or(0);
                     let visible = usize::from(list.height.saturating_sub(2)).max(1);
                     let offset = selected.saturating_sub(visible.saturating_sub(1));
-                    let row = usize::from(m.row.saturating_sub(list.y + 1))
-                        + offset;
+                    let row = usize::from(m.row.saturating_sub(list.y + 1)) + offset;
                     if row < picker.filtered().len() {
                         app.picker.as_mut().unwrap().state.select(Some(row));
                     }

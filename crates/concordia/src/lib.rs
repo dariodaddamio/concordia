@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod agent_records;
 pub mod ask_bridge;
 pub mod capacity;
 pub mod catalog;

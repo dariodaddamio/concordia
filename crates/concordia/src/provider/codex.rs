@@ -53,7 +53,10 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
         argv.push(model.to_string());
     }
     if let Some(effort) = req.effort.map(str::trim).filter(|e| !e.is_empty()) {
-        anyhow::ensure!(crate::catalog::valid_effort(effort), "unsupported Codex effort value");
+        anyhow::ensure!(
+            crate::text_safe::valid_effort(effort),
+            "unsupported Codex effort value"
+        );
         argv.extend(["-c".into(), format!("model_reasoning_effort={effort}")]);
     }
     match req.trust {

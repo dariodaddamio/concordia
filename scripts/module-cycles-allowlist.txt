@@ -1,37 +1,169 @@
-# Known cycles retained for follow-up refactors. Format: start-module: reason.
-file_document: existing file-document helper cycle; preserve behavior while the storage boundary is refactored.
-store: existing store/config/routing cycle; provider account state still crosses the routing boundary.
-update: existing update/doctor/release cycle; diagnostics and release orchestration share update status.
-test_guard: test-only guard helpers reference their own module in fixtures.
-connect: existing connect/account integration cycle retained for follow-up.
-token_log: existing token-log accounting cycle retained for follow-up.
-workspace_paths: existing workspace discovery cycle retained for follow-up.
-delegate: existing delegation cycle retained for follow-up.
-workspaces: existing workspace orchestration cycle retained for follow-up.
-theme_library: existing theme asset cycle retained for follow-up.
-goals: existing goals/project cycle retained for follow-up.
-legacy_migration: existing migration cycle retained for follow-up.
-state_security: existing state security cycle retained for follow-up.
-file_links: existing file-link cycle retained for follow-up.
-native_input: existing native input cycle retained for follow-up.
-state_io: existing state I/O cycle retained for follow-up.
-file_open: existing file-open cycle retained for follow-up.
-commands: existing command dispatch cycle retained for follow-up.
-integration: existing integration cycle retained for follow-up.
-config: existing configuration cycle retained for follow-up.
-models: existing model catalog cycle retained for follow-up.
-sessions: existing session persistence cycle retained for follow-up.
-usage: existing usage accounting cycle retained for follow-up.
-artifacts: existing artifact cycle retained for follow-up.
-attachments: existing attachment cycle retained for follow-up.
-cursor_usage: existing cursor usage cycle retained for follow-up.
-doctor: existing diagnostics cycle retained for follow-up.
-routing: existing routing cycle retained for follow-up.
-capacity: existing capacity cycle retained for follow-up.
-catalog: existing catalog cycle retained for follow-up.
-threads: remaining indirect thread/storage cycle; the direct threads/context edge is removed.
-managed_workspaces: existing managed workspace cycle retained for follow-up.
-release: existing release cycle retained for follow-up.
-context: remaining indirect context/storage cycle; direct context/threads dependency is one-way.
-user_commands: existing user command cycle retained for follow-up.
-accounts: existing account state cycle retained for follow-up.
+# Exact historical ownership edges in cycles. Baseline a35932b; parser revision 2.
+# Static source-reference graph: no macro expansion, cfg/feature evaluation or compiler name resolution.
+# New cyclic edges fail even when another edge from the same module is historical.
+edge accounts -> identity: present in a35932b
+edge accounts -> provider: present in a35932b
+edge accounts -> store: present in a35932b
+edge artifacts -> native_memory: present in a35932b
+edge artifacts -> provider: present in a35932b
+edge artifacts -> store: present in a35932b
+edge artifacts -> workspaces: present in a35932b
+edge attachments -> workspaces: present in a35932b
+edge capacity -> native_memory: present in a35932b
+edge capacity -> store: present in a35932b
+edge capacity -> workspaces: present in a35932b
+edge catalog -> store: present in a35932b
+edge catalog -> workspaces: present in a35932b
+edge chat_cli -> accounts: present in a35932b
+edge chat_cli -> commands: present in a35932b
+edge chat_cli -> native_memory: present in a35932b
+edge chat_cli -> provider: present in a35932b
+edge chat_cli -> sessions: present in a35932b
+edge chat_cli -> store: present in a35932b
+edge chat_cli -> threads: present in a35932b
+edge commands -> accounts: present in a35932b
+edge commands -> provider: present in a35932b
+edge commands -> store: present in a35932b
+edge commands -> update: present in a35932b
+edge config -> file_open: present in a35932b
+edge config -> store: present in a35932b
+edge config -> theme_library: present in a35932b
+edge connect -> accounts: present in a35932b
+edge connect -> integration: present in a35932b
+edge connect -> store: present in a35932b
+edge connect -> update: present in a35932b
+edge connect -> workspaces: present in a35932b
+edge context -> store: present in a35932b
+edge context -> threads: present in a35932b
+edge cursor_usage -> identity: present in a35932b
+edge cursor_usage -> provider: present in a35932b
+edge delegate -> accounts: present in a35932b
+edge delegate -> attachments: present in a35932b
+edge delegate -> config: present in a35932b
+edge delegate -> context: present in a35932b
+edge delegate -> managed_workspaces: present in a35932b
+edge delegate -> mcp: present in a35932b
+edge delegate -> models: present in a35932b
+edge delegate -> native_input: present in a35932b
+edge delegate -> native_memory: present in a35932b
+edge delegate -> provider: present in a35932b
+edge delegate -> store: present in a35932b
+edge delegate -> token_log: present in a35932b
+edge delegate -> workspaces: present in a35932b
+edge doctor -> accounts: present in a35932b
+edge doctor -> config: present in a35932b
+edge doctor -> integration: present in a35932b
+edge doctor -> mcp_registry: present in a35932b
+edge doctor -> provider: present in a35932b
+edge doctor -> release: present in a35932b
+edge doctor -> sessions: present in a35932b
+edge doctor -> store: present in a35932b
+edge doctor -> update: present in a35932b
+edge doctor -> user_commands: present in a35932b
+edge file_open -> provider: present in a35932b
+edge file_open -> workspaces: present in a35932b
+edge grok_bot -> delegate: present in a35932b
+edge grok_bot -> mcp: present in a35932b
+edge harness -> chat_cli: present in a35932b
+edge harness -> config: present in a35932b
+edge harness -> integration: present in a35932b
+edge harness -> mcp: present in a35932b
+edge harness -> provider: present in a35932b
+edge harness -> sessions: present in a35932b
+edge harness -> store: present in a35932b
+edge harness -> update: present in a35932b
+edge harness -> workspaces: present in a35932b
+edge identity -> provider: present in a35932b
+edge identity -> store: present in a35932b
+edge integration -> config: present in a35932b
+edge integration -> connect: present in a35932b
+edge integration -> store: present in a35932b
+edge integration -> update: present in a35932b
+edge integration -> workspaces: present in a35932b
+edge managed_workspaces -> chat_cli: present in a35932b
+edge managed_workspaces -> delegate: present in a35932b
+edge managed_workspaces -> harness: present in a35932b
+edge managed_workspaces -> workspaces: present in a35932b
+edge mcp -> accounts: present in a35932b
+edge mcp -> catalog: present in a35932b
+edge mcp -> grok_bot: present in a35932b
+edge mcp -> mcp_registry: present in a35932b
+edge mcp -> store: present in a35932b
+edge mcp -> usage: present in a35932b
+edge mcp_registry -> accounts: present in a35932b
+edge mcp_registry -> store: present in a35932b
+edge models -> accounts: present in a35932b
+edge models -> capacity: present in a35932b
+edge models -> catalog: present in a35932b
+edge models -> provider: present in a35932b
+edge models -> store: present in a35932b
+edge native_input -> accounts: present in a35932b
+edge native_input -> capacity: present in a35932b
+edge native_input -> native_memory: present in a35932b
+edge native_input -> store: present in a35932b
+edge native_input -> workspaces: present in a35932b
+edge native_memory -> accounts: present in a35932b
+edge native_memory -> artifacts: present in a35932b
+edge native_memory -> capacity: present in a35932b
+edge native_memory -> chat_cli: present in a35932b
+edge native_memory -> commands: present in a35932b
+edge native_memory -> provider: present in a35932b
+edge native_memory -> sessions: present in a35932b
+edge native_memory -> store: present in a35932b
+edge native_memory -> token_log: present in a35932b
+edge native_memory -> update: present in a35932b
+edge native_memory -> workspaces: present in a35932b
+edge provider -> artifacts: present in a35932b
+edge provider -> attachments: present in a35932b
+edge provider -> capacity: present in a35932b
+edge provider -> config: present in a35932b
+edge provider -> doctor: present in a35932b
+edge provider -> harness: present in a35932b
+edge provider -> identity: present in a35932b
+edge provider -> mcp: present in a35932b
+edge provider -> mcp_registry: present in a35932b
+edge provider -> native_input: present in a35932b
+edge provider -> native_memory: present in a35932b
+edge provider -> store: present in a35932b
+edge provider -> workspaces: present in a35932b
+edge release -> update: present in a35932b
+edge session_titles -> store: present in a35932b
+edge session_titles -> update: present in a35932b
+edge sessions -> accounts: present in a35932b
+edge sessions -> chat_cli: present in a35932b
+edge sessions -> config: present in a35932b
+edge sessions -> native_memory: present in a35932b
+edge sessions -> session_titles: present in a35932b
+edge sessions -> store: present in a35932b
+edge sessions -> threads: present in a35932b
+edge store -> accounts: present in a35932b
+edge store -> config: present in a35932b
+edge store -> file_open: present in a35932b
+edge store -> session_titles: present in a35932b
+edge theme_library -> config: present in a35932b
+edge threads -> config: present in a35932b
+edge threads -> native_memory: present in a35932b
+edge threads -> provider: present in a35932b
+edge threads -> store: present in a35932b
+edge threads -> update: present in a35932b
+edge token_log -> provider: present in a35932b
+edge token_log -> store: present in a35932b
+edge update -> doctor: present in a35932b
+edge update -> release: present in a35932b
+edge usage -> accounts: present in a35932b
+edge usage -> cursor_usage: present in a35932b
+edge usage -> identity: present in a35932b
+edge usage -> provider: present in a35932b
+edge usage -> store: present in a35932b
+edge usage -> usage_codex: present in a35932b
+edge usage -> workspaces: present in a35932b
+edge usage_codex -> provider: present in a35932b
+edge user_commands -> commands: present in a35932b
+edge workspaces -> managed_workspaces: present in a35932b
+# Reviewed extraction: bounded parsing moved from chat_cli into native_history; no new caller behavior.
+edge chat_cli -> native_history: discovery delegates bounded reading to the extracted owner (previously local).
+edge native_history -> accounts: moved chat_cli -> accounts reader identity boundary.
+edge native_history -> native_memory: moved chat_cli -> native_memory bounded Cursor replay.
+edge native_history -> provider: moved chat_cli -> provider card parsing.
+edge native_history -> store: moved chat_cli -> store provider identity types.
+edge sessions -> native_history: replaces sessions -> chat_cli diagnostic readback.

@@ -16,6 +16,7 @@ fn request<'a>(cwd: &'a std::path::Path) -> ProviderTurnRequest<'a> {
         cwd,
         home_path: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Edit,
         context_prefix: None,

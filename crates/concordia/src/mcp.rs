@@ -1,9 +1,11 @@
 //! The single always-on MCP surface: account discovery and delegated agents.
 use serde_json::{json, Value};
-use std::io::{BufRead, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+mod http;
+mod stdio;
+use http::HttpSession;
 
 pub const LATEST_PROTOCOL: &str = "2025-06-18";
 const KNOWN_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -16,10 +18,15 @@ const MAX_UPSTREAM_FRAME: usize = 256 * 1024;
 
 fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
     let mut out = Vec::with_capacity(limit.min(4096));
+    let mut oversized = false;
     loop {
         let chunk = input.fill_buf()?;
         if chunk.is_empty() {
-            return Ok((!out.is_empty()).then_some(out));
+            return Ok((oversized || !out.is_empty()).then_some(if oversized {
+                Vec::new()
+            } else {
+                out
+            }));
         }
         let take = chunk
             .iter()
@@ -27,13 +34,15 @@ fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Opti
             .map_or(chunk.len(), |i| i + 1);
         let ended = take < chunk.len() || chunk[take - 1] == b'\n';
         if out.len().saturating_add(take) > limit {
-            input.consume(take);
-            return Ok(Some(Vec::new()));
+            oversized = true;
+            out.clear();
         }
-        out.extend_from_slice(&chunk[..take]);
+        if !oversized {
+            out.extend_from_slice(&chunk[..take]);
+        }
         input.consume(take);
         if ended {
-            return Ok(Some(out));
+            return Ok(Some(if oversized { Vec::new() } else { out }));
         }
     }
 }
@@ -41,9 +50,10 @@ fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Opti
 pub fn proposals_dir(root: &Path) -> PathBuf {
     root.join("proposals")
 }
-pub mod records;
+pub use crate::agent_records as records;
 pub use records::{
-    agents_dir, read_agent, record_path, update_agent, update_matching, write_agent, AgentRecord,
+    agents_dir, bind_agent_run, read_agent, record_path, update_agent, update_agent_run,
+    write_agent, AgentRecord,
 };
 pub fn take_pending_records(root: &Path, limit: usize) -> Vec<AgentRecord> {
     let Ok(entries) = std::fs::read_dir(agents_dir(root)) else {
@@ -51,12 +61,15 @@ pub fn take_pending_records(root: &Path, limit: usize) -> Vec<AgentRecord> {
     };
     entries
         .flatten()
-        .take(limit)
+        .take(MAX_PENDING_PROPOSALS * 4)
         .filter_map(|entry| {
-            std::fs::read(entry.path())
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                return None;
+            }
+            read_agent(root, path.file_stem()?.to_str()?).ok()
         })
+        .take(limit.min(MAX_PENDING_PROPOSALS))
         .collect()
 }
 
@@ -80,6 +93,10 @@ pub struct Proposal {
     pub effort: Option<String>,
     #[serde(default)]
     pub from_thread: String,
+    #[serde(default)]
+    pub workspace: Option<PathBuf>,
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(untagged)]
@@ -150,11 +167,22 @@ fn advertised_tools(root: &Path) -> Vec<Value> {
     let mut tools = vec![
         json!({"name":"agents","description":"Start an agent with role (orchestrator, implementer, reviewer, re-reviewer, general) defaults; explicit provider/model win, or read status/result.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result"]},"agent_id":{"type":"string"},"role":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}),
     ];
+    let selected = std::env::var("CONCORDIA_MCP_SERVER").ok();
+    if selected.is_some() {
+        tools.clear();
+    }
+    let project = proxy_project();
+    let discovery_deadline = Instant::now() + Duration::from_secs(10);
     let Ok(registry) = crate::mcp_registry::load(root) else {
         return tools;
     };
-    for (server, entry) in registry.servers {
-        if !entry.enabled {
+    for (server, entry) in &registry.servers {
+        if Instant::now() >= discovery_deadline {
+            break;
+        }
+        if selected.as_deref().is_some_and(|name| name != server)
+            || crate::mcp_registry::effective(&registry, &project, server).is_none()
+        {
             continue;
         }
         if let Ok(values) = remote_sequence(
@@ -181,6 +209,13 @@ fn advertised_tools(root: &Path) -> Vec<Value> {
     tools
 }
 
+fn proxy_project() -> PathBuf {
+    let project = std::env::var_os("CONCORDIA_PROJECT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    project.canonicalize().unwrap_or(project)
+}
+
 fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
     let name = params
         .get("name")
@@ -189,13 +224,18 @@ fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
     let (server, tool) = name
         .split_once('/')
         .ok_or_else(|| "unknown tool".to_string())?;
+    if std::env::var("CONCORDIA_MCP_SERVER")
+        .ok()
+        .as_deref()
+        .is_some_and(|name| name != server)
+    {
+        return Err("remote MCP server does not match this proxy".into());
+    }
     let registry =
         crate::mcp_registry::load(root).map_err(|_| "MCP registry cannot be read".to_string())?;
     // The caller cannot choose the policy scope. The proxy process binds its project at
     // launch; absent an authenticated binding, use its own working directory.
-    let project = std::env::var_os("CONCORDIA_PROJECT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let project = proxy_project();
     let entry = crate::mcp_registry::effective(&registry, &project, server)
         .ok_or_else(|| "remote MCP server is disabled for this project".to_string())?;
     let values = remote_sequence(
@@ -219,189 +259,12 @@ fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
         .ok_or_else(|| "remote MCP response had no result".into())
 }
 
-fn remote_request(
-    transport: &crate::mcp_registry::Transport,
-    request: Value,
-) -> Result<Value, String> {
-    if let crate::mcp_registry::Transport::Stdio { command, args, env } = transport {
-        let mut child = crate::process_ui::command(command);
-        child.args(args);
-        for (key, reference) in env {
-            let value = crate::mcp_registry::resolve_secret(reference).ok_or_else(|| {
-                "MCP credential is not available; sign in before using this server".to_string()
-            })?;
-            crate::redact::register_runtime_secret(value.clone());
-            child.env(key, value);
-        }
-        let mut child = child
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|_| "MCP stdio server could not start".to_string())?;
-        let input = serde_json::to_string(&request)
-            .map_err(|_| "MCP request could not be encoded".to_string())?;
-        use std::io::Write as _;
-        use std::io::{BufRead, BufReader};
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| "MCP stdio input unavailable".to_string())?
-            .write_all(format!("{input}\n").as_bytes())
-            .map_err(|_| "MCP stdio request failed".to_string())?;
-        let mut line = Vec::new();
-        BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| "MCP stdio output unavailable".to_string())?,
-        )
-        .read_until(b'\n', &mut line)
-        .map_err(|_| "MCP stdio response failed".to_string())?;
-        if line.len() > MAX_UPSTREAM_FRAME {
-            return Err("MCP stdio response exceeded the frame limit".into());
-        }
-        let _ = child.kill();
-        return serde_json::from_slice(&line)
-            .map_err(|_| "MCP stdio response was not JSON".to_string());
-    }
-    let (url, headers) = match transport {
-        crate::mcp_registry::Transport::Remote { url, headers } => (url, headers),
-        _ => unreachable!(),
-    };
-    if url.starts_with("https://") {
-        #[cfg(windows)]
-        {
-            return remote_https_request(url, headers, request);
-        }
-        #[cfg(not(windows))]
-        {
-            return Err("HTTPS MCP proxy requires Windows WinHTTP".into());
-        }
-    }
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "remote MCP proxy requires an http URL".to_string())?;
-    let (host_path, path) = rest
-        .split_once('/')
-        .map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
-    let (host, port) = host_path
-        .split_once(':')
-        .map_or((host_path, 80), |(h, p)| (h, p.parse().unwrap_or(80)));
-    let address = (host, port)
-        .to_socket_addrs()
-        .map_err(|_| "remote MCP host could not be resolved".to_string())?
-        .next()
-        .ok_or_else(|| "remote MCP host could not be resolved".to_string())?;
-    let mut stream =
-        TcpStream::connect(address).map_err(|_| "remote MCP connection failed".to_string())?;
-    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-    stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
-    let mut request_headers = String::new();
-    for (key, reference) in headers {
-        let crate::mcp_registry::SecretRef::Credential { .. } = reference else {
-            return Err("remote MCP headers must use Windows Credential Manager".into());
-        };
-        if let Some(value) = crate::mcp_registry::resolve_secret(reference) {
-            crate::redact::register_runtime_secret(value.clone());
-            request_headers.push_str(&format!("{key}: {value}\r\n"));
-        } else {
-            return Err("remote MCP credential is not available; sign in through Windows Credential Manager".into());
-        }
-    }
-    let body = serde_json::to_string(&request)
-        .map_err(|_| "remote MCP request could not be encoded".to_string())?;
-    let wire = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {LATEST_PROTOCOL}\r\nContent-Length: {}\r\nConnection: close\r\n{request_headers}\r\n{body}", body.len());
-    stream
-        .write_all(wire.as_bytes())
-        .map_err(|_| "remote MCP request failed".to_string())?;
-    let mut response = Vec::new();
-    stream
-        .take((MAX_UPSTREAM_BYTES + 1) as u64)
-        .read_to_end(&mut response)
-        .map_err(|_| "remote MCP response failed".to_string())?;
-    if response.len() > MAX_UPSTREAM_BYTES {
-        return Err("remote MCP response exceeded the size limit".into());
-    }
-    let text = String::from_utf8_lossy(&response);
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "remote MCP response was malformed".to_string())?;
-    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
-        return Err("remote MCP server rejected the request".into());
-    }
-    serde_json::from_str(body).map_err(|_| "remote MCP response was not JSON".to_string())
-}
-
 fn remote_sequence(
     transport: &crate::mcp_registry::Transport,
     requests: Vec<Value>,
 ) -> Result<Vec<Value>, String> {
     if let crate::mcp_registry::Transport::Stdio { command, args, env } = transport {
-        let mut child = crate::process_ui::command(command);
-        child.args(args);
-        for (key, reference) in env {
-            let value = crate::mcp_registry::resolve_secret(reference).ok_or_else(|| {
-                "MCP credential is not available; sign in before using this server".to_string()
-            })?;
-            crate::redact::register_runtime_secret(value.clone());
-            child.env(key, value);
-        }
-        let mut child = child
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|_| "MCP stdio server could not start".to_string())?;
-        let mut input = child
-            .stdin
-            .take()
-            .ok_or_else(|| "MCP stdio input unavailable".to_string())?;
-        let mut output = std::io::BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| "MCP stdio output unavailable".to_string())?,
-        );
-        let mut values = Vec::with_capacity(requests.len());
-        for (index, request) in requests.into_iter().enumerate() {
-            input
-                .write_all(
-                    serde_json::to_string(&request)
-                        .map_err(|_| "MCP request could not be encoded".to_string())?
-                        .as_bytes(),
-                )
-                .map_err(|_| "MCP stdio request failed".to_string())?;
-            input
-                .write_all(b"\n")
-                .map_err(|_| "MCP stdio request failed".to_string())?;
-            input
-                .flush()
-                .map_err(|_| "MCP stdio request failed".to_string())?;
-            if index == 0 {
-                input
-                    .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
-                    .map_err(|_| "MCP stdio notification failed".to_string())?;
-                input
-                    .flush()
-                    .map_err(|_| "MCP stdio notification failed".to_string())?;
-            }
-            loop {
-                let mut line = Vec::new();
-                output
-                    .read_until(b'\n', &mut line)
-                    .map_err(|_| "MCP stdio response failed".to_string())?;
-                if line.len() > MAX_UPSTREAM_FRAME {
-                    return Err("MCP stdio response exceeded the frame limit".into());
-                }
-                let value: Value = serde_json::from_slice(&line)
-                    .map_err(|_| "MCP stdio response was not JSON".to_string())?;
-                if value.get("id") == request.get("id") {
-                    values.push(value);
-                    break;
-                }
-            }
-        }
-        let _ = child.kill();
-        return Ok(values);
+        return stdio::sequence(command, args, env, requests);
     }
     if let crate::mcp_registry::Transport::Remote { url, headers } = transport {
         let mut session = HttpSession::new(url, headers)?;
@@ -421,239 +284,6 @@ fn remote_sequence(
     Err("unsupported MCP transport".into())
 }
 
-struct HttpSession<'a> {
-    url: &'a str,
-    headers: &'a std::collections::BTreeMap<String, crate::mcp_registry::SecretRef>,
-    session_id: Option<String>,
-    protocol: &'static str,
-}
-impl<'a> HttpSession<'a> {
-    fn new(
-        url: &'a str,
-        headers: &'a std::collections::BTreeMap<String, crate::mcp_registry::SecretRef>,
-    ) -> Result<Self, String> {
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err("unsupported MCP URL".into());
-        }
-        Ok(Self {
-            url,
-            headers,
-            session_id: None,
-            protocol: LATEST_PROTOCOL,
-        })
-    }
-    fn request(&mut self, request: &Value) -> Result<Value, String> {
-        if self.url.starts_with("https://") {
-            #[cfg(windows)]
-            {
-                return remote_https_request(self.url, self.headers, request.clone());
-            }
-            #[cfg(not(windows))]
-            {
-                return Err("HTTPS MCP proxy requires Windows WinHTTP".into());
-            }
-        }
-        let rest = self.url.strip_prefix("http://").ok_or("invalid MCP URL")?;
-        let (host_path, path) = rest
-            .split_once('/')
-            .map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
-        let (host, port) = host_path
-            .split_once(':')
-            .map_or((host_path, 80), |(h, p)| (h, p.parse().unwrap_or(80)));
-        let address = (host, port)
-            .to_socket_addrs()
-            .map_err(|_| "remote MCP host could not be resolved")?
-            .next()
-            .ok_or("remote MCP host could not be resolved")?;
-        let mut stream = TcpStream::connect(address).map_err(|_| "remote MCP connection failed")?;
-        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
-        stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
-        let body = serde_json::to_string(request)
-            .map_err(|_| "remote MCP request could not be encoded")?;
-        let mut extra = String::new();
-        for (key, reference) in self.headers {
-            let value = crate::mcp_registry::resolve_secret(reference)
-                .ok_or("remote MCP credential unavailable")?;
-            crate::redact::register_runtime_secret(value.clone());
-            extra.push_str(&format!("{key}: {value}\r\n"));
-        }
-        if let Some(id) = &self.session_id {
-            extra.push_str(&format!("MCP-Session-Id: {id}\r\n"));
-        }
-        let wire = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}", self.protocol, body.len());
-        stream
-            .write_all(wire.as_bytes())
-            .map_err(|_| "remote MCP request failed")?;
-        let mut bytes = Vec::new();
-        stream
-            .take((MAX_UPSTREAM_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "remote MCP response failed")?;
-        if bytes.len() > MAX_UPSTREAM_BYTES {
-            return Err("remote MCP response exceeded the size limit".into());
-        }
-        let text = String::from_utf8_lossy(&bytes);
-        let (head, payload) = text
-            .split_once("\r\n\r\n")
-            .ok_or("remote MCP response was malformed")?;
-        let status = head
-            .split_whitespace()
-            .nth(1)
-            .and_then(|v| v.parse::<u16>().ok())
-            .ok_or("remote MCP status missing")?;
-        if !(200..300).contains(&status) {
-            return Err(format!("remote MCP server returned HTTP {status}"));
-        }
-        for line in head.lines() {
-            if let Some(value) = line.strip_prefix("MCP-Session-Id:") {
-                self.session_id = Some(value.trim().to_string());
-            }
-        }
-        if status == 202 || payload.trim().is_empty() {
-            return Ok(json!({}));
-        }
-        parse_mcp_payload(payload, head, request)
-    }
-}
-
-fn parse_mcp_payload(payload: &str, headers: &str, request: &Value) -> Result<Value, String> {
-    if headers.to_ascii_lowercase().contains("text/event-stream") {
-        for line in payload.lines() {
-            if let Some(data) = line.strip_prefix("data:") {
-                if let Ok(value) = serde_json::from_str::<Value>(data.trim()) {
-                    if value.get("id") == request.get("id") {
-                        return Ok(value);
-                    }
-                }
-            }
-        }
-        return Err("remote MCP SSE response had no matching response ID".into());
-    }
-    let value: Value =
-        serde_json::from_str(payload).map_err(|_| "remote MCP response was not JSON")?;
-    if request.get("id").is_some() && value.get("id") != request.get("id") {
-        return Err("remote MCP response ID mismatch".into());
-    }
-    Ok(value)
-}
-
-#[cfg(windows)]
-fn remote_https_request(
-    url: &str,
-    headers: &std::collections::BTreeMap<String, crate::mcp_registry::SecretRef>,
-    request: Value,
-) -> Result<Value, String> {
-    use std::iter::once;
-    use windows_sys::Win32::Networking::WinHttp::*;
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or("invalid HTTPS MCP URL")?;
-    let (hostport, path) = rest
-        .split_once('/')
-        .map_or((rest, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
-    let mut parts = hostport.split(':');
-    let host = parts.next().unwrap_or("");
-    let port = parts.next().and_then(|p| p.parse().ok()).unwrap_or(443);
-    let wide = |s: &str| s.encode_utf16().chain(once(0)).collect::<Vec<u16>>();
-    let agent = wide("Concordia");
-    let host_w = wide(host);
-    let path_w = wide(&path);
-    let verb = wide("POST");
-    let session = unsafe {
-        WinHttpOpen(
-            agent.as_ptr(),
-            WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-            std::ptr::null(),
-            std::ptr::null(),
-            0,
-        )
-    };
-    if session.is_null() {
-        return Err("HTTPS MCP session could not start".into());
-    }
-    let connection = unsafe { WinHttpConnect(session, host_w.as_ptr(), port, 0) };
-    if connection.is_null() {
-        unsafe {
-            WinHttpCloseHandle(session);
-        }
-        return Err("HTTPS MCP connection failed".into());
-    }
-    let handle = unsafe {
-        WinHttpOpenRequest(
-            connection,
-            verb.as_ptr(),
-            path_w.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            std::ptr::null(),
-            WINHTTP_FLAG_SECURE,
-        )
-    };
-    if handle.is_null() {
-        unsafe {
-            WinHttpCloseHandle(connection);
-            WinHttpCloseHandle(session);
-        }
-        return Err("HTTPS MCP request could not start".into());
-    }
-    let mut header_text = format!("Content-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {LATEST_PROTOCOL}\r\n");
-    for (key, reference) in headers {
-        let value = crate::mcp_registry::resolve_secret(reference).ok_or(
-            "remote MCP credential is not available; sign in through Windows Credential Manager",
-        )?;
-        crate::redact::register_runtime_secret(value.clone());
-        header_text.push_str(&format!("{key}: {value}\r\n"));
-    }
-    let header_w = wide(&header_text);
-    let body = serde_json::to_string(&request)
-        .map_err(|_| "MCP request could not be encoded".to_string())?;
-    let ok = unsafe {
-        WinHttpSendRequest(
-            handle,
-            header_w.as_ptr(),
-            u32::MAX,
-            body.as_ptr() as _,
-            body.len() as u32,
-            body.len() as u32,
-            0,
-        ) != 0
-            && WinHttpReceiveResponse(handle, std::ptr::null_mut()) != 0
-    };
-    let mut bytes = Vec::new();
-    if ok {
-        loop {
-            let mut size = 0u32;
-            unsafe {
-                WinHttpQueryDataAvailable(handle, &mut size);
-            }
-            if size == 0 {
-                break;
-            }
-            if bytes.len().saturating_add(size as usize) > MAX_UPSTREAM_BYTES {
-                break;
-            }
-            let mut chunk = vec![0u8; size as usize];
-            let mut read = 0u32;
-            if unsafe { WinHttpReadData(handle, chunk.as_mut_ptr() as _, size, &mut read) } == 0 {
-                break;
-            }
-            bytes.extend_from_slice(&chunk[..read as usize]);
-        }
-    }
-    unsafe {
-        WinHttpCloseHandle(handle);
-        WinHttpCloseHandle(connection);
-        WinHttpCloseHandle(session);
-    }
-    if !ok {
-        return Err("HTTPS MCP request failed".into());
-    }
-    if bytes.len() > MAX_UPSTREAM_BYTES {
-        return Err("HTTPS MCP response exceeded the size limit".into());
-    }
-    let payload = String::from_utf8_lossy(&bytes);
-    parse_mcp_payload(&payload, "application/json", &request)
-}
 fn text_result(text: String, is_error: bool) -> Value {
     json!({"content":[{"type":"text","text":crate::redact::redact(&text).chars().take(MAX_RESULT_CHARS).collect::<String>()}],"isError":is_error})
 }
@@ -681,7 +311,32 @@ fn arg<'a>(args: &'a Value, name: &str) -> Result<&'a str, String> {
         .filter(|v| !v.trim().is_empty())
         .ok_or_else(|| format!("agents needs {name}"))
 }
+fn caller_context(args: &Value) -> Result<(String, String, PathBuf), String> {
+    let parent = std::env::var("CONCORDIA_PARENT_CONVERSATION")
+        .map_err(|_| "agent start requires a verified parent conversation")?;
+    let parent_run = std::env::var("CONCORDIA_PARENT_RUN")
+        .map_err(|_| "agent start requires a verified parent run")?;
+    if parent.is_empty() || uuid::Uuid::parse_str(&parent_run).is_err() {
+        return Err("agent start requires a valid parent conversation and run".into());
+    }
+    if args
+        .get("parent")
+        .and_then(Value::as_str)
+        .is_some_and(|requested| requested != parent)
+    {
+        return Err("agent start parent does not match the verified caller".into());
+    }
+    let workspace = std::env::var_os("CONCORDIA_PROJECT_DIR")
+        .map(PathBuf::from)
+        .ok_or("agent start requires a verified workspace")?
+        .canonicalize()
+        .map_err(|_| "agent workspace is unavailable")?;
+    Ok((parent, parent_run, workspace))
+}
 fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
+    if std::env::var_os("CONCORDIA_MCP_SERVER").is_some() {
+        return Err("unknown tool".into());
+    }
     if params.get("name").and_then(Value::as_str) != Some("agents") {
         return Err("unknown tool".into());
     }
@@ -698,17 +353,12 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
         "start" if args.get("provider").and_then(Value::as_str) == Some("grok-bot") => {
             let routine = arg(&args, "routine")?;
             let task = arg(&args, "task")?;
-            let id = crate::grok_bot::start(
-                root,
-                routine,
-                task,
-                args.get("parent")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )?;
+            let (parent, _, _) = caller_context(&args)?;
+            let id = crate::grok_bot::start(root, routine, task, &parent)?;
             Ok(json!({"agent_id":id,"status":"waiting"}).to_string())
         }
         "start" => {
+            let (parent, parent_run, workspace) = caller_context(&args)?;
             let role_name = args
                 .get("role")
                 .and_then(Value::as_str)
@@ -748,17 +398,16 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
                     .map(str::to_owned)
                     .or(role.effort.clone()),
                 task: task.into(),
-                parent: args
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .into(),
+                parent: parent.clone(),
+                workspace: Some(workspace.clone()),
+                parent_run_id: Some(parent_run.clone()),
+                run_id: None,
                 status: "queued".into(),
                 result: None,
                 activity: vec!["delegation requested".into()],
             };
             write_agent(root, &record)?;
-            write_proposal(
+            if let Err(error) = write_proposal(
                 root,
                 &Proposal {
                     agent_id: id.clone(),
@@ -776,8 +425,19 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
                         .map(str::to_owned)
                         .or(role.effort),
                     from_thread: record.parent.clone(),
+                    workspace: Some(workspace),
+                    parent_run_id: Some(parent_run),
                 },
-            )?;
+            ) {
+                records::update_agent_exact(
+                    root,
+                    &id,
+                    "failed",
+                    Some(error.clone()),
+                    "request publication failed",
+                )?;
+                return Err(error);
+            }
             Ok(json!({"agent_id":id,"status":"queued","role":role_name}).to_string())
         }
         "status" | "result" => Ok(serde_json::to_string(&read_agent(
@@ -791,7 +451,14 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
 fn write_proposal(root: &Path, proposal: &Proposal) -> Result<(), String> {
     let dir = proposals_dir(root);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    if std::fs::read_dir(&dir).map_err(|e| e.to_string())?.count() >= MAX_PENDING_PROPOSALS {
+    crate::fs_safe::resolved_directory(&dir)
+        .ok_or("proposal directory is linked or unavailable")?;
+    if std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .take(MAX_PENDING_PROPOSALS)
+        .count()
+        >= MAX_PENDING_PROPOSALS
+    {
         return Err("too many delegated agents are waiting".into());
     }
     let bytes = serde_json::to_vec(proposal).map_err(|e| e.to_string())?;
@@ -812,16 +479,88 @@ pub fn take_proposals(root: &Path) -> Vec<Proposal> {
 }
 pub fn take_pending(root: &Path, limit: usize) -> Vec<PendingProposal> {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(proposals_dir(root)) else {
+    let dir = proposals_dir(root);
+    let Some(owned) = crate::fs_safe::resolved_directory(&dir) else {
         return out;
     };
-    for e in rd.flatten().take(limit) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten().take(limit.min(MAX_PENDING_PROPOSALS)) {
         let p = e.path();
-        if let Ok(bytes) = std::fs::read(&p) {
-            if let Ok(v) = serde_json::from_slice(&bytes) {
+        if !crate::fs_safe::regular_owned_file(&p, &owned) {
+            continue;
+        }
+        if let Some(text) = crate::fs_safe::read_text_bounded(&p, MAX_PROPOSAL_FILE as usize) {
+            if let Ok(v) = serde_json::from_str(&text) {
                 let _ = std::fs::remove_file(p);
                 out.push(v);
             }
+        }
+    }
+    out
+}
+
+/// Claim only requests bound to this active conversation, workspace and parent attempt.
+pub fn take_pending_for(
+    root: &Path,
+    limit: usize,
+    parent: &str,
+    workspace: &Path,
+    parent_run: &str,
+) -> Vec<Proposal> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let Ok(workspace) = workspace.canonicalize() else {
+        return Vec::new();
+    };
+    let directory = proposals_dir(root);
+    let Some(owned) = crate::fs_safe::resolved_directory(&directory) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten().take(MAX_PENDING_PROPOSALS * 4) {
+        let path = entry.path();
+        if !crate::fs_safe::regular_owned_file(&path, &owned) {
+            continue;
+        }
+        let Some(raw) = crate::fs_safe::read_text_bounded(&path, MAX_PROPOSAL_FILE as usize) else {
+            continue;
+        };
+        let Ok(proposal) = serde_json::from_str::<Proposal>(&raw) else {
+            continue;
+        };
+        if proposal.from_thread != parent
+            || proposal.workspace.as_ref() != Some(&workspace)
+            || proposal.parent_run_id.as_deref() != Some(parent_run)
+        {
+            continue;
+        }
+        let Ok(record) = records::read_agent(root, &proposal.agent_id) else {
+            continue;
+        };
+        if record.parent != parent
+            || record.workspace.as_ref() != Some(&workspace)
+            || record.parent_run_id.as_deref() != Some(parent_run)
+            || record.status != "queued"
+            || path.file_name().and_then(|name| name.to_str())
+                != Some(format!("{}.json", proposal.agent_id).as_str())
+        {
+            continue;
+        }
+        let claim = path.with_extension(format!("claim-{}", uuid::Uuid::new_v4()));
+        if std::fs::rename(&path, &claim).is_err() {
+            continue;
+        }
+        // The durable AgentRecord keeps the task even if cleanup or submission fails.
+        let _ = std::fs::remove_file(claim);
+        out.push(proposal);
+        if out.len() == limit {
+            break;
         }
     }
     out
@@ -850,13 +589,17 @@ mod tests {
             effort: Some(secret.into()),
             task: secret.into(),
             parent: secret.into(),
+            workspace: None,
+            parent_run_id: None,
+            run_id: None,
             status: "queued".into(),
             result: Some(secret.into()),
             activity: vec![secret.into()],
         };
 
         write_agent(root.path(), &record).unwrap();
-        let raw = std::fs::read_to_string(record_path(root.path(), &record.agent_id)).unwrap();
+        let raw =
+            std::fs::read_to_string(record_path(root.path(), &record.agent_id).unwrap()).unwrap();
         assert!(!raw.contains(secret));
         let stored = read_agent(root.path(), &record.agent_id).unwrap();
         assert_ne!(stored.account, secret);

@@ -320,15 +320,24 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
     for c in crate::commands::command_registry() {
         let Some(key) = c.key_binding else { continue };
         let category = format!("{:?}", c.category);
-        if sections.last().map(|(name, _)| name != &category).unwrap_or(true) {
+        if sections
+            .last()
+            .map(|(name, _)| name != &category)
+            .unwrap_or(true)
+        {
             sections.push((category, Vec::new()));
         }
         if let Some((_, rows)) = sections.last_mut() {
-            rows.push((key.to_string(), format!("{} \u{2014} {}", c.name, c.description)));
+            rows.push((
+                key.to_string(),
+                format!("{} \u{2014} {}", c.name, c.description),
+            ));
         }
     }
     let owned = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
-        rows.iter().map(|(k, d)| (k.to_string(), d.to_string())).collect()
+        rows.iter()
+            .map(|(k, d)| (k.to_string(), d.to_string()))
+            .collect()
     };
     sections.push((
         "Tabs".into(),
@@ -348,8 +357,14 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
     sections.push((
         "Activity".into(),
         owned(&[
-            ("Ctrl+O", "expand or collapse the last item in the last message"),
-            ("Ctrl+Shift+O", "expand or collapse every item in the last message"),
+            (
+                "Ctrl+O",
+                "expand or collapse the last item in the last message",
+            ),
+            (
+                "Ctrl+Shift+O",
+                "expand or collapse every item in the last message",
+            ),
             ("Ctrl+E", "open full activity detail"),
             ("F5", "toggle full activity"),
             ("F1 / ?", "open this shortcut sheet"),
@@ -358,8 +373,14 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
     sections.push((
         "Native provider".into(),
         owned(&[
-            ("/terminal native", "open the provider's own interface on this chat's session"),
-            ("/terminal help", "show terminal modes and native-provider controls"),
+            (
+                "/terminal native",
+                "open the provider's own interface on this chat's session",
+            ),
+            (
+                "/terminal help",
+                "show terminal modes and native-provider controls",
+            ),
         ]),
     ));
     let key_width = sections
@@ -1673,11 +1694,13 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height: area.height,
         };
         f.render_widget(Clear, popup);
-        let frame = Block::default().borders(Borders::ALL).title(if picker.filter.is_empty() {
-            format!(" {} ", picker.title)
-        } else {
-            format!(" {} · filter: {} ", picker.title, picker.filter)
-        });
+        let frame = Block::default()
+            .borders(Borders::ALL)
+            .title(if picker.filter.is_empty() {
+                format!(" {} ", picker.title)
+            } else {
+                format!(" {} · filter: {} ", picker.title, picker.filter)
+            });
         f.render_widget(frame, popup);
         let inner = Block::default().inner(popup);
         let cols = (inner.width / 54).max(1) as usize;
@@ -2093,7 +2116,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         }
         let height = height.min(popup.bottom().saturating_sub(1).saturating_sub(row_y));
         app.picker_rows.push((
-            Rect::new(popup.x.saturating_add(1), row_y, popup.width.saturating_sub(2), height),
+            Rect::new(
+                popup.x.saturating_add(1),
+                row_y,
+                popup.width.saturating_sub(2),
+                height,
+            ),
             index,
         ));
         row_y = row_y.saturating_add(height.max(1));
@@ -2313,7 +2341,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     let (left, left_style) = if app.ready_update_path.is_some() {
         (
             "Update ready · R restart now · L later",
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )
     } else if app.recovery_warning().is_some() {
         (

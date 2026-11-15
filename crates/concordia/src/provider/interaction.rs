@@ -1050,11 +1050,10 @@ impl InteractionConnection {
         if !crate::provider::compat::version_at_least(
             version,
             crate::capacity::claude_capacity::CLI_VERSION,
-        )
-            || self
-                .owner
-                .as_ref()
-                .is_some_and(|owner| owner.provider != ProviderKind::Claude)
+        ) || self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.provider != ProviderKind::Claude)
         {
             return Err(format!(
                 "Claude native control protocol requires verified CLI {}",

@@ -1,14 +1,14 @@
 //! Concordia-owned MCP registry and per-launch projections.
 //!
 //! The registry is state owned by Concordia. Provider homes are never written. Secret-bearing
-//! values are references, not values. Launch projections resolve environment references only in
-//! memory and omit unresolved references so a missing sign-in is visible instead of leaking data.
+//! values are references, not values. Provider projections use a server-bound proxy that
+//! resolves credentials only for the intended MCP process or request.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 const MAX_BYTES: u64 = 1024 * 1024;
 
@@ -61,8 +61,11 @@ pub fn path(state_root: &Path) -> PathBuf {
 
 pub fn load(state_root: &Path) -> Result<Registry, String> {
     let file = path(state_root);
-    let text = match std::fs::read_to_string(&file) {
-        Ok(text) => text,
+    let mut bytes = Vec::new();
+    match std::fs::File::open(&file)
+        .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut bytes))
+    {
+        Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Registry {
                 servers: BTreeMap::new(),
@@ -70,33 +73,20 @@ pub fn load(state_root: &Path) -> Result<Registry, String> {
             })
         }
         Err(e) => return Err(format!("cannot read {}: {e}", file.display())),
-    };
-    if text.len() as u64 > MAX_BYTES {
+    }
+    if bytes.len() as u64 > MAX_BYTES {
         return Err("MCP registry exceeds the 1 MiB limit".into());
     }
-    toml::from_str(&text).map_err(|e| format!("MCP registry is invalid: {e}"))
+    let text = std::str::from_utf8(&bytes).map_err(|_| "MCP registry is not UTF-8".to_string())?;
+    toml::from_str(text).map_err(|e| format!("MCP registry is invalid: {e}"))
 }
 
 pub fn save(state_root: &Path, registry: &Registry) -> Result<(), String> {
-    static SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = SAVE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| "MCP registry mutation lock is poisoned".to_string())?;
-    for (name, server) in &registry.servers {
-        validate_server(name, server)?;
-    }
-    let text =
-        toml::to_string_pretty(registry).map_err(|e| format!("cannot encode MCP registry: {e}"))?;
-    if text.len() as u64 > MAX_BYTES {
-        return Err("MCP registry exceeds the 1 MiB limit".into());
-    }
-    std::fs::create_dir_all(state_root)
-        .map_err(|e| format!("cannot create state directory: {e}"))?;
-    let file = path(state_root);
-    let temp = state_root.join(format!("mcp.toml.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&temp, text).map_err(|e| format!("cannot write MCP registry: {e}"))?;
-    std::fs::rename(&temp, &file).map_err(|e| format!("cannot replace MCP registry: {e}"))
+    std::fs::create_dir_all(state_root).map_err(|error| error.to_string())?;
+    crate::state_io::with_lock(&state_root.join("mcp.toml.lock"), || {
+        save_unlocked(state_root, registry).map_err(std::io::Error::other)
+    })
+    .map_err(|error| error.to_string())
 }
 
 /// Serialize a registry read-modify-write under the repository's cross-process state lock.
@@ -104,6 +94,7 @@ pub fn mutate<T>(
     state_root: &Path,
     change: impl FnOnce(&mut Registry) -> Result<T, String>,
 ) -> Result<T, String> {
+    std::fs::create_dir_all(state_root).map_err(|error| error.to_string())?;
     let lock = state_root.join("mcp.toml.lock");
     crate::state_io::with_lock(&lock, || {
         let mut registry = load(state_root).map_err(std::io::Error::other)?;
@@ -165,20 +156,17 @@ fn has_inline_secret(server: &Server) -> bool {
 
 pub fn effective<'a>(registry: &'a Registry, project: &Path, name: &str) -> Option<&'a Server> {
     let server = registry.servers.get(name)?;
-    let project_key = project.to_string_lossy();
-    if registry
-        .projects
-        .get(project_key.as_ref())
-        .and_then(|p| p.get(name))
-        .is_some_and(|on| !on)
-    {
+    let canonical = project.canonicalize().ok();
+    if registry.projects.iter().any(|(key, settings)| {
+        let matches = Path::new(key) == project
+            || canonical.as_ref().is_some_and(|canonical| {
+                Path::new(key).canonicalize().ok().as_ref() == Some(canonical)
+            });
+        matches && settings.get(name) == Some(&false)
+    }) {
         return None;
     }
     server.enabled.then_some(server)
-}
-
-fn resolve(reference: &SecretRef) -> Option<String> {
-    resolve_secret(reference)
 }
 
 pub fn resolve_secret(reference: &SecretRef) -> Option<String> {
@@ -212,131 +200,75 @@ fn credential_value(_: &str) -> Result<String, String> {
     Err("credentials require Windows Credential Manager".into())
 }
 
-pub fn acp_servers(state_root: &Path, project: &Path) -> Value {
-    let Ok(registry) = load(state_root) else {
-        return json!([]);
-    };
-    let mut out = Vec::new();
-    for (name, _server) in &registry.servers {
-        let Some(server) = effective(&registry, project, name) else {
-            continue;
-        };
-        if has_inline_secret(server) {
-            continue;
-        }
-        match &server.transport {
-            Transport::Stdio { command, args, env } => {
-                let env = env
-                    .iter()
-                    .filter_map(|(name, reference)| {
-                        resolve(reference).map(|value| json!({"name": name, "value": value}))
-                    })
-                    .collect::<Vec<_>>();
-                out.push(json!({"name": name, "command": command, "args": args, "env": env}));
-            }
-            Transport::Remote { url, headers: _ } => {
-                if supported_remote_url(url) {
-                    out.push(proxy_entry(name, state_root));
-                }
-            }
-        }
-    }
-    Value::Array(out)
+fn proxy_env(state_root: &Path, project: &Path, name: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "CONCORDIA_STATE_DIR".into(),
+            state_root.to_string_lossy().into_owned(),
+        ),
+        (
+            "CONCORDIA_PROJECT_DIR".into(),
+            project.to_string_lossy().into_owned(),
+        ),
+        ("CONCORDIA_MCP_SERVER".into(), name.into()),
+    ])
 }
 
-pub fn codex_overrides(state_root: &Path, project: &Path) -> Vec<String> {
+fn projected_servers(state_root: &Path, project: &Path) -> Vec<(String, BTreeMap<String, String>)> {
     let Ok(registry) = load(state_root) else {
         return Vec::new();
     };
+    registry
+        .servers
+        .keys()
+        .filter_map(|name| {
+            let server = effective(&registry, project, name)?;
+            if has_inline_secret(server) || !supports_transport(server, true) {
+                return None;
+            }
+            Some((name.clone(), proxy_env(state_root, project, name)))
+        })
+        .collect()
+}
+
+pub fn acp_servers(state_root: &Path, project: &Path) -> Value {
+    let command = std::env::current_exe().unwrap_or_default();
+    json!(projected_servers(state_root, project).into_iter().map(|(name, env)| {
+        json!({"name":name,"command":command,"args":["mcp"],"env":env.into_iter().map(|(name,value)|json!({"name":name,"value":value})).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>())
+}
+
+pub fn codex_overrides(state_root: &Path, project: &Path) -> Vec<String> {
+    let command = std::env::current_exe()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
     let mut out = Vec::new();
-    for (name, _server) in &registry.servers {
-        let Some(server) = effective(&registry, project, name) else {
-            continue;
-        };
-        if has_inline_secret(server) {
-            continue;
-        }
-        match &server.transport {
-            Transport::Stdio { command, args, env } => {
-                out.push(format!("mcp_servers.{name}.command={command}"));
-                out.push(format!(
-                    "mcp_servers.{name}.args={}",
-                    serde_json::to_string(args).unwrap_or_else(|_| "[]".into())
-                ));
-                for (key, reference) in env {
-                    // Keep secrets out of argv. Codex inherits only named references through
-                    // the controlled child environment; the provider never receives plaintext
-                    // command-line overrides.
-                    let reference = match reference {
-                        SecretRef::Env { env } => format!("${{{env}}}"),
-                        SecretRef::Credential { credential } => {
-                            format!("${{CONCORDIA_CREDENTIAL_{credential}}}")
-                        }
-                    };
-                    out.push(format!("mcp_servers.{name}.env.{key}={reference}"));
-                }
-            }
-            Transport::Remote { url, .. } if supported_remote_url(url) => {
-                let exe = std::env::current_exe().unwrap_or_default();
-                out.push(format!(
-                    "mcp_servers.{name}.command={}",
-                    exe.to_string_lossy()
-                ));
-                out.push(format!("mcp_servers.{name}.args=[\"mcp\"]"));
-                out.push(format!(
-                    "mcp_servers.{name}.env.CONCORDIA_STATE_DIR={}",
-                    state_root.to_string_lossy()
-                ));
-            }
-            Transport::Remote { .. } => {}
+    for (name, env) in projected_servers(state_root, project) {
+        let name = toml::Value::String(name);
+        out.push(format!(
+            "mcp_servers.{name}.command={}",
+            toml::Value::String(command.clone())
+        ));
+        out.push(format!("mcp_servers.{name}.args=[\"mcp\"]"));
+        for (key, value) in env {
+            out.push(format!(
+                "mcp_servers.{name}.env.{key}={}",
+                toml::Value::String(value)
+            ));
         }
     }
     out
 }
 
-/// Build Claude's per-launch JSON argument. Secret values stay references and are never read.
+/// Launch only a server-bound proxy; credential values never enter the provider configuration.
 pub fn claude_config(state_root: &Path, project: &Path) -> Option<String> {
-    let registry = load(state_root).ok()?;
-    let mut servers = serde_json::Map::new();
-    for (name, _) in &registry.servers {
-        let Some(server) = effective(&registry, project, name) else {
-            continue;
-        };
-        if has_inline_secret(server) {
-            continue;
-        }
-        let value = match &server.transport {
-            Transport::Stdio { command, args, env } => json!({
-                "command": command,
-                "args": args,
-                "env": env.iter().map(|(key, reference)| (key.clone(), match reference {
-                    SecretRef::Env { env } => format!("${{{env}}}"),
-                    SecretRef::Credential { credential } => format!("${{CONCORDIA_CREDENTIAL_{credential}}}"),
-                })).collect::<BTreeMap<_, _>>(),
-            }),
-            Transport::Remote { url, .. } if supported_remote_url(url) => proxy_json(state_root),
-            Transport::Remote { .. } => continue,
-        };
-        servers.insert(name.clone(), value);
-    }
-    (!servers.is_empty()).then(|| json!({"mcpServers": servers}).to_string())
-}
-
-fn proxy_json(state_root: &Path) -> Value {
-    json!({
-        "command": std::env::current_exe().unwrap_or_default().to_string_lossy(),
-        "args": ["mcp"],
-        "env": {"CONCORDIA_STATE_DIR": state_root.to_string_lossy()}
-    })
-}
-
-fn proxy_entry(name: &str, state_root: &Path) -> Value {
-    json!({
-        "name": name,
-        "command": std::env::current_exe().unwrap_or_default().to_string_lossy(),
-        "args": ["mcp"],
-        "env": [{"name": "CONCORDIA_STATE_DIR", "value": state_root.to_string_lossy()}]
-    })
+    let command = std::env::current_exe().ok()?;
+    let servers = projected_servers(state_root, project)
+        .into_iter()
+        .map(|(name, env)| (name, json!({"command":command,"args":["mcp"],"env":env})))
+        .collect::<serde_json::Map<_, _>>();
+    (!servers.is_empty()).then(|| json!({"mcpServers":servers}).to_string())
 }
 
 pub fn claude_config_path(state_root: &Path, project: &Path) -> Option<PathBuf> {

@@ -495,20 +495,32 @@ pub(super) fn poll(ws: &mut Workspace) -> bool {
 }
 
 pub(super) fn preview_text(path: &Path, source: &str) -> (Option<String>, Option<String>) {
-    let result = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+    let result = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
         Some("md" | "markdown" | "mdx") => Ok(Some(source.to_owned())),
         Some("csv") => csv_preview(source)
             .map(Some)
             .map_err(|error| error.to_string()),
-        Some("json") => serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
-            .map_err(|error| error.to_string())
-            .and_then(|value| serde_json::to_string_pretty(&value).map_err(|error| error.to_string()))
-            .map(Some),
+        Some("json") => {
+            serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+                })
+                .map(Some)
+        }
         _ => Ok(None),
     };
     match result {
         Ok(formatted) => (formatted, None),
-        Err(error) => (None, Some(format!("Formatted preview unavailable: {error}"))),
+        Err(error) => (
+            None,
+            Some(format!("Formatted preview unavailable: {error}")),
+        ),
     }
 }
 
@@ -521,13 +533,22 @@ fn csv_preview(source: &str) -> Result<String, csv::Error> {
     let columns = records.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut cells = Vec::with_capacity(records.len());
     for record in &records {
-        cells.push((0..columns).map(|column| preview_cell(record.get(column).unwrap_or(""))).collect::<Vec<_>>());
+        cells.push(
+            (0..columns)
+                .map(|column| preview_cell(record.get(column).unwrap_or("")))
+                .collect::<Vec<_>>(),
+        );
     }
     let widths = (0..columns)
         .map(|column| {
             cells
                 .iter()
-                .map(|row| row[column].chars().map(crate::file_document::display_width).sum())
+                .map(|row| {
+                    row[column]
+                        .chars()
+                        .map(crate::file_document::display_width)
+                        .sum()
+                })
                 .max()
                 .unwrap_or(0)
         })

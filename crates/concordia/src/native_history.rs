@@ -26,9 +26,9 @@ pub struct History {
     pub truncated: bool,
 }
 
-const HISTORY_MESSAGES: usize = 200;
-const HISTORY_TEXT_BYTES: usize = 1024 * 1024;
-const HISTORY_NATIVE_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const HISTORY_MESSAGES: usize = 200;
+pub(crate) const HISTORY_TEXT_BYTES: usize = 1024 * 1024;
+pub(crate) const HISTORY_NATIVE_BYTES: u64 = 8 * 1024 * 1024;
 
 fn bound_history_card(card: &mut StreamCard) -> bool {
     const LIMIT: usize = 64 * 1024;

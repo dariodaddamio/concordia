@@ -1,4 +1,4 @@
-//! Bounded lexical retrieval and observed handoffs. No persisted conversation text.
+﻿//! Bounded lexical retrieval and observed handoffs. No persisted conversation text.
 use super::*;
 
 const CANDIDATES: usize = 8;
@@ -65,7 +65,7 @@ fn search_page(root: &Path, id: &str, query: &str, report: &mut Report) -> Resul
                 break;
             }
             // Preview is untrusted display text. Exact original remains available by pointer.
-            let preview: String = crate::chat_cli::terminal_safe(&text)
+            let preview: String = crate::text_safe::terminal_safe(&text)
                 .chars()
                 .take(240)
                 .collect();

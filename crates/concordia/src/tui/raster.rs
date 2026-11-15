@@ -441,7 +441,11 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         thumb.height,
         &thumb.hash[..12],
         if thumb.pages > 1 {
-            format!("Page {} / {} | Left/Right or PgUp/PgDn", view.page + 1, thumb.pages)
+            format!(
+                "Page {} / {} | Left/Right or PgUp/PgDn",
+                view.page + 1,
+                thumb.pages
+            )
         } else {
             "preview".into()
         }
@@ -487,8 +491,11 @@ pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) 
     // blits, but a pane owns its cell content and renders it directly.
     paint(f, content, thumb, app.no_color);
     f.render_widget(
-        Paragraph::new(format!("Image preview · {} × {}", thumb.width, thumb.height))
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(format!(
+            "Image preview · {} × {}",
+            thumb.width, thumb.height
+        ))
+        .style(Style::default().fg(Color::DarkGray)),
         Rect {
             x: content.x,
             y: content.y,
@@ -647,8 +654,7 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
                 return None;
             }
             let cleared = (area.y..area.bottom()).all(|y| {
-                (area.x..area.right())
-                    .all(|x| f.buffer_mut()[(x, y)].symbol().trim().is_empty())
+                (area.x..area.right()).all(|x| f.buffer_mut()[(x, y)].symbol().trim().is_empty())
             });
             if cleared {
                 return None;

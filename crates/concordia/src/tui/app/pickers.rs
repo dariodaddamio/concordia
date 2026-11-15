@@ -13,8 +13,14 @@ impl App {
             "/queue" => "This panel reviews and controls queued prompts.",
             _ => "This panel guides the command and previews its effect.",
         };
-        self.show_picker(PickerKind::Guided, format!("{command} · {purpose}"), choices, false);
-        self.footer_left = "↑↓ choose · Enter validate choice · Esc cancels with nothing changed".into();
+        self.show_picker(
+            PickerKind::Guided,
+            format!("{command} · {purpose}"),
+            choices,
+            false,
+        );
+        self.footer_left =
+            "↑↓ choose · Enter validate choice · Esc cancels with nothing changed".into();
     }
 
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
@@ -511,9 +517,7 @@ impl App {
     pub(in crate::tui) fn open_continuation_picker(&mut self) {
         let mut accounts = accounts_with_auth(&self.state_root)
             .into_iter()
-            .filter(|a| {
-                a.home_path.is_some()
-            })
+            .filter(|a| a.home_path.is_some())
             .collect::<Vec<_>>();
         accounts.sort_by(|a, b| {
             let remaining = |account: &crate::accounts::AccountDef| {
@@ -537,6 +541,9 @@ impl App {
                 })
                 .then_with(|| a.account.cmp(&b.account))
         });
+        let current_account = self.account.clone();
+        let current_model = self.model.clone();
+        let same_account_allowed = self.continuation.same_account_allowed();
         let rows = accounts
             .into_iter()
             .flat_map(|a| {
@@ -548,32 +555,73 @@ impl App {
                     !o.exhausted && o.remaining_pct.is_some_and(|remaining| remaining > 0.0)
                 });
                 let reset = observation.and_then(|o| o.reset);
-                let models = a.home_path.as_ref().map(|home| {
-                    crate::models::ids_at(&self.state_root, a.provider, &a.account, home)
-                }).unwrap_or_default();
-                models.into_iter().map(move |model| PickerRow {
-                    id: format!("{}{} {model}", if available { "continue:" } else { "continue-disabled:" }, a.account),
-                    label: format!("{} → {model}", a.label),
-                    detail: if !available && reset.is_some() {
-                        format!("at limit · {}", reset.as_deref().unwrap_or("reset time unavailable"))
-                    } else if !available {
-                        "usage unavailable · capacity must be confirmed before continuing".into()
-                    } else {
-                        remaining.map_or_else(
-                            || "usage unavailable · continue the paused request".into(),
-                            |p| format!("{}% left · continue the paused request", p.round() as i64),
-                        )
-                    },
-                }).collect::<Vec<_>>()
+                let models = a
+                    .home_path
+                    .as_ref()
+                    .map(|home| {
+                        crate::models::ids_at(&self.state_root, a.provider, &a.account, home)
+                    })
+                    .unwrap_or_default();
+                let candidate_account = a.account.clone();
+                let current_account = current_account.clone();
+                let current_model = current_model.clone();
+                models
+                    .into_iter()
+                    .filter(move |model| {
+                        candidate_account != current_account
+                            || *model != current_model
+                            || same_account_allowed
+                    })
+                    .map(move |model| PickerRow {
+                        id: format!(
+                            "{}{} {model}",
+                            if available {
+                                "continue:"
+                            } else {
+                                "continue-disabled:"
+                            },
+                            a.account
+                        ),
+                        label: format!("{} → {model}", a.label),
+                        detail: if !available && reset.is_some() {
+                            format!(
+                                "at limit · {}",
+                                reset.as_deref().unwrap_or("reset time unavailable")
+                            )
+                        } else if !available {
+                            "usage unavailable · capacity must be confirmed before continuing"
+                                .into()
+                        } else {
+                            remaining.map_or_else(
+                                || "usage unavailable · continue the paused request".into(),
+                                |p| {
+                                    format!(
+                                        "{}% left · continue the paused request",
+                                        p.round() as i64
+                                    )
+                                },
+                            )
+                        },
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        let (mut exhausted_rows, mut available_rows): (Vec<_>, Vec<_>) = rows
-            .into_iter()
-            .partition(PickerRow::disabled);
+        let (mut exhausted_rows, mut available_rows): (Vec<_>, Vec<_>) =
+            rows.into_iter().partition(PickerRow::disabled);
         available_rows.sort_by(|a, b| {
-            let left = a.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
-            let right = b.detail.split('%').next().and_then(|value| value.parse::<f64>().ok());
-            right.partial_cmp(&left).unwrap_or(std::cmp::Ordering::Equal)
+            let left = a
+                .detail
+                .split('%')
+                .next()
+                .and_then(|value| value.parse::<f64>().ok());
+            let right = b
+                .detail
+                .split('%')
+                .next()
+                .and_then(|value| value.parse::<f64>().ok());
+            right
+                .partial_cmp(&left)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         let mut rows = available_rows;
         let fallback = crate::config::for_root(&self.state_root)
@@ -582,10 +630,10 @@ impl App {
             .get("general")
             .cloned()
             .filter(|model| {
-            rows.iter().any(|row| {
-                row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
-            })
-        });
+                rows.iter().any(|row| {
+                    row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
+                })
+            });
         if let Some(model) = fallback {
             if let Some(index) = rows.iter().position(|row| {
                 row.id.starts_with("continue:") && row.id.ends_with(&format!(" {model}"))
@@ -597,11 +645,31 @@ impl App {
             }
         }
         rows.append(&mut exhausted_rows);
-        let reset = self.home_path.as_ref().and_then(|home| {
-            crate::usage::peek_cached_usage(&self.state_root, self.provider, &self.account, home)
-        }).and_then(|o| o.reset);
-        rows.push(PickerRow { id: "continue:wait".into(), label: "Wait for the reset".into(), detail: reset.map_or_else(|| "resume when the provider reports capacity again".into(), |r| format!("resume automatically when {r} passes")) });
-        rows.push(PickerRow { id: "continue:stop".into(), label: "Stop here".into(), detail: "keep the interrupted request for later".into() });
+        let reset = self
+            .home_path
+            .as_ref()
+            .and_then(|home| {
+                crate::usage::peek_cached_usage(
+                    &self.state_root,
+                    self.provider,
+                    &self.account,
+                    home,
+                )
+            })
+            .and_then(|o| o.reset);
+        rows.push(PickerRow {
+            id: "continue:wait".into(),
+            label: "Wait for the reset".into(),
+            detail: reset.map_or_else(
+                || "resume when the provider reports capacity again".into(),
+                |r| format!("resume automatically when {r} passes"),
+            ),
+        });
+        rows.push(PickerRow {
+            id: "continue:stop".into(),
+            label: "Stop here".into(),
+            detail: "keep the interrupted request for later".into(),
+        });
         if rows.is_empty() {
             self.push_system("usage limit reached; /use add another account to continue");
         } else {
@@ -1193,34 +1261,61 @@ impl App {
             detail: format!("read-only source {}; adds a registry reference with no provider-home write; undo: /mcp remove {}", entry.path.display(), entry.name),
         }).collect();
         self.mcp_import_entries = Some(entries);
-        self.show_picker(PickerKind::Guided, "/mcp import · Choose a provider server to add".into(), rows, false);
-        self.footer_left = "↑↓ choose · Enter adds the selected server · Esc cancels with nothing changed".into();
+        self.show_picker(
+            PickerKind::Guided,
+            "/mcp import · Choose a provider server to add".into(),
+            rows,
+            false,
+        );
+        self.footer_left =
+            "↑↓ choose · Enter adds the selected server · Esc cancels with nothing changed".into();
     }
 
     fn apply_mcp_import(&mut self, index: usize) {
-        let Some(entry) = self.mcp_import_entries.as_ref().and_then(|entries| entries.get(index)).cloned() else {
+        let Some(entry) = self
+            .mcp_import_entries
+            .as_ref()
+            .and_then(|entries| entries.get(index))
+            .cloned()
+        else {
             self.push_system("MCP import selection is no longer available. Nothing changed.");
             return;
         };
-        let mut registry = match crate::mcp_registry::load(&self.state_root) {
-            Ok(registry) => registry,
-            Err(_) => { self.push_system("MCP import could not read the local registry. Nothing changed."); return; }
-        };
-        if registry.servers.contains_key(&entry.name) {
-            self.push_system(format!("MCP import skipped {} because it already exists. Provider homes were not changed.", entry.name));
-            return;
-        }
-        registry.servers.insert(entry.name.clone(), crate::mcp_registry::Server { enabled: true, transport: entry.transport });
-        match crate::mcp_registry::save(&self.state_root, &registry) {
-            Ok(()) => self.push_system(format!("MCP import added {} from {}. Provider homes were not changed.", entry.name, entry.provider)),
-            Err(_) => self.push_system("MCP import could not save the local registry. Nothing changed."),
+        let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
+            if registry.servers.contains_key(&entry.name) {
+                return Err(format!("MCP server {} already exists", entry.name));
+            }
+            registry.servers.insert(
+                entry.name.clone(),
+                crate::mcp_registry::Server {
+                    enabled: true,
+                    transport: entry.transport,
+                },
+            );
+            Ok(())
+        });
+        match result {
+            Ok(()) => self.push_system(format!(
+                "MCP import added {} from {}. Provider homes were not changed.",
+                entry.name, entry.provider
+            )),
+            Err(error) => self.push_system(format!("MCP import failed: {error}; nothing changed.")),
         }
     }
 
     pub(in crate::tui) fn finish_mcp_add_editor(&mut self, text: String) {
-        let words = text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
-        if words.len() < 2 || words[0].chars().any(|c| c.is_control() || c.is_whitespace()) {
-            self.push_system("MCP add validation failed: enter a server name and command; nothing changed.");
+        let words = text
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if words.len() < 2
+            || words[0]
+                .chars()
+                .any(|c| c.is_control() || c.is_whitespace())
+        {
+            self.push_system(
+                "MCP add validation failed: enter a server name and command; nothing changed.",
+            );
             return;
         }
         let name = words[0].clone();
@@ -1240,63 +1335,66 @@ impl App {
             self.push_system("MCP add validation failed: preview is missing; nothing changed.");
             return;
         };
-        let mut registry = match crate::mcp_registry::load(&self.state_root) {
-            Ok(registry) => registry,
-            Err(error) => { self.push_system(format!("MCP add validation failed: {error}; nothing changed.")); return; }
-        };
-        if registry.servers.contains_key(&name) {
-            self.push_system(format!("MCP add validation failed: {name} already exists; nothing changed."));
-            return;
-        }
-        registry.servers.insert(name.clone(), crate::mcp_registry::Server {
-            enabled: true,
-            transport: crate::mcp_registry::Transport::Stdio { command, args, env: Default::default() },
+        let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
+            if registry.servers.contains_key(&name) {
+                return Err(format!("MCP server {name} already exists"));
+            }
+            registry.servers.insert(
+                name.clone(),
+                crate::mcp_registry::Server {
+                    enabled: true,
+                    transport: crate::mcp_registry::Transport::Stdio {
+                        command,
+                        args,
+                        env: Default::default(),
+                    },
+                },
+            );
+            Ok(())
         });
-        match crate::mcp_registry::save(&self.state_root, &registry) {
-            Ok(()) => self.push_system(format!("Add a server validated; added the enabled {name} server to the local registry. Undo: /mcp remove {name}.")),
-            Err(error) => self.push_system(format!("MCP add failed after validation: {error}; nothing changed.")),
+        match result {
+            Ok(()) => self.push_system(format!(
+                "Added the enabled {name} server to the local registry. Undo: /mcp remove {name}."
+            )),
+            Err(error) => self.push_system(format!("MCP add failed: {error}; nothing changed.")),
         }
     }
 
     fn toggle_guided_mcp_server(&mut self) {
-        let mut registry = match crate::mcp_registry::load(&self.state_root) {
-            Ok(registry) => registry,
-            Err(error) => {
-                self.push_system(format!("MCP toggle validation failed: {error}"));
-                return;
-            }
-        };
-        let Some(name) = registry.servers.keys().next().cloned() else {
-            self.push_system("MCP toggle validation failed: no local server was detected; nothing changed. Undo: not needed.");
-            return;
-        };
-        let enabled = {
-            let server = registry.servers.get_mut(&name).expect("key came from the map");
+        let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
+            let (name, server) = registry
+                .servers
+                .iter_mut()
+                .next()
+                .ok_or("No local MCP server was detected")?;
             server.enabled = !server.enabled;
-            server.enabled
-        };
-        match crate::mcp_registry::save(&self.state_root, &registry) {
-            Ok(()) => self.push_system(format!("Enable or disable a server validated; {name} is now {}. Undo: choose Enable or disable a server again.", if enabled { "enabled" } else { "disabled" })),
-            Err(error) => self.push_system(format!("MCP toggle failed after validation: {error}; nothing changed.")),
+            Ok((name.clone(), server.enabled))
+        });
+        match result {
+            Ok((name, enabled)) => self.push_system(format!(
+                "{name} is now {}. Choose Enable or disable a server again to undo.",
+                if enabled { "enabled" } else { "disabled" }
+            )),
+            Err(error) => self.push_system(format!("MCP toggle failed: {error}; nothing changed.")),
         }
     }
 
     fn remove_guided_mcp_server(&mut self) {
-        let mut registry = match crate::mcp_registry::load(&self.state_root) {
-            Ok(registry) => registry,
-            Err(error) => {
-                self.push_system(format!("MCP remove validation failed: {error}"));
-                return;
-            }
-        };
-        let Some(name) = registry.servers.keys().next().cloned() else {
-            self.push_system("MCP remove validation failed: no local server was detected; nothing changed. Undo: not needed.");
-            return;
-        };
-        registry.servers.remove(&name);
-        match crate::mcp_registry::save(&self.state_root, &registry) {
-            Ok(()) => self.push_system(format!("Remove a server validated; removed {name} from the local registry. Undo: add the server again with its command.")),
-            Err(error) => self.push_system(format!("MCP remove failed after validation: {error}; nothing changed.")),
+        let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
+            let name = registry
+                .servers
+                .keys()
+                .next()
+                .cloned()
+                .ok_or("No local MCP server was detected")?;
+            registry.servers.remove(&name);
+            Ok(name)
+        });
+        match result {
+            Ok(name) => self.push_system(format!(
+                "Removed {name}. Add the server again with its command to undo."
+            )),
+            Err(error) => self.push_system(format!("MCP remove failed: {error}; nothing changed.")),
         }
     }
 

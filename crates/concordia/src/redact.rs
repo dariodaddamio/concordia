@@ -3,12 +3,10 @@
 //! Input readers own their byte limits. Every supplied line is scanned, including long
 //! serialized records, so a scan boundary cannot copy a credential verbatim into storage.
 
-use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::sync::{OnceLock, RwLock};
 
 static RUNTIME_SECRETS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
-static INSTALL_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
 /// Register an exact runtime secret. The value is retained only in this process.
 pub fn register_runtime_secret(value: impl Into<String>) {
@@ -30,7 +28,7 @@ pub fn redact(text: &str) -> Cow<'_, str> {
     let mut output = String::new();
     while let Some((begin, end)) = pem_range(rest) {
         output.push_str(&redact_lines(&rest[..begin]));
-        output.push_str(&token("pem_private_key", &rest[begin..end]));
+        output.push_str(&token("pem_private_key"));
         rest = &rest[end..];
     }
     if rest.len() == text.len() {
@@ -120,7 +118,7 @@ fn redact_line(line: &str, output: &mut String) -> bool {
             continue;
         }
         output.push_str(&scan[cursor..begin]);
-        output.push_str(&token(kind, &scan[begin..end]));
+        output.push_str(&token(kind));
         cursor = end;
         changed = true;
     }
@@ -412,44 +410,9 @@ fn find_all(
     }
 }
 
-fn token(kind: &str, secret: &str) -> String {
-    let digest = hmac_sha256(&key(), secret.as_bytes());
-    format!(
-        "[REDACTED:{kind}:{:02x}{:02x}{:02x}{:02x}]",
-        digest[0], digest[1], digest[2], digest[3]
-    )
-}
-
-fn key() -> [u8; 32] {
-    *INSTALL_KEY.get_or_init(|| {
-        // Keep token generation independent of process-wide test/application environment.
-        // The state directory is intentionally not consulted here: lib tests run concurrently
-        // and some isolated tests temporarily alter CONCORDIA_STATE_DIR while exercising
-        // storage.  Reading it during lazy initialization made the redaction key depend on which
-        // test happened to win the race (and could create redact.key in another test's state).
-        let digest =
-            Sha256::digest(format!("concordia-redaction-{}", std::process::id()).as_bytes());
-        let mut key = [0; 32];
-        key.copy_from_slice(&digest);
-        key
-    })
-}
-
-fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
-    let mut ipad = [0x36u8; 64];
-    let mut opad = [0x5cu8; 64];
-    for i in 0..32 {
-        ipad[i] ^= key[i];
-        opad[i] ^= key[i];
-    }
-    let mut inner = Sha256::new();
-    inner.update(ipad);
-    inner.update(message);
-    let inner = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(opad);
-    outer.update(inner);
-    outer.finalize().into()
+fn token(kind: &str) -> String {
+    // A removal marker carries the reason, never a value-derived fingerprint.
+    format!("[REDACTED:{kind}:removed]")
 }
 
 #[cfg(test)]

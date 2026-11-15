@@ -327,7 +327,10 @@ fn standing_prompt_request(id: u64, session: &str, context: &str) -> Value {
     })
 }
 
-fn initial_context_delivery(context: Option<&str>, system_prompt_supported: bool) -> (Option<Value>, bool) {
+fn initial_context_delivery(
+    context: Option<&str>,
+    system_prompt_supported: bool,
+) -> (Option<Value>, bool) {
     let system_prompt = context
         .filter(|_| system_prompt_supported)
         .map(|text| json!({"mode":"append","content":[{"type":"text","text":text}]}));
@@ -613,9 +616,8 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::{
-        acp_argv, acp_model_id, ask_server_config, model_config_value,
-        first_prompt_content, initial_context_delivery,
-        standing_prompt_request,
+        acp_argv, acp_model_id, ask_server_config, first_prompt_content, initial_context_delivery,
+        model_config_value, standing_prompt_request,
     };
     use crate::store::ProviderKind;
 
@@ -643,19 +645,25 @@ mod tests {
         }
         assert_eq!(sends, 2);
         assert!(!crate::provider::standing_context::should_reinject_context(
-            &mut None,
-            ""
+            &mut None, ""
         ));
     }
 
     #[test]
     fn every_acp_provider_transport_carries_standing_context_and_reinjects_after_compaction() {
-        let context = "You are running inside Concordia. Registered Concordia tools: agents, ask_user.";
-        for provider in [ProviderKind::Cursor, ProviderKind::Grok, ProviderKind::Opencode] {
+        let context =
+            "You are running inside Concordia. Registered Concordia tools: agents, ask_user.";
+        for provider in [
+            ProviderKind::Cursor,
+            ProviderKind::Grok,
+            ProviderKind::Opencode,
+        ] {
             let launch = acp_argv(provider, &[]);
-            assert!(!launch.is_empty(), "{provider:?} has no ACP launch arguments");
-            let (system_prompt, in_first_prompt) =
-        initial_context_delivery(Some(context), false);
+            assert!(
+                !launch.is_empty(),
+                "{provider:?} has no ACP launch arguments"
+            );
+            let (system_prompt, in_first_prompt) = initial_context_delivery(Some(context), false);
             assert!(system_prompt.is_none(), "{provider:?}");
             assert!(in_first_prompt, "{provider:?}");
             let prompt = first_prompt_content(Vec::new(), Some(context), in_first_prompt);
@@ -665,8 +673,7 @@ mod tests {
             assert_eq!(wire["params"]["sessionId"], "session-1");
             assert_eq!(wire["params"]["prompt"][0]["text"], context);
         }
-        let (system_prompt, in_first_prompt) =
-            initial_context_delivery(Some(context), true);
+        let (system_prompt, in_first_prompt) = initial_context_delivery(Some(context), true);
         assert_eq!(system_prompt.unwrap()["content"][0]["text"], context);
         assert!(!in_first_prompt);
         let first = standing_prompt_request(5, "session-1", context);

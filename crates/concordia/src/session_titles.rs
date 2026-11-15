@@ -193,15 +193,15 @@ pub fn set(
     let path = identity.path(root);
     let dir = path.parent().ok_or("session title directory is missing")?;
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-    let owned = crate::update::resolved_directory(dir)
+    let owned = crate::fs_safe::resolved_directory(dir)
         .ok_or("session title directory is linked or unavailable")?;
     let lock = path.with_extension("lock");
-    if lock.exists() && !crate::update::regular_owned_file(&lock, &owned) {
+    if lock.exists() && !crate::fs_safe::regular_owned_file(&lock, &owned) {
         return Err("session title lock is not a regular owned file".into());
     }
     crate::state_io::with_lock(&lock, || {
         if path.exists()
-            && (!crate::update::regular_owned_file(&path, &owned)
+            && (!crate::fs_safe::regular_owned_file(&path, &owned)
                 || read(&path).is_none_or(|record| record.identity != identity))
         {
             return Err(std::io::Error::other(

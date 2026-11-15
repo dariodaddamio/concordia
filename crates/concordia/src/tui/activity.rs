@@ -492,17 +492,23 @@ impl Activity {
             .copied()
             .filter(|&i| !self.is_expanded(i, all))
             .collect();
-        let handoff = collapsed
-            .iter()
-            .copied()
-            .find(|&i| messages[i].card.as_ref().is_some_and(|card| card.id.starts_with("handoff:")));
+        let handoff = collapsed.iter().copied().find(|&i| {
+            messages[i]
+                .card
+                .as_ref()
+                .is_some_and(|card| card.id.starts_with("handoff:"))
+        });
         let (targets, expand) = match (every, collapsed.last().copied()) {
             (true, Some(_)) => (collapsed.clone(), true),
             (true, None) => (items.clone(), false),
             (false, Some(last)) => (vec![last], true),
             (false, None) => (items.last().copied().into_iter().collect(), false),
         };
-        let targets = if !every && expand { handoff.into_iter().collect() } else { targets };
+        let targets = if !every && expand {
+            handoff.into_iter().collect()
+        } else {
+            targets
+        };
         for &message in &targets {
             self.set_expanded(message, expand, all);
         }

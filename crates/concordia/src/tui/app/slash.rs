@@ -54,47 +54,40 @@ impl App {
             self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
             return;
         };
-        let mut registry = match crate::mcp_registry::load(&self.state_root) {
-            Ok(registry) => registry,
-            Err(error) => {
-                self.push_system(error);
-                return;
-            }
-        };
-        match action.as_str() {
-            "on" | "off" => match registry.servers.get_mut(&name) {
-                Some(server) => {
+        let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
+            match action.as_str() {
+                "on" | "off" => {
+                    let server = registry
+                        .servers
+                        .get_mut(&name)
+                        .ok_or_else(|| format!("MCP server not found: {name}"))?;
                     server.enabled = action == "on";
                 }
-                None => {
-                    self.push_system(format!("MCP server not found: {name}"));
-                    return;
+                "remove" => {
+                    registry.servers.remove(&name);
                 }
-            },
-            "remove" => {
-                registry.servers.remove(&name);
-            }
-            "add" => {
-                if words.get(2).map(|s| *s == "stdio").unwrap_or(false) && words.len() >= 4 {
+                "add" if words.get(2) == Some(&"stdio") && words.len() >= 4 => {
+                    if registry.servers.contains_key(&name) {
+                        return Err(format!("MCP server already exists: {name}"));
+                    }
                     registry.servers.insert(
-                        name.into(),
+                        name.clone(),
                         crate::mcp_registry::Server {
                             enabled: true,
                             transport: crate::mcp_registry::Transport::Stdio {
                                 command: words[3].into(),
-                                args: words[4..].iter().map(|s| (*s).into()).collect(),
+                                args: words[4..].iter().map(|value| (*value).into()).collect(),
                                 env: Default::default(),
                             },
                         },
                     );
-                } else {
-                    self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · use the guided panel for remote servers and secret references");
-                    return;
                 }
+                "add" => return Err("/mcp add NAME stdio COMMAND [ARGS...]".into()),
+                _ => return Err("/mcp add|remove|on|off|import".into()),
             }
-            _ => { self.push_system("/mcp add|remove|on|off|import"); return; }
-        }
-        match crate::mcp_registry::save(&self.state_root, &registry) {
+            Ok(())
+        });
+        match result {
             Ok(()) => self.push_system("MCP registry saved. Provider homes were not changed."),
             Err(error) => self.push_system(error),
         }
@@ -143,11 +136,13 @@ impl App {
                 ]);
             } else if !self.rename_session(name) {
                 return true;
-            } else { self.push_system(if self.session_ui.title.is_some() {
-                "Chat renamed."
             } else {
-                "Chat title reset to automatic."
-            }); }
+                self.push_system(if self.session_ui.title.is_some() {
+                    "Chat renamed."
+                } else {
+                    "Chat title reset to automatic."
+                });
+            }
             return true;
         }
         if let Some(id) = trimmed
@@ -164,7 +159,23 @@ impl App {
             if line.trim() == "/native" {
                 let mut rows = Vec::new();
                 for account in accounts_with_auth(&self.state_root) {
-                    for (action, label, effect) in [("status", "Inspect native transport", "reads the saved transport state; undo: not needed"), ("on", "Enable native transport", "uses the provider native interface; undo: choose Disable"), ("off", "Disable native transport", "uses print mode; undo: choose Enable")] {
+                    for (action, label, effect) in [
+                        (
+                            "status",
+                            "Inspect native transport",
+                            "reads the saved transport state; undo: not needed",
+                        ),
+                        (
+                            "on",
+                            "Enable native transport",
+                            "uses the provider native interface; undo: choose Disable",
+                        ),
+                        (
+                            "off",
+                            "Disable native transport",
+                            "uses print mode; undo: choose Enable",
+                        ),
+                    ] {
                         rows.push(PickerRow {
                             id: format!("native:{}:{}", account.account, action),
                             label: format!("{} · {}", account.label, label),
@@ -173,7 +184,11 @@ impl App {
                     }
                 }
                 if rows.is_empty() {
-                    rows.push(PickerRow { id: "native:none".into(), label: "No connected accounts".into(), detail: "connect an account with /use add; undo: Esc".into() });
+                    rows.push(PickerRow {
+                        id: "native:none".into(),
+                        label: "No connected accounts".into(),
+                        detail: "connect an account with /use add; undo: Esc".into(),
+                    });
                 }
                 self.open_guided_command("/native", rows);
                 return true;
@@ -223,7 +238,10 @@ impl App {
                 rows.push(PickerRow {
                     id: format!("delegate:recover:{}", job.id),
                     label: format!("Recover worker #{}", job.id),
-                    detail: format!("validated for worker #{} ({}); reads its exact native result; undo: Esc", job.id, state),
+                    detail: format!(
+                        "validated for worker #{} ({}); reads its exact native result; undo: Esc",
+                        job.id, state
+                    ),
                 });
                 rows.push(PickerRow {
                     id: format!("delegate:retry:{}", job.id),
@@ -270,7 +288,14 @@ impl App {
         if trimmed == "/config" || trimmed.starts_with("/config ") {
             let args = trimmed.strip_prefix("/config").unwrap_or("").trim();
             match args {
-                "" => { settings::open(self); self.guide_open_picker("/config", "inspect or change saved settings", "reselect the previous setting"); },
+                "" => {
+                    settings::open(self);
+                    self.guide_open_picker(
+                        "/config",
+                        "inspect or change saved settings",
+                        "reselect the previous setting",
+                    );
+                }
                 "appearance" => appearance::open(self),
                 "skills" => settings::catalog(self, false),
                 "hooks" => settings::catalog(self, true),
@@ -281,8 +306,19 @@ impl App {
         if trimmed == "/mcp" || trimmed.starts_with("/mcp ") {
             let args = trimmed.strip_prefix("/mcp").unwrap_or_default().trim();
             if args.is_empty() {
-                let servers = crate::mcp_registry::load(&self.state_root).ok().map(|r| r.servers.len()).unwrap_or(0);
-                let mut choices = crate::mcp_registry::provider_status_lines(&self.state_root, &self.cwd).into_iter().map(|line| PickerRow { id: format!("mcp:status:{line}"), label: "MCP server status".into(), detail: line }).collect::<Vec<_>>();
+                let servers = crate::mcp_registry::load(&self.state_root)
+                    .ok()
+                    .map(|r| r.servers.len())
+                    .unwrap_or(0);
+                let mut choices =
+                    crate::mcp_registry::provider_status_lines(&self.state_root, &self.cwd)
+                        .into_iter()
+                        .map(|line| PickerRow {
+                            id: format!("mcp:status:{line}"),
+                            label: "MCP server status".into(),
+                            detail: line,
+                        })
+                        .collect::<Vec<_>>();
                 choices.extend([
                     PickerRow { id: "mcp:add".into(), label: "Add a server".into(), detail: format!("validated against a command and argument array; adds one registry entry ({} detected); undo: /mcp remove NAME", servers) },
                     PickerRow { id: "mcp:toggle".into(), label: "Enable or disable a server".into(), detail: "validated against a detected server; changes delivery state only; undo: choose the previous state".into() },
@@ -342,7 +378,11 @@ impl App {
         // replace them.
         if line.trim() == "/open" {
             self.open_related_files();
-            self.guide_open_picker("/open", "preview files mentioned in this chat", "Esc closes without editing");
+            self.guide_open_picker(
+                "/open",
+                "preview files mentioned in this chat",
+                "Esc closes without editing",
+            );
             return true;
         }
         if let Some(reference) = line.trim().strip_prefix("/open ") {
@@ -361,13 +401,27 @@ impl App {
                 target.parse::<u32>().ok()
             };
             if target.is_empty() {
-                let rows = self.workspace.panes.iter().map(|pane| PickerRow {
-                    id: format!("close:{}", pane.id),
-                    label: format!("Close file pane #{}", pane.id),
-                    detail: "validated against this open pane; closes it; undo: reopen the file".into(),
-                }).collect::<Vec<_>>();
+                let rows = self
+                    .workspace
+                    .panes
+                    .iter()
+                    .map(|pane| PickerRow {
+                        id: format!("close:{}", pane.id),
+                        label: format!("Close file pane #{}", pane.id),
+                        detail:
+                            "validated against this open pane; closes it; undo: reopen the file"
+                                .into(),
+                    })
+                    .collect::<Vec<_>>();
                 if rows.is_empty() {
-                    self.open_guided_command("/close", vec![PickerRow { id: "close:none".into(), label: "No open file panes".into(), detail: "nothing will change; undo: not needed".into() }]);
+                    self.open_guided_command(
+                        "/close",
+                        vec![PickerRow {
+                            id: "close:none".into(),
+                            label: "No open file panes".into(),
+                            detail: "nothing will change; undo: not needed".into(),
+                        }],
+                    );
                 } else {
                     self.open_guided_command("/close", rows);
                 }
@@ -486,25 +540,61 @@ impl App {
         }
         if matches!(&cmd, SlashCommand::Use) {
             self.open_use_picker();
-            self.guide_open_picker("/use", "switch or manage accounts", "select the previous account");
+            self.guide_open_picker(
+                "/use",
+                "switch or manage accounts",
+                "select the previous account",
+            );
             return true;
         }
         if matches!(&cmd, SlashCommand::Model) {
             self.open_model_picker();
-            self.guide_open_picker("/model", "choose the active provider model", "choose the previous model");
+            self.guide_open_picker(
+                "/model",
+                "choose the active provider model",
+                "choose the previous model",
+            );
             return true;
         }
         if let SlashCommand::Mode(arg) = &cmd {
-            if arg.is_none() { self.open_trust_picker(); self.guide_open_picker("/mode", "set permission for the next turn", "select the previous mode"); } else { self.push_command(line); self.run_mode_command(arg.as_deref()); }
+            if arg.is_none() {
+                self.open_trust_picker();
+                self.guide_open_picker(
+                    "/mode",
+                    "set permission for the next turn",
+                    "select the previous mode",
+                );
+            } else {
+                self.push_command(line);
+                self.run_mode_command(arg.as_deref());
+            }
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
             settings::catalog(self, *hooks);
-            self.guide_open_picker(if *hooks { "/hooks" } else { "/skills" }, if *hooks { "inspect native hook sources" } else { "inspect selected skill sources" }, "Esc leaves sources unchanged");
+            self.guide_open_picker(
+                if *hooks { "/hooks" } else { "/skills" },
+                if *hooks {
+                    "inspect native hook sources"
+                } else {
+                    "inspect selected skill sources"
+                },
+                "Esc leaves sources unchanged",
+            );
             return true;
         }
         if let SlashCommand::Harness(arg) = &cmd {
-            if arg.is_empty() { integrations::open(self); self.guide_open_picker("/harness", "inspect connected local harnesses", "Esc leaves receipts and provider homes unchanged"); } else { self.push_command(line); integrations::command(self, arg); }
+            if arg.is_empty() {
+                integrations::open(self);
+                self.guide_open_picker(
+                    "/harness",
+                    "inspect connected local harnesses",
+                    "Esc leaves receipts and provider homes unchanged",
+                );
+            } else {
+                self.push_command(line);
+                integrations::command(self, arg);
+            }
             return true;
         }
         if matches!(&cmd, SlashCommand::Unknown(n) if n == "stats") {
@@ -582,7 +672,14 @@ impl App {
         }
         match outcome {
             CommandOutcome::Exit => self.should_quit = true,
-            CommandOutcome::OpenResume => { self.open_resume_picker(); self.guide_open_picker("/resume", "continue an explicit recorded conversation", "Esc leaves the current chat unchanged"); },
+            CommandOutcome::OpenResume => {
+                self.open_resume_picker();
+                self.guide_open_picker(
+                    "/resume",
+                    "continue an explicit recorded conversation",
+                    "Esc leaves the current chat unchanged",
+                );
+            }
             CommandOutcome::OpenUse => {
                 for l in crate::integration::refresh_summary(&self.state_root) {
                     self.push_system(l);
@@ -592,11 +689,26 @@ impl App {
             CommandOutcome::OpenAddProvider => self.open_add_provider_picker(),
             CommandOutcome::OpenRemovePicker => self.open_remove_picker(None),
             CommandOutcome::AddAccount(p) => self.begin_add_account(p),
-            CommandOutcome::OpenModel => { self.open_model_picker(); self.guide_open_picker("/model", "choose the active provider model", "choose the previous model"); },
+            CommandOutcome::OpenModel => {
+                self.open_model_picker();
+                self.guide_open_picker(
+                    "/model",
+                    "choose the active provider model",
+                    "choose the previous model",
+                );
+            }
             CommandOutcome::OpenDoctor => self.open_doctor(),
             CommandOutcome::ShowUsage => self.show_usage(false),
             CommandOutcome::ShowUsageRefresh => self.show_usage(true),
-            CommandOutcome::OpenUsage => { self.open_usage_picker(); self.guide_open_picker("/usage", "inspect provider-reported limits", "Esc closes without changing provider state"); self.footer_left = super::usage_view::USAGE_FOOTER.into(); },
+            CommandOutcome::OpenUsage => {
+                self.open_usage_picker();
+                self.guide_open_picker(
+                    "/usage",
+                    "inspect provider-reported limits",
+                    "Esc closes without changing provider state",
+                );
+                self.footer_left = super::usage_view::USAGE_FOOTER.into();
+            }
             CommandOutcome::CopyLastReply => match self.last_assistant_text() {
                 Some(t) => {
                     self.write_clipboard(&t);
@@ -611,8 +723,22 @@ impl App {
 }
 
 fn sanitize_mcp_command(line: &str) -> String {
-    let mut words = line.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
-    let secret_flag = |word: &str| matches!(word.to_ascii_lowercase().as_str(), "--token" | "--access-token" | "--api-key" | "--apikey" | "--secret" | "--password" | "-t");
+    let mut words = line
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let secret_flag = |word: &str| {
+        matches!(
+            word.to_ascii_lowercase().as_str(),
+            "--token"
+                | "--access-token"
+                | "--api-key"
+                | "--apikey"
+                | "--secret"
+                | "--password"
+                | "-t"
+        )
+    };
     for index in 0..words.len() {
         if secret_flag(&words[index]) {
             if words[index].contains('=') {

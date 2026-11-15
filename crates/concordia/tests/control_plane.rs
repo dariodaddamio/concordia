@@ -1,14 +1,14 @@
 //! Control-plane fixtures: fail if argv construction, session parsing or usage reading drift.
 
 use concordia::context::should_attempt_native_resume;
+use concordia::mcp::registered_tool_names;
 use concordia::provider::claude::{assert_safe_claude_argv, plan_claude_turn, ClaudeTurnRequest};
 use concordia::provider::codex::{
     assert_safe_argv, extract_stream_chunk, plan_turn_argv, TurnRequest,
 };
 use concordia::provider::cursor::{assert_safe_cursor_argv, plan_cursor_turn, CursorTurnRequest};
-use concordia::provider::turn::{plan_provider_turn, ProviderTurnRequest};
 use concordia::provider::standing_context::{render, State as StandingContextState};
-use concordia::mcp::registered_tool_names;
+use concordia::provider::turn::{plan_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use concordia::usage::read_codex_usage;
 use std::path::PathBuf;
@@ -30,6 +30,7 @@ fn codex_workspace_argv_is_stable() {
         cwd: &cwd,
         codex_home: Some(&home),
         model: Some("gpt-5.6-sol"),
+        effort: None,
         native_session_id: Some("sess-1"),
         trust: TrustMode::Edit,
         standing_context: None,
@@ -65,6 +66,7 @@ fn codex_full_and_ask_trust_flags() {
         cwd: &cwd,
         codex_home: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Full,
         standing_context: None,
@@ -80,6 +82,7 @@ fn codex_full_and_ask_trust_flags() {
         cwd: &cwd,
         codex_home: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Ask,
         standing_context: None,
@@ -100,6 +103,7 @@ fn standing_context_uses_native_claude_and_codex_channels_once() {
         cwd: &cwd,
         config_dir: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Edit,
         standing_context: Some(context),
@@ -116,6 +120,7 @@ fn standing_context_uses_native_claude_and_codex_channels_once() {
         cwd: &cwd,
         codex_home: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Edit,
         standing_context: Some(context),
@@ -232,6 +237,7 @@ fn claude_workspace_argv_and_resume() {
         cwd: &cwd,
         config_dir: Some(&home),
         model: Some("sonnet"),
+        effort: None,
         native_session_id: Some("sess-claude"),
         trust: TrustMode::Edit,
         standing_context: None,
@@ -260,6 +266,7 @@ fn cursor_print_argv_requires_explicit_resume() {
         cwd: &cwd,
         home_path: None,
         model: None,
+        effort: None,
         native_session_id: Some("chat-1"),
         trust: TrustMode::Edit,
     })
@@ -282,6 +289,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: Some("chat-1"),
             trust,
         })
@@ -334,6 +342,7 @@ fn unified_planner_never_emits_last() {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: Some("id-1"),
             trust: TrustMode::Edit,
             context_prefix: None,
@@ -380,6 +389,7 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
             cwd: &cwd,
             config_dir: None,
             model: None,
+            effort: None,
             native_session_id: sid,
             trust: TrustMode::Edit,
             standing_context: None,

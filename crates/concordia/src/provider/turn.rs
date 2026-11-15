@@ -297,7 +297,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
     if let Some(effort) = req.effort.map(str::trim).filter(|e| !e.is_empty()) {
         anyhow::ensure!(
-            crate::catalog::valid_effort(effort),
+            crate::text_safe::valid_effort(effort),
             "unsupported provider effort value"
         );
     }
@@ -386,7 +386,12 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 req.cwd,
             ) {
                 let prompt = argv.pop().expect("provider prompt is always present");
-                argv.extend(["--mcp-config".into(), config.to_string_lossy().into_owned(), "--strict-mcp-config".into(), prompt]);
+                argv.extend([
+                    "--mcp-config".into(),
+                    config.to_string_lossy().into_owned(),
+                    "--strict-mcp-config".into(),
+                    prompt,
+                ]);
             }
             Ok(PlannedTurn {
                 command: plan.command,
@@ -767,11 +772,16 @@ async fn run_provider_turn_inner(
         "CONCORDIA_PARENT_RUN",
         "CONCORDIA_PROJECT_DIR",
     ];
-    plan.env_remove.retain(|key| !OWNER_ENV.contains(&key.as_str()));
-    plan.env.retain(|(key, _)| !OWNER_ENV.contains(&key.as_str()));
+    plan.env_remove
+        .retain(|key| !OWNER_ENV.contains(&key.as_str()));
+    plan.env
+        .retain(|(key, _)| !OWNER_ENV.contains(&key.as_str()));
     if let Some(owner) = &owner {
         plan.env.extend([
-            ("CONCORDIA_PARENT_CONVERSATION".into(), owner.conversation_id.clone()),
+            (
+                "CONCORDIA_PARENT_CONVERSATION".into(),
+                owner.conversation_id.clone(),
+            ),
             ("CONCORDIA_PARENT_RUN".into(), owner.run_id.clone()),
             (
                 "CONCORDIA_PROJECT_DIR".into(),

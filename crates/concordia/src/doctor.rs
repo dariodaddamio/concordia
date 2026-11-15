@@ -478,10 +478,21 @@ fn check_mcp(root: &Path) -> Vec<Check> {
         return vec![check(Level::Fail, "mcp", lines[0].clone())];
     }
     if lines.is_empty() {
-        vec![check(Level::Ok, "mcp", "no Concordia MCP servers configured")]
+        vec![check(
+            Level::Ok,
+            "mcp",
+            "no Concordia MCP servers configured",
+        )]
     } else {
-        let level = if lines.iter().any(|line| line.contains("needs sign-in")) { Level::Warn } else { Level::Ok };
-        lines.into_iter().map(|line| check(level, "mcp", line)).collect()
+        let level = if lines.iter().any(|line| line.contains("needs sign-in")) {
+            Level::Warn
+        } else {
+            Level::Ok
+        };
+        lines
+            .into_iter()
+            .map(|line| check(level, "mcp", line))
+            .collect()
     }
 }
 

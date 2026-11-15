@@ -1155,7 +1155,10 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
     } else {
         ""
     };
-    Ok(format!("{}{suffix}", crate::text_safe::terminal_safe(&text)))
+    Ok(format!(
+        "{}{suffix}",
+        crate::text_safe::terminal_safe(&text)
+    ))
 }
 
 pub fn index_session(
@@ -1892,8 +1895,5 @@ pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>
     } else {
         "read_native=concordia chat sources INDEX [--from-message N]; read_exact=concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]"
     };
-    (
-        format!("src={body}\n{read}"),
-        notices,
-    )
+    (format!("src={body}\n{read}"), notices)
 }

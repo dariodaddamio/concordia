@@ -1628,7 +1628,7 @@ fn unavailable_model_ids_are_rejected_but_unsafe_and_unknown_accounts_cannot_cha
 }
 
 #[test]
-fn model_picker_groups_by_family_with_default_first() {
+fn model_picker_sorts_only_reported_models_by_display_name() {
     let rows = super::model_picker_rows(
         vec![
             crate::models::ModelEntry {
@@ -1652,9 +1652,9 @@ fn model_picker_groups_by_family_with_default_first() {
         ],
         None,
     );
-    assert!(rows[0].label.starts_with("provider default"));
-    assert_eq!(rows[1].label, "Family A");
-    assert_eq!(rows[3].label, "Family B");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, "model:a");
+    assert_eq!(rows[1].id, "model:b");
 }
 
 #[test]
@@ -1671,8 +1671,8 @@ fn model_picker_hides_source_tags_and_marks_current() {
         }],
         Some("sol"),
     );
-    assert!(rows[2].label.contains("current"));
-    assert!(rows[2].detail.contains("sol") && !rows[2].detail.contains("cached"));
+    assert!(rows.iter().find(|row| row.id == "model:sol").unwrap().label.contains("current"));
+    assert!(!rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("cached"));
 }
 
 #[test]
@@ -1692,8 +1692,8 @@ fn model_picker_lists_provider_efforts_in_the_row() {
         }],
         None,
     );
-    assert!(rows[2].detail.contains("efforts: low"));
-    assert!(!rows[2].detail.contains("reported by CLI"));
+    assert!(rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("efforts: low"));
+    assert!(!rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("reported by CLI"));
 }
 
 #[test]

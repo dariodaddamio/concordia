@@ -83,10 +83,18 @@ pub(super) fn whats_new(count: usize, width: usize) -> Vec<String> {
         if in_entry {
             if let Some(text) = line.strip_prefix("- ") {
                 let text = text.replace('`', "");
-                let first = text.split(". ").next().unwrap_or(&text).trim_end_matches('.');
+                let first = text
+                    .split(". ")
+                    .next()
+                    .unwrap_or(&text)
+                    .trim_end_matches('.');
                 let max = width.saturating_sub(2).max(8);
                 let short: String = if first.chars().count() > max {
-                    first.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+                    first
+                        .chars()
+                        .take(max.saturating_sub(1))
+                        .collect::<String>()
+                        + "…"
                 } else {
                     first.to_string()
                 };

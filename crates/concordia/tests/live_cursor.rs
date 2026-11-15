@@ -102,6 +102,7 @@ async fn turn_with(
         cwd,
         home_path: Some(home),
         model: Some(&model),
+        effort: None,
         native_session_id: session,
         trust: match std::env::var("CONCORDIA_LIVE_TRUST").as_deref() {
             Ok("ask") => TrustMode::Ask,

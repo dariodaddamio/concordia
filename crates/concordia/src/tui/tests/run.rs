@@ -150,7 +150,11 @@ fn background_update_preparation_does_not_offer_restart_before_install_finishes(
         JR::Check(Ok(update_preview(true, 0)))
     }));
     let deadline = Instant::now() + Duration::from_secs(5);
-    while h.app.job.as_ref().is_some_and(|job| job.kind == JobKind::Check)
+    while h
+        .app
+        .job
+        .as_ref()
+        .is_some_and(|job| job.kind == JobKind::Check)
         && Instant::now() < deadline
     {
         h.app.poll_job();

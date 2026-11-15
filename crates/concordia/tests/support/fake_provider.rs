@@ -145,7 +145,9 @@ fn fake_acp() {
                 if value["id"] == 9001 {
                     // The standing-context resend is deliberately a separate wire request. It
                     // must be acknowledged, but it must not start another fake turn.
-                    emit(serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}));
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}),
+                    );
                     continue;
                 }
                 if fixture["quota"] == true {
@@ -915,7 +917,12 @@ fn interaction(args: &[String]) {
                 .append(true)
                 .open(path)
                 .unwrap();
-            writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+            writeln!(
+                file,
+                "{}",
+                json!({"kind":"wire","provider":provider,"frame":frame})
+            )
+            .unwrap();
         }
     }
     let emit = |event: serde_json::Value| {
@@ -1127,7 +1134,12 @@ fn interaction(args: &[String]) {
                         .append(true)
                         .open(path)
                         .unwrap();
-                    writeln!(file, "{}", json!({"kind":"wire","provider":provider,"frame":frame})).unwrap();
+                    writeln!(
+                        file,
+                        "{}",
+                        json!({"kind":"wire","provider":provider,"frame":frame})
+                    )
+                    .unwrap();
                 }
             }
         }

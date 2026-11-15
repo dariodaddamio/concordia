@@ -1002,7 +1002,11 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
         // Say what is happening (checking, not shown by this provider, unavailable) rather
         // than a bare "unknown" while `/usage` is reading the same account.
         let state = snapshot.summary.trim();
-        let state = if state.is_empty() { "usage unknown" } else { state };
+        let state = if state.is_empty() {
+            "usage unknown"
+        } else {
+            state
+        };
         lines.push(clipped(format!("  {state}"), width));
     }
     lines
@@ -1430,7 +1434,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     Line::styled(text.clone(), dim)
                 });
             }
-            
         }
         let shown = all.len();
         if shown < all.len() {

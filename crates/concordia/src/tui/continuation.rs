@@ -271,10 +271,15 @@ impl App {
             || (outcome.exit_code.is_some_and(|code| code != 0)
                 && usage_exhausted(self.provider, &outcome.stderr_tail));
         let failure_kind = crate::provider::failure::classify_failure(self.provider, outcome);
-        self.continuation.context_limited = matches!(
-            failure_kind,
-            crate::provider::failure::FailureKind::Context
-        );
+        self.continuation.context_limited =
+            matches!(failure_kind, crate::provider::failure::FailureKind::Context)
+                || self.continuation.errors.iter().any(|error| {
+                    crate::provider::failure::classify_failure_text(
+                        self.provider,
+                        error,
+                        outcome.exit_code,
+                    ) == crate::provider::failure::FailureKind::Context
+                });
         if !exhausted && !self.continuation.context_limited {
             if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
                 self.continuation.pending = self.continuation.prompt.clone();
@@ -361,12 +366,7 @@ impl App {
             let ready = get_account(&self.state_root, &account)
                 .and_then(|definition| definition.home_path)
                 .and_then(|home| {
-                    crate::usage::peek_cached_usage(
-                        &self.state_root,
-                        provider,
-                        &account,
-                        &home,
-                    )
+                    crate::usage::peek_cached_usage(&self.state_root, provider, &account, &home)
                 })
                 .is_some_and(|o| o.reset_passed);
             if !ready {
@@ -384,7 +384,9 @@ impl App {
         self.continuation.waiting_for_reset = true;
         self.continuation.retry = Retry::Deferred;
         self.continuation.automatic = true;
-        self.push_system("waiting for the provider reset; the interrupted request will resume automatically");
+        self.push_system(
+            "waiting for the provider reset; the interrupted request will resume automatically",
+        );
     }
 
     fn next_usage_target(&mut self) -> Option<String> {
@@ -446,10 +448,12 @@ impl App {
                 let pair = format!("{} {}", account, model.as_deref().unwrap_or(&self.model));
                 if self.continuation.automatic
                     && account != self.account
-                    && (!crate::store::same_provider_terms_accepted(
-                        &self.state_root,
-                        self.provider,
-                    )
+                    && ((def.provider == self.provider
+                        && (!crate::store::same_provider_automatic(&self.state_root)
+                            || !crate::store::same_provider_terms_accepted(
+                                &self.state_root,
+                                self.provider,
+                            )))
                         || !crate::store::automatic_handoff_allowed(
                             &self.state_root,
                             &account,
@@ -509,10 +513,13 @@ impl App {
             self.push_system("choose another account or model in the inline picker");
             return;
         }
-        let resuming_reset_target = self.continuation.waiting_for_reset
-            && self.continuation.reset_target.as_ref().is_some_and(|(_, account, reset_model)| {
-                account == target && model.is_some_and(|selected| selected == reset_model)
-            });
+        let resuming_reset_target =
+            self.continuation.waiting_for_reset
+                && self.continuation.reset_target.as_ref().is_some_and(
+                    |(_, account, reset_model)| {
+                        account == target && model.is_some_and(|selected| selected == reset_model)
+                    },
+                );
         if let Some(model) = model {
             let valid = get_account(&self.state_root, target).is_some_and(|account| {
                 account.home_path.as_ref().is_some_and(|home| {
@@ -557,15 +564,17 @@ impl App {
         let previous_account = self.account.clone();
         let previous_home = self.continuity_home();
         let automatic_cross_account = self.continuation.automatic && target != self.account;
+        let handoff_day = automatic_handoff_day();
         if automatic_cross_account {
-            if !crate::store::same_provider_automatic(&self.state_root)
-                || !crate::store::same_provider_terms_accepted(&self.state_root, self.provider)
-                || crate::store::reserve_automatic_handoff(
-                    &self.state_root,
-                    target,
-                    &automatic_handoff_day(),
-                )
-                .is_err()
+            let same_provider = get_account(&self.state_root, target)
+                .is_some_and(|account| account.provider == self.provider);
+            if crate::store::reserve_automatic_handoff(
+                &self.state_root,
+                target,
+                &handoff_day,
+                same_provider.then_some(self.provider),
+            )
+            .is_err()
             {
                 self.push_system("automatic handoff is not permitted by the saved provider consent or daily cap; choose a target explicitly");
                 self.continuation.automatic = false;
@@ -574,12 +583,32 @@ impl App {
         }
         let trust = self.trust;
         if let Err(error) = select_account(&self.state_root, target) {
+            if automatic_cross_account {
+                if let Err(error) =
+                    crate::store::release_automatic_handoff(&self.state_root, target, &handoff_day)
+                {
+                    self.push_system(format!(
+                        "handoff reservation could not be released: {error}"
+                    ));
+                }
+            }
             self.push_system(format!("continuation account unavailable: {error}"));
             return;
         }
         self.refresh_binding();
         if let Some(model) = model {
             if let Err(error) = set_model(&self.state_root, model) {
+                if automatic_cross_account {
+                    if let Err(error) = crate::store::release_automatic_handoff(
+                        &self.state_root,
+                        target,
+                        &handoff_day,
+                    ) {
+                        self.push_system(format!(
+                            "handoff reservation could not be released: {error}"
+                        ));
+                    }
+                }
                 self.push_system(format!(
                     "could not select continuation model: {error}; request kept paused"
                 ));
@@ -801,8 +830,14 @@ mod tests {
     fn idle_hand_off_cancels_then_offers_other_accounts_with_warning() {
         let (app, _dir, _tx, _rx) = idle_handoff_state();
         let picker = app.picker.as_ref().expect("handoff picker");
-        assert!(picker.rows.iter().any(|row| row.label == "backup"));
-        assert!(!picker.rows.iter().any(|row| row.label == "primary"));
+        assert!(picker
+            .rows
+            .iter()
+            .any(|row| row.id == "continue:backup fixture-model"));
+        assert!(!picker
+            .rows
+            .iter()
+            .any(|row| row.id == "continue:primary fixture-model"));
         assert!(app
             .messages
             .iter()
@@ -827,7 +862,7 @@ mod tests {
         let index = picker
             .rows
             .iter()
-            .position(|row| row.label == "backup")
+            .position(|row| row.id == "continue:backup fixture-model")
             .unwrap();
         picker.state.select(Some(index));
         app.apply_picker_selection(Some(&tx));
@@ -937,6 +972,8 @@ mod tests {
             let home = dir.path().join(id);
             std::fs::create_dir_all(&home).unwrap();
             std::fs::write(home.join("auth.json"), "synthetic-login-presence-marker").unwrap();
+            std::fs::write(home.join("models_cache.json"), r#"{"models":[{"slug":"fixture-model","display_name":"Fixture model","visibility":"list"}]}"#).unwrap();
+            crate::usage::fixture_cached_usage(dir.path(), ProviderKind::Codex, id, &home);
             crate::store::upsert_stored_account(
                 dir.path(),
                 crate::store::StoredAccount {
@@ -952,6 +989,7 @@ mod tests {
         // These fixtures explicitly opt into the terms-sensitive same-provider path.
         crate::store::accept_same_provider_terms(dir.path(), ProviderKind::Codex).unwrap();
         select_account(dir.path(), "primary").unwrap();
+        set_model(dir.path(), "fixture-model").unwrap();
         let mut app = App::new(dir.path().into(), dir.path().into());
         app.refresh_binding();
         (app, dir)

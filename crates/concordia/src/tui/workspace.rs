@@ -537,7 +537,10 @@ impl Pane {
     fn csv_formatted(&self) -> bool {
         self.formatted_mode
             && self.formatted.is_some()
-            && self.path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+            && self
+                .path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
     }
     fn measure_columns(&mut self) -> usize {
         if self.csv_formatted() {
@@ -888,7 +891,11 @@ fn draw_pane(
             ""
         },
         pane.path.file_name().unwrap_or_default().to_string_lossy(),
-        if pane.raw() && !raster { "raw" } else { "preview" }
+        if pane.raw() && !raster {
+            "raw"
+        } else {
+            "preview"
+        }
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -959,7 +966,13 @@ fn draw_pane(
             .lines()
             .skip(pane.scroll)
             .take(inner.height as usize)
-            .map(|line| Line::raw(crate::file_document::visible_line(line, pane.column, inner.width as usize)))
+            .map(|line| {
+                Line::raw(crate::file_document::visible_line(
+                    line,
+                    pane.column,
+                    inner.width as usize,
+                ))
+            })
             .collect()
     } else if pane.formatted_mode && pane.formatted.is_some() {
         pane.view.link_root = pane.path.parent().map(Path::to_path_buf);
@@ -1272,12 +1285,9 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
         }
         return true;
     }
-    if let Some(pane) = app
-        .workspace
-        .panes
-        .iter_mut()
-        .find(|pane| (pane.raw() || pane.csv_formatted()) && contains(pane.area, mouse.column, mouse.row))
-    {
+    if let Some(pane) = app.workspace.panes.iter_mut().find(|pane| {
+        (pane.raw() || pane.csv_formatted()) && contains(pane.area, mouse.column, mouse.row)
+    }) {
         let forward = match mouse.kind {
             MouseEventKind::ScrollRight => Some(true),
             MouseEventKind::ScrollLeft => Some(false),

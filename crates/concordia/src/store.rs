@@ -689,9 +689,6 @@ pub fn update_install_on_launch(root: &Path) -> Option<bool> {
 
 pub fn same_provider_automatic(root: &Path) -> bool {
     get_settings(root).same_provider_automatic
-        || crate::config::for_root(root)
-            .continuation
-            .same_provider_automatic
 }
 
 pub fn accept_same_provider_terms(root: &Path, provider: ProviderKind) -> Result<()> {
@@ -735,7 +732,7 @@ pub fn automatic_handoff_allowed(root: &Path, account: &str, day: &str) -> bool 
         .get(&format!("{day}:{account}"))
         .copied()
         .unwrap_or(0)
-        < cap as u8
+        < cap.min(u8::MAX as usize) as u8
 }
 
 pub fn record_automatic_handoff(root: &Path, account: &str, day: &str) -> Result<()> {
@@ -752,18 +749,51 @@ pub fn record_automatic_handoff(root: &Path, account: &str, day: &str) -> Result
 }
 
 /// Atomically check and reserve one automatic handoff for an account/day.
-pub fn reserve_automatic_handoff(root: &Path, account: &str, day: &str) -> Result<()> {
+pub fn reserve_automatic_handoff(
+    root: &Path,
+    account: &str,
+    day: &str,
+    consent_provider: Option<ProviderKind>,
+) -> Result<()> {
     modify_store(root, |store| {
+        if let Some(provider) = consent_provider {
+            anyhow::ensure!(
+                store.settings.same_provider_automatic
+                    && store
+                        .settings
+                        .accepted_terms_providers
+                        .contains(provider.as_str()),
+                "same-provider handoff is disabled or requires consent"
+            );
+        }
         let cap = crate::config::for_root(root)
             .continuation
             .automatic_handoff_cap
-            .min(store.settings.automatic_handoff_cap) as u8;
+            .min(store.settings.automatic_handoff_cap)
+            .min(u8::MAX as usize) as u8;
         let key = format!("{day}:{account}");
-        let count = store.settings.automatic_handoffs_today.entry(key).or_default();
+        let count = store
+            .settings
+            .automatic_handoffs_today
+            .entry(key)
+            .or_default();
         if *count >= cap {
             return Err(anyhow::anyhow!("automatic handoff daily cap exhausted"));
         }
         *count = count.saturating_add(1);
+        Ok(())
+    })
+}
+
+pub fn release_automatic_handoff(root: &Path, account: &str, day: &str) -> Result<()> {
+    modify_store(root, |store| {
+        if let Some(count) = store
+            .settings
+            .automatic_handoffs_today
+            .get_mut(&format!("{day}:{account}"))
+        {
+            *count = count.saturating_sub(1);
+        }
         Ok(())
     })
 }

@@ -146,15 +146,20 @@ pub fn plan_claude_turn_with(
 }
 
 /// Add Claude's native effort flag only when the cached compatibility probe advertises it.
-pub(crate) fn add_effort_if_supported(
-    argv: &mut Vec<String>,
-    effort: Option<&str>,
-) -> Result<()> {
-    let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) else { return Ok(()) };
-    anyhow::ensure!(crate::catalog::valid_effort(effort), "unsupported Claude effort value");
+pub(crate) fn add_effort_if_supported(argv: &mut Vec<String>, effort: Option<&str>) -> Result<()> {
+    let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        crate::text_safe::valid_effort(effort),
+        "unsupported Claude effort value"
+    );
     let caps = crate::provider::compat::caps_for(crate::store::ProviderKind::Claude)
         .ok_or_else(|| anyhow::anyhow!("Claude CLI capabilities are not cached; run compatibility detection before selecting effort"))?;
-    anyhow::ensure!(caps.known && caps.effort, "Claude CLI does not advertise native --effort");
+    anyhow::ensure!(
+        caps.known && caps.effort,
+        "Claude CLI does not advertise native --effort"
+    );
     argv.extend(["--effort".into(), effort.into()]);
     Ok(())
 }

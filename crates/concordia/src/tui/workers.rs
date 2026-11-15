@@ -832,7 +832,7 @@ impl App {
                 let job = self.deleg.d.get(id).ok_or("unknown worker run")?;
                 let declarations: Vec<_> = job.workspace.as_ref().map(|request| request.claims.iter().map(|claim| crate::workspaces::Declaration { path: claim.relative.clone(), access: claim.access }).collect()).unwrap_or_default();
                 let managed = job.workspace.as_ref().and_then(|request| request.binding.managed.as_ref()).map(|managed| managed.id.clone());
-                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref(), None, None)
+                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref(), None, None, None)
             }),
             ["recover", id] => {
                 let request = id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovery_source(id).map(|(root,source)| (id,root,source)));
@@ -954,17 +954,21 @@ impl App {
             let Some(j) = self.deleg.d.get(id) else {
                 continue;
             };
-            if let Some(agent_id) = j.mcp_agent_id.as_deref() {
-                let status = if j.state == WorkerState::Done { "finished" } else { "failed" };
-                let _ = crate::mcp::records::update_agent_run(
+            let completion_error = if let Some(agent_id) = j.mcp_agent_id.as_deref() {
+                let status = if j.state == WorkerState::Done {
+                    "finished"
+                } else {
+                    "failed"
+                };
+                crate::agent_records::update_agent_run(
                     &self.state_root,
                     agent_id,
                     &j.run_id,
                     status,
                     Some(j.final_text()),
                     "worker run finished",
-                );
-            }
+                ).err()
+            } else { None };
             crate::logging::info(&format!(
                 "delegate-finish id={} worker={} state={} ms={} cards={} origin={:?}",
                 j.id,
@@ -977,6 +981,9 @@ impl App {
             let block = result_block(j, &self.account_label());
             let note = format!("{} {}", j.label(), j.state.label());
             self.push_system(block);
+            if let Some(error) = completion_error {
+                self.push_system(format!("worker #{id} finished, but its MCP status could not be saved: {error}; inspect the result in Ctrl+G"));
+            }
             self.flash(format!("worker {note}"));
         }
         self.refresh_agents_picker();
@@ -1099,87 +1106,22 @@ impl App {
             &parent_run,
         ) {
             changed = true;
-            {
-                    crate::mcp::update_agent(
+            let result = self.start_delegate_proposal(&proposal);
+            match result {
+                Ok(message) => self.push_system(message),
+                Err(error) => {
+                    let saved = crate::agent_records::update_agent_exact(
                         &self.state_root,
                         &proposal.agent_id,
-                        "starting",
-                        None,
-                        "accepted by Concordia",
+                        "failed",
+                        Some(error.clone()),
+                        "worker request rejected before provider launch",
                     );
-                    if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
-                        let prior_ids: std::collections::HashSet<u32> =
-                            self.deleg.d.jobs.iter().map(|job| job.id).collect();
-                        match self.start_delegate_with_model_effort(
-                            &block.to,
-                            &block.task,
-                            Origin::Protocol,
-                            proposal.model.as_deref(),
-                            proposal.effort.as_deref(),
-                        ) {
-                            Ok(message) => {
-                                if let Some(job) = self.deleg.d.jobs.iter_mut().find(|job| {
-                                    !prior_ids.contains(&job.id) && job.origin == Origin::Protocol
-                                }) {
-                                    let Some(parent_run) = proposal.parent_run_id.as_deref() else {
-                                        self.push_system("worker proposal paused: missing parent run identity");
-                                        continue;
-                                    };
-                                    let binding = crate::mcp::records::bind_agent_run(
-                                        &self.state_root,
-                                        &proposal.agent_id,
-                                        &parent,
-                                        &canonical_cwd,
-                                        &parent_run,
-                                        &job.run_id,
-                                    );
-                                    if let Err(error) = binding {
-                                        crate::mcp::update_agent(
-                                            &self.state_root,
-                                            &proposal.agent_id,
-                                            "failed",
-                                            Some(error.clone()),
-                                            "worker identity binding failed before acceptance",
-                                        );
-                                        self.push_system(format!("delegate identity binding failed - {error}"));
-                                    } else {
-                                        job.bind_mcp_agent(proposal.agent_id.clone());
-                                        if let Err(error) = self.deleg.d.save_recovery_state() {
-                                            crate::mcp::update_agent(
-                                                &self.state_root,
-                                                &proposal.agent_id,
-                                                "failed",
-                                                Some(error.clone()),
-                                                "worker identity persistence failed before acceptance",
-                                            );
-                                            self.push_system(format!("delegate identity persistence failed - {error}"));
-                                        }
-                                    }
-                                }
-                                self.push_system(message)
-                            },
-                            Err(error) => {
-                                crate::mcp::update_agent(
-                                    &self.state_root,
-                                    &proposal.agent_id,
-                                    "failed",
-                                    Some(error.to_string()),
-                                    "worker start rejected before a provider process was accepted",
-                                );
-                                self.push_system(format!("delegate failed - {error}; retry remains available from the Agents panel"));
-                            }
-                        }
-                    } else {
-                        let error = "invalid worker target or task";
-                        crate::mcp::update_agent(
-                            &self.state_root,
-                            &proposal.agent_id,
-                            "failed",
-                            Some(error.into()),
-                            "worker start rejected during validation",
-                        );
-                        self.push_system(error);
+                    self.push_system(format!("delegate failed: {error}"));
+                    if let Err(error) = saved {
+                        self.push_system(format!("agent status could not be saved: {error}"));
                     }
+                }
             }
         }
         changed
@@ -1256,15 +1198,25 @@ impl App {
         self.start_delegate_scoped_model_effort(target, task, origin, &[], &[], model, None)
     }
 
-    fn start_delegate_with_model_effort(
+    fn start_delegate_proposal(
         &mut self,
-        target: &str,
-        task: &str,
-        origin: Origin,
-        model: Option<&str>,
-        effort: Option<&str>,
+        proposal: &crate::mcp::Proposal,
     ) -> Result<String, String> {
-        self.start_delegate_scoped_model_effort(target, task, origin, &[], &[], model, effort)
+        let parent_run = proposal
+            .parent_run_id
+            .as_deref()
+            .ok_or("worker proposal has no parent run")?;
+        self.start_delegate_workspace(
+            &proposal.to,
+            &proposal.task,
+            Origin::Protocol,
+            &[],
+            &[],
+            None,
+            proposal.model.as_deref(),
+            proposal.effort.as_deref(),
+            Some((&proposal.agent_id, parent_run)),
+        )
     }
 
     fn start_delegate_after(
@@ -1297,7 +1249,15 @@ impl App {
         declarations: &[crate::workspaces::Declaration],
         model: Option<&str>,
     ) -> Result<String, String> {
-        self.start_delegate_scoped_model_effort(target, task, origin, after, declarations, model, None)
+        self.start_delegate_scoped_model_effort(
+            target,
+            task,
+            origin,
+            after,
+            declarations,
+            model,
+            None,
+        )
     }
 
     fn start_delegate_scoped_model_effort(
@@ -1310,7 +1270,17 @@ impl App {
         model: Option<&str>,
         effort: Option<&str>,
     ) -> Result<String, String> {
-        self.start_delegate_workspace(target, task, origin, after, declarations, None, model, effort)
+        self.start_delegate_workspace(
+            target,
+            task,
+            origin,
+            after,
+            declarations,
+            None,
+            model,
+            effort,
+            None,
+        )
     }
 
     fn start_delegate_workspace(
@@ -1323,6 +1293,7 @@ impl App {
         managed: Option<&str>,
         model: Option<&str>,
         effort: Option<&str>,
+        mcp_binding: Option<(&str, &str)>,
     ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
@@ -1402,28 +1373,35 @@ impl App {
             &account,
             home.as_deref(),
         )?;
-        let id = self.deleg.d.submit_workspace(
-            Submit {
-                account: account.clone(),
-                provider: acct.provider,
-                task: task.to_string(),
-                origin,
-                spec: JobSpec {
-                    native_input,
-                    model: model.map(str::to_owned),
-                    effort: effort.map(str::to_owned),
-                    home,
-                    cwd: self.cwd.clone(),
-                    prompt: task.to_string(),
-                    prefix,
-                    trust,
-                },
+        let submission = Submit {
+            account: account.clone(),
+            provider: acct.provider,
+            task: task.to_string(),
+            origin,
+            spec: JobSpec {
+                native_input,
+                model: model.map(str::to_owned),
+                effort: effort.map(str::to_owned),
+                home,
+                cwd: self.cwd.clone(),
+                prompt: task.to_string(),
+                prefix,
+                trust,
             },
-            Instant::now(),
-            after,
-            declarations,
-            managed,
-        )?;
+        };
+        let id = if let Some((agent_id, parent_run)) = mcp_binding {
+            self.deleg
+                .d
+                .submit_mcp(submission, Instant::now(), agent_id, parent_run)?
+        } else {
+            self.deleg.d.submit_workspace(
+                submission,
+                Instant::now(),
+                after,
+                declarations,
+                managed,
+            )?
+        };
         self.deleg.owners.insert(id, self.deleg.generation);
         crate::logging::info(&format!(
             "delegate-start id={id} worker={account} provider={} origin={origin:?} trust={} task_chars={}",
@@ -1475,9 +1453,7 @@ impl App {
                     if active.len() == 1 {
                         usize::from(self.deleg.d.cancel(active[0], now))
                     } else {
-                        self.push_system(
-                            "select a worker row in Ctrl+G to cancel it",
-                        );
+                        self.push_system("select a worker row in Ctrl+G to cancel it");
                         return;
                     }
                 }
@@ -1502,7 +1478,9 @@ impl App {
             return;
         }
         if self.busy {
-            self.push_system("the orchestrator is busy - wait for it (or Esc), then select Return in Ctrl+G");
+            self.push_system(
+                "the orchestrator is busy - wait for it (or Esc), then select Return in Ctrl+G",
+            );
             return;
         }
         let want = acct.map(normalize_account_id);

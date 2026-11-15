@@ -61,7 +61,11 @@ pub fn matching_for_provider(
         .into_iter()
         .flat_map(crate::provider::command_specs)
         .filter(|c| c.name.starts_with(&typed))
-        .filter(|c| !command_registry().iter().any(|builtin| builtin.name.eq_ignore_ascii_case(c.name)))
+        .filter(|c| {
+            !command_registry()
+                .iter()
+                .any(|builtin| builtin.name.eq_ignore_ascii_case(c.name))
+        })
         .map(|c| Entry {
             command: c.name.to_string(),
             help: if crate::provider::command_supported(provider.unwrap(), c.name) {

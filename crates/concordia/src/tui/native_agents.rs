@@ -215,7 +215,9 @@ fn agent_label(depth: usize, status: Status, metadata: &Facts) -> String {
         fixed_column(&metadata.effort, 6),
         context_bar(metadata.used, metadata.limit, 6),
         " ",
-        metadata.turns.map_or_else(|| "unknown".into(), |value| value.to_string()),
+        metadata
+            .turns
+            .map_or_else(|| "unknown".into(), |value| value.to_string()),
         ""
     )
 }
@@ -682,7 +684,11 @@ impl State {
             .map(|sender| {
                 format!(
                     "From {}",
-                    if sender == "parent" { "Orchestrator" } else { &sender }
+                    if sender == "parent" {
+                        "Orchestrator"
+                    } else {
+                        &sender
+                    }
                 )
             })
             .unwrap_or_else(|| "From Orchestrator".into());
@@ -791,7 +797,8 @@ impl State {
             let Some(card) = messages.get(*index).and_then(|line| line.card.as_ref()) else {
                 continue;
             };
-            let native = is_native_agent(&card.id, &card.title, card.detail.as_deref().unwrap_or(""));
+            let native =
+                is_native_agent(&card.id, &card.title, card.detail.as_deref().unwrap_or(""));
             let untracked = untracked_run(card).is_some();
             if native || untracked {
                 let mut entry = entry.clone();
@@ -887,7 +894,11 @@ impl State {
             id: format!("worker-agent:{}", job.id),
             label: agent_label(
                 0,
-                if job.state.is_running() { Status::Running } else { Status::Done },
+                if job.state.is_running() {
+                    Status::Running
+                } else {
+                    Status::Done
+                },
                 &Facts {
                     role: "Worker".into(),
                     model: job.model.clone().unwrap_or_else(|| "unknown".into()),
@@ -916,7 +927,11 @@ impl State {
                     0,
                     status,
                     &Facts {
-                        role: if record.role.is_empty() { "Grok Bot".into() } else { record.role.clone() },
+                        role: if record.role.is_empty() {
+                            "Grok Bot".into()
+                        } else {
+                            record.role.clone()
+                        },
                         model: record.model.clone().unwrap_or_else(|| "Grok Bot".into()),
                         effort: record.effort.clone().unwrap_or_else(|| "unknown".into()),
                         turns: Some(1),
@@ -1019,7 +1034,11 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let status_text = format!(
                     "{} {}",
                     status.icon(),
-                    if status == Status::Done { "Inactive" } else { status.word() }
+                    if status == Status::Done {
+                        "Inactive"
+                    } else {
+                        status.word()
+                    }
                 );
                 let header = format!("#{} {}", row_number, metadata.role);
                 let header_gap = usize::from(columns[0].width.saturating_sub(2))
@@ -1052,13 +1071,15 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     Line::styled(
                         format!(
                             "{} tokens remaining · last snapshot",
-                            metadata.remaining.or_else(|| {
-                                metadata
-                                    .limit
-                                    .zip(metadata.used)
-                                    .map(|(limit, used)| limit.saturating_sub(used))
-                            })
-                            .map_or_else(|| "unknown".into(), group_digits)
+                            metadata
+                                .remaining
+                                .or_else(|| {
+                                    metadata
+                                        .limit
+                                        .zip(metadata.used)
+                                        .map(|(limit, used)| limit.saturating_sub(used))
+                                })
+                                .map_or_else(|| "unknown".into(), group_digits)
                         ),
                         Style::default().fg(Color::Gray),
                     ),
@@ -1070,14 +1091,11 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .tasks_for(&card.id, card.detail.as_deref(), &title);
                 let detail_width = usize::from(columns[0].width.saturating_sub(2));
                 for (task_index, task) in tasks.into_iter().enumerate() {
-                    let elapsed = task
-                        .finished
-                        .unwrap_or_else(|| task.started.elapsed());
+                    let elapsed = task.finished.unwrap_or_else(|| task.started.elapsed());
                     let elapsed = format_elapsed(elapsed);
                     let prefix = format!("{} ", task.status.icon());
-                    let title_width = detail_width.saturating_sub(
-                        prefix.chars().count() + elapsed.chars().count() + 1,
-                    );
+                    let title_width = detail_width
+                        .saturating_sub(prefix.chars().count() + elapsed.chars().count() + 1);
                     let task_title = cut(&task.title, title_width);
                     let padding = detail_width.saturating_sub(
                         prefix.chars().count()
@@ -1113,14 +1131,11 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         detail_lines.push(Line::from("No agent selected"));
     }
     f.render_widget(
-        Paragraph::new(detail_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Agent details "),
-            )
-            // Clip long values at the pane edge. Wrapping would move the card's columns.
-            ,
+        Paragraph::new(detail_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Agent details "),
+        ), // Clip long values at the pane edge. Wrapping would move the card's columns.
         columns[0],
     );
 

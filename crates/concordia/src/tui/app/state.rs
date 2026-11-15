@@ -940,6 +940,19 @@ impl App {
         use sha2::{Digest, Sha256};
         self.questions.refresh_native();
         self.deleg.d.refresh_native_inputs();
+        // A resolved native request may remove the native session binding from the
+        // question panel. Withdraw this App's old projection before rebuilding it,
+        // including items whose session differs from the current binding.
+        let previous: Vec<_> = self
+            .needs_you
+            .items()
+            .filter(|item| item.source == "conversation")
+            .map(|item| item.id.clone())
+            .collect();
+        for id in previous {
+            self.needs_you.remove(&id);
+            crate::needs_you::withdraw(&id);
+        }
         let session = self.needs_you_session();
         let project = self.cwd.file_name().map_or_else(
             || "project".into(),
@@ -1260,8 +1273,7 @@ impl App {
                     "Model refresh unavailable: {error}. No provider model choices are available."
                 ));
                 self.footer_left =
-                    "model refresh failed; r retries; provider model list required"
-                        .into();
+                    "model refresh failed; r retries; provider model list required".into();
                 return true;
             }
         };
@@ -1320,7 +1332,9 @@ impl App {
     pub(in crate::tui) fn restart_ready_update(&mut self) {
         if self.busy || self.deleg.d.any_active() || self.deleg.has_pending_prompt() {
             self.restart_when_idle = true;
-            self.push_system("Restart is waiting for active work and will continue when it finishes.");
+            self.push_system(
+                "Restart is waiting for active work and will continue when it finishes.",
+            );
             return;
         }
         if let Some(path) = self.ready_update_path.take() {
@@ -1398,7 +1412,9 @@ impl App {
                         .is_some_and(|picker| picker.kind == PickerKind::Update)
                 {
                     if self.install_update_on_launch {
-                        self.push_system("A Concordia update is available. It will install on the next launch.");
+                        self.push_system(
+                            "A Concordia update is available. It will install on the next launch.",
+                        );
                     } else {
                         self.push_system("A Concordia update is available. Preparing it in the background; actions will appear when it is ready.");
                         self.start_background_update();
@@ -1482,7 +1498,9 @@ impl App {
             self.clear_selections();
             self.queue.items.push(queued);
             self.queue_changed();
-            self.flash("Queued while the active turn runs; Up focuses it for edit or Del removes it.");
+            self.flash(
+                "Queued while the active turn runs; Up focuses it for edit or Del removes it.",
+            );
             return;
         }
         if self.busy && provider_passthrough {

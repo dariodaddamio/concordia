@@ -12,7 +12,10 @@ const HELP: &str = "usage: concordia chat list [--account ID] [--provider codex|
 const MAX_CHAT_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
 
 pub(crate) use crate::native_history::visible_user_history;
-pub(crate) use crate::native_history::{read_history_file, HistoryBuffer};
+#[cfg(test)]
+use crate::native_history::{
+    read_history_file, HistoryBuffer, HISTORY_MESSAGES, HISTORY_NATIVE_BYTES, HISTORY_TEXT_BYTES,
+};
 pub use crate::native_history::{History, HistoryMessage};
 
 pub fn read_history(

@@ -34,7 +34,10 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::*,
         Input::KeyboardAndMouse::*,
-        Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW},
+        Shell::{
+            DragAcceptFiles, DragFinish, DragQueryFileW, Shell_NotifyIconW, NIF_ICON, NIF_INFO,
+            NIF_MESSAGE, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -310,7 +313,12 @@ impl WindowBackend {
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_notifications_enabled(&mut self, enabled: bool) {
-        if self.shared.notifications_enabled.swap(enabled, Ordering::AcqRel) == enabled {
+        if self
+            .shared
+            .notifications_enabled
+            .swap(enabled, Ordering::AcqRel)
+            == enabled
+        {
             return;
         }
         if !enabled {
@@ -319,7 +327,11 @@ impl WindowBackend {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
-            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
         let _ = self.post(UPDATE);
     }
@@ -665,7 +677,11 @@ impl Window {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
-            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
             if self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
                 self.tray_added = false;
@@ -684,7 +700,11 @@ impl Window {
             } else if self.focused && self.tray_added {
                 notify_tray(hwnd, NIM_DELETE, None);
                 self.tray_added = false;
-                *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                *self
+                    .shared
+                    .attention_target
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = None;
             }
             return;
         }
@@ -701,7 +721,8 @@ impl Window {
                 DestroyIcon(self.overlay_icons[index]);
             }
             self.overlay_icons[index] = icon;
-            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_some()) {
+            if !self.taskbar.is_null() && native_signal_allowed(self.shared.test_control.is_some())
+            {
                 taskbar_overlay(self.taskbar, hwnd, icon);
             }
         } else if !self.taskbar.is_null()
@@ -714,15 +735,15 @@ impl Window {
         } else if status != StatusDot::NeedsAttention && self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
             self.tray_added = false;
-            *self.shared.attention_target.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self
+                .shared
+                .attention_target
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
 
-    unsafe fn deliver_pending_attention(
-        &mut self,
-        hwnd: HWND,
-        pending: Option<&(String, String)>,
-    ) {
+    unsafe fn deliver_pending_attention(&mut self, hwnd: HWND, pending: Option<&(String, String)>) {
         let Some((item_id, text)) = pending else {
             return;
         };
@@ -739,8 +760,8 @@ impl Window {
                 .unwrap_or_else(|e| e.into_inner()) = None;
         }
         let operation = NIM_ADD;
-        let delivered = self.shared.test_control.is_some()
-            || notify_tray(hwnd, operation, Some(text));
+        let delivered =
+            self.shared.test_control.is_some() || notify_tray(hwnd, operation, Some(text));
         if delivered {
             *self
                 .shared
@@ -952,9 +973,13 @@ impl Window {
                 .as_ref()
                 .map(|surface| surface.cells.clone())
                 .unwrap_or_default();
-            let previous_columns = previous_surface.as_ref().map_or(0, |surface| surface.columns);
+            let previous_columns = previous_surface
+                .as_ref()
+                .map_or(0, |surface| surface.columns);
             let previous_rows = previous_surface.as_ref().map_or(0, |surface| surface.rows);
-            let previous_filled = previous_surface.as_ref().map_or(0, |surface| surface.filled);
+            let previous_filled = previous_surface
+                .as_ref()
+                .map_or(0, |surface| surface.filled);
             let memory = CreateCompatibleDC(dc);
             let bitmap = CreateCompatibleBitmap(dc, client.right.max(1), client.bottom.max(1));
             if memory.is_null() || bitmap.is_null() {
@@ -1200,9 +1225,18 @@ impl Window {
                 }
             };
             if let Some(drawn) = drawn {
-                fill(RECT { right: drawn.left, ..area });
-                fill(RECT { left: drawn.right, ..area });
-                fill(RECT { top: drawn.bottom, ..area });
+                fill(RECT {
+                    right: drawn.left,
+                    ..area
+                });
+                fill(RECT {
+                    left: drawn.right,
+                    ..area
+                });
+                fill(RECT {
+                    top: drawn.bottom,
+                    ..area
+                });
             } else {
                 fill(area);
             }
@@ -1243,9 +1277,18 @@ impl Window {
                         FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
                     }
                 };
-                fill(RECT { right: drawn.left, ..area });
-                fill(RECT { left: drawn.right, ..area });
-                fill(RECT { top: drawn.bottom, ..area });
+                fill(RECT {
+                    right: drawn.left,
+                    ..area
+                });
+                fill(RECT {
+                    left: drawn.right,
+                    ..area
+                });
+                fill(RECT {
+                    top: drawn.bottom,
+                    ..area
+                });
             } else if area.right > area.left && area.bottom > area.top {
                 FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
             }
@@ -2280,7 +2323,9 @@ unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) -> bool
         data.dwInfoFlags = 1;
     }
     let delivered = Shell_NotifyIconW(operation, &data) != 0;
-    if !data.hIcon.is_null() { DestroyIcon(data.hIcon); }
+    if !data.hIcon.is_null() {
+        DestroyIcon(data.hIcon);
+    }
     delivered
 }
 

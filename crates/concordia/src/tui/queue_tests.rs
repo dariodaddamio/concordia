@@ -793,17 +793,15 @@ fn sent_prompts_persist_for_up_after_a_restart_but_slash_commands_do_not() {
     )
     .unwrap();
     h.send("/queue");
-    for (index, prompt) in ["first prompt", "second\nprompt"].into_iter().enumerate() {
+    h.press(KeyCode::Esc);
+    for prompt in ["first prompt", "second\nprompt"] {
         let scope = native::begin_scope(h.root(), &binding).unwrap();
         h.send(prompt);
         let owner = crate::provider::interaction::InteractionOwner {
             conversation_id: h.app.deleg.d.conversation_id().into(),
             workspace: h.app.cwd.clone(),
             execution_cwd: h.app.cwd.clone(),
-            // Each submitted turn owns a distinct journal run. Reusing the
-            // continuation run here makes the journal correctly treat the
-            // second fixture event as a duplicate of the first.
-            run_id: format!("queue-history-run-{index}"),
+            run_id: h.app.continuation.run_id().into(),
             attempt_id: uuid::Uuid::new_v4().to_string(),
             provider: ProviderKind::Codex,
             account: "queue-history-fixture".into(),

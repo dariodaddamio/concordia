@@ -149,6 +149,7 @@ async fn turn(
         cwd,
         home_path: Some(home),
         model: Some(&model),
+        effort: (provider == ProviderKind::Codex).then_some("low"),
         native_session_id: None,
         trust,
         context_prefix: None,

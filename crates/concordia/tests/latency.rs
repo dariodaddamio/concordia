@@ -47,6 +47,7 @@ async fn fake_process_transport_latency() {
         cwd: dir.path(),
         home_path: Some(dir.path()),
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Edit,
         context_prefix: None,

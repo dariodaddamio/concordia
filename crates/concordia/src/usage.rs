@@ -1208,6 +1208,30 @@ fn save_cache(state_root: &Path, c: &CachedUsage) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn fixture_cached_usage(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+) {
+    save_cache(
+        root,
+        &CachedUsage {
+            fetched_at: unix_now(),
+            identity: UsageIdentity::new(provider, account, home),
+            windows: vec![UsageWindow {
+                label: "fixture".into(),
+                used_pct: 10.0,
+                resets: None,
+                bucket: None,
+            }],
+            codex_limits: None,
+            note: String::new(),
+        },
+    );
+}
+
 /// Produces the raw `/usage` text for a Claude config dir. Swapped for a fake in tests.
 pub type UsageRunner = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 

@@ -1,4 +1,4 @@
-//! `<state>/config.toml`: user-written defaults and switches. Read-only to Concordia.
+//! `<state>/config.toml`: user-written defaults and checked fallback-model edits.
 //!
 //! Loading never fails: a missing file is the defaults, a malformed file is the
 //! defaults plus a warning (with line and column), unknown keys and invalid values are warnings
@@ -204,25 +204,55 @@ pub fn set_fallback_model(state_root: &Path, role: &str, model: &str) -> anyhow:
     anyhow::ensure!(!role.trim().is_empty(), "role is required");
     anyhow::ensure!(!model.trim().is_empty(), "model is required");
     let path = config_path(state_root);
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut table: toml::Table = if text.trim().is_empty() {
-        toml::Table::new()
-    } else {
-        text.parse().map_err(|error| anyhow::anyhow!("config.toml is malformed: {error}"))?
-    };
-    let continuation = table
-        .entry("continuation")
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("continuation must be a table"))?;
-    let fallbacks = continuation
-        .entry("fallback_models")
-        .or_insert_with(|| toml::Value::Table(toml::Table::new()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow::anyhow!("continuation.fallback_models must be a table"))?;
-    fallbacks.insert(role.trim().into(), toml::Value::String(model.trim().into()));
-    std::fs::create_dir_all(state_root)?;
-    std::fs::write(path, table.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    crate::state_io::with_lock(&path.with_extension("toml.lock"), || {
+        use std::io::{self, Read};
+        let original = match std::fs::File::open(&path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
+                if bytes.len() > 1024 * 1024 {
+                    return Err(io::Error::other(
+                        "config.toml exceeds 1 MiB; original preserved",
+                    ));
+                }
+                Some(bytes)
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let text = std::str::from_utf8(original.as_deref().unwrap_or_default())
+            .map_err(|_| io::Error::other("config.toml is not UTF-8; original preserved"))?;
+        let mut table: toml::Table = if text.trim().is_empty() {
+            toml::Table::new()
+        } else {
+            text.parse().map_err(|error| {
+                io::Error::other(format!(
+                    "config.toml is malformed: {error}; original preserved"
+                ))
+            })?
+        };
+        let continuation = table
+            .entry("continuation")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| io::Error::other("continuation must be a table"))?;
+        let fallbacks = continuation
+            .entry("fallback_models")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+            .as_table_mut()
+            .ok_or_else(|| io::Error::other("continuation.fallback_models must be a table"))?;
+        fallbacks.insert(role.trim().into(), toml::Value::String(model.trim().into()));
+        let replacement = table.to_string();
+        if replacement.len() > 1024 * 1024 {
+            return Err(io::Error::other(
+                "updated config.toml exceeds 1 MiB; original preserved",
+            ));
+        }
+        crate::state_io::write_atomic(&path, replacement.as_bytes())
+    })?;
     Ok(())
 }
 
@@ -591,7 +621,10 @@ mod tests {
         let (config, warnings) = Config::parse(&text);
         assert!(warnings.is_empty());
         assert!(!config.ui.tips);
-        assert_eq!(config.continuation.fallback_models["reviewer"], "claude-sonnet");
+        assert_eq!(
+            config.continuation.fallback_models["reviewer"],
+            "claude-sonnet"
+        );
     }
 
     #[test]

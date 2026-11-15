@@ -42,6 +42,7 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
             cwd: work.path(),
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
             trust: TrustMode::Edit,
             context_prefix: None,

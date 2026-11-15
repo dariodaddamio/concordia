@@ -141,10 +141,7 @@ fn list_codex_models(home: &Path) -> Vec<NativeModel> {
         .collect()
 }
 
-/// Effort names become one argv value; keep them to short lowercase words.
-pub fn valid_effort(effort: &str) -> bool {
-    !effort.is_empty() && effort.len() <= 20 && effort.chars().all(|c| c.is_ascii_lowercase())
-}
+pub use crate::text_safe::valid_effort;
 
 fn list_cursor_models(home: &Path) -> Vec<NativeModel> {
     let mut out = Vec::new();

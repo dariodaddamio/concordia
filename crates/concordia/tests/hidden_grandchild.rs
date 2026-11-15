@@ -30,6 +30,7 @@ async fn hidden_provider_grandchild_has_no_visible_console() {
         cwd: &cwd,
         home_path: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Edit,
         context_prefix: None,

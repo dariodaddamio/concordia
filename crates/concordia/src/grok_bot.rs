@@ -3,7 +3,7 @@
 //! Routine metadata is local state; webhook keys and callback tokens are Windows Credential
 //! Manager secrets. The callback listener intentionally has no chat, memory, or provider tools.
 
-use crate::mcp::{update_agent, AgentRecord};
+use crate::agent_records::{update_agent, AgentRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -136,11 +136,14 @@ pub fn start(root: &Path, routine_id: &str, task: &str, parent: &str) -> Result<
         effort: None,
         task: task.into(),
         parent: parent.into(),
+        workspace: None,
+        parent_run_id: None,
+        run_id: None,
         status: "starting".into(),
         result: None,
         activity: vec!["Grok Bot routine webhook requested".into()],
     };
-    crate::mcp::write_agent(root, &record)?;
+    crate::agent_records::write_agent(root, &record)?;
     match post_json(
         &routine.webhook_url,
         &key,
@@ -299,11 +302,11 @@ fn callback_call(root: &Path, params: &Value) -> Result<Value, String> {
     if content.chars().count() > MAX_CALLBACK_BYTES {
         return Err("content too large".into());
     }
-    let record = crate::mcp::read_agent(root, run_id)?;
+    let record = crate::agent_records::read_agent(root, run_id)?;
     if record.provider != "grok-bot" {
         return Err("run was not started by Grok Bot".into());
     }
-    let safe = crate::delegate::fence_untrusted(content);
+    let safe = crate::text_safe::fence_untrusted(content);
     match kind {
         "result" => update_agent(
             root,
@@ -502,7 +505,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use crate::mcp::{read_agent, write_agent};
+    use crate::agent_records::{read_agent, write_agent};
 
     fn request(token: &str, body: &str) -> Vec<u8> {
         format!("POST /mcp HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -564,6 +567,9 @@ mod tests {
                 effort: None,
                 task: "task".into(),
                 parent: String::new(),
+                workspace: None,
+                parent_run_id: None,
+                run_id: None,
                 status: "waiting".into(),
                 result: None,
                 activity: Vec::new(),

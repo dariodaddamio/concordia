@@ -265,7 +265,9 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             open(app);
         }
         "updates" => {
-            let current = crate::config::for_root(&app.state_root).updates.install_on_launch;
+            let current = crate::config::for_root(&app.state_root)
+                .updates
+                .install_on_launch;
             match crate::store::set_update_install_on_launch(&app.state_root, !current) {
                 Ok(()) => app.flash(if current {
                     "Updates will prepare in the background"
@@ -285,17 +287,25 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             roles.push("general".into());
             roles.sort();
             roles.dedup();
-            let configured = crate::config::for_root(&app.state_root).continuation.fallback_models;
+            let configured = crate::config::for_root(&app.state_root)
+                .continuation
+                .fallback_models;
             app.show_picker(
                 PickerKind::Settings,
                 "Fallback model · choose a role".into(),
                 roles
                     .into_iter()
-                    .map(|role| row(
-                        format!("fallback-role:{role}").as_str(),
-                        role.clone(),
-                        configured.get(&role).map_or("not configured".into(), |model| format!("fallback model · {model}")),
-                    ))
+                    .map(|role| {
+                        row(
+                            format!("fallback-role:{role}").as_str(),
+                            role.clone(),
+                            configured
+                                .get(&role)
+                                .map_or("not configured".into(), |model| {
+                                    format!("fallback model · {model}")
+                                }),
+                        )
+                    })
                     .collect(),
                 true,
             );

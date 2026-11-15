@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed (2026-11-14p)
+
+- Selected reasoning effort now reaches Codex turns and supported Claude launches; worker requests retain their selected effort.
+- Native controls bind to the exact conversation and session. Queue resume preserves pending native approvals, and cancellation preserves newer drafts.
+- Failed preparation retains handoff context. Structured quota errors and reactive context rollover follow the existing continuation flow.
+- MCP execution respects disabled/project switches and exact worker ownership. Transport exchanges retain initialization/session state, bound peer traffic and clean up children.
+- Configuration edits preserve invalid originals, registry mutations serialize concurrent edits, and MCP secrets resolve only at the intended child/request boundary. Redaction markers no longer expose value fingerprints.
+- Worker completion preserves final card updates. Recovery help and the static module-cycle gate now reflect reachable controls and nested source boundaries.
+
 ### Fixed (2026-11-14o)
 
 - `/model` opens the model list directly again instead of asking who runs it first; Concordia's
