@@ -267,3 +267,11 @@
 | crates/concordia/src/tui/settings.rs, crates/concordia/src/tui/local_terminal.rs | ok: 1, 5, 10 | Repair confirmed mojibake literals in place; no formatting layer or duplicate text source is introduced. |
 | crates/concordia/src/tui/activity_tests.rs, crates/concordia/src/tui/tests/input_dispatch.rs | ok: 5, 9 | Supply the existing picker layout field in two compile-only fixtures so the requested all-target check reaches the changed code; no production behavior is added. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing picker correction under the existing build metadata owners. |
+
+### FIX2 turns always start and finish - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/run.rs, crates/concordia/src/tui/app/turn.rs | ok: 1, 2, 4, 8, 10 | Keep turn completion in the existing runner and app finalizer; bound only the provider transport and history-sealing waits evidenced by the audit, and preserve the native provider protocols. |
+| crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 6, 10 | Make the existing queue the single owner for busy prompts and keep account identity stable during an active turn. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing turn lifecycle repair under the existing release metadata owners. |

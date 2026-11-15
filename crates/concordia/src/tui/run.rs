@@ -1103,6 +1103,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         Err(error) => {
                             app.on_turn_done(
                                 TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("native interaction owner: {error}"),
                                     ..Default::default()
                                 },
@@ -1235,6 +1236,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(p) => p.unwrap_or_default(),
                             Err(error) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("invalid context policy: {error}"),
                                     ..Default::default()
                                 });
@@ -1257,6 +1259,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(mode) => mode,
                             Err(error) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!(
                                         "invalid native-input preference: {error}"
                                     ),
@@ -1295,7 +1298,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         }
                         let need_pack_hint = need_pack_hint || rollover;
                         if rollover && native_sources.is_empty() {
-                            let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
+                            let _ = done_tx.send(TurnOutcome { failed: true, stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
                             return;
                         }
                         // Pack only after an explicit switch (need_pack_hint). Planner clears
@@ -1342,7 +1345,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             match indexed {
                                 Ok((sources, notices)) => {
                                     if rollover && (sources.is_empty() || !notices.is_empty()) {
-                                        let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
+                                        let _ = done_tx.send(TurnOutcome { failed: true, stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
                                         return;
                                     }
                                     for notice in notices {
@@ -1358,6 +1361,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 Err(error) => {
                                     if rollover {
                                         let _ = done_tx.send(TurnOutcome {
+                                            failed: true,
                                             stderr_tail: format!(
                                                 "proactive source preparation failed: {error}"
                                             ),
@@ -1430,6 +1434,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(plan) => plan,
                             Err(e) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("{e:#}"),
                                     ..Default::default()
                                 });
@@ -1487,6 +1492,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 handle.cancel();
                             }
                         };
+                        let conversation_id = owner.conversation_id.clone();
                         let turn = run_provider_turn_with_transport(
                             &req,
                             owner,
@@ -1495,16 +1501,35 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Some(progress_tx),
                         );
                         tokio::pin!(turn);
-                        let result = loop {
-                            tokio::select! {
-                                biased;
-                                Some(handle) = started_rx.recv() => forward_started(handle),
-                                result = &mut turn => {
-                                    while let Ok(handle) = started_rx.try_recv() {
-                                        forward_started(handle);
+                        let result = match tokio::time::timeout(
+                            Duration::from_secs(45),
+                            async {
+                                loop {
+                                    tokio::select! {
+                                        biased;
+                                        Some(handle) = started_rx.recv() => forward_started(handle),
+                                        result = &mut turn => {
+                                            while let Ok(handle) = started_rx.try_recv() {
+                                                forward_started(handle);
+                                            }
+                                            break result;
+                                        }
                                     }
-                                    break result;
                                 }
+                            },
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                while let Ok(handle) = started_rx.try_recv() {
+                                    handle.cancel();
+                                }
+                                Err(anyhow::anyhow!(
+                                    "{} session {} timed out waiting for provider completion",
+                                    provider.as_str(),
+                                    conversation_id
+                                ))
                             }
                         };
                         match result {
@@ -1513,7 +1538,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 let seal_home = home.clone();
                                 let seal_account = account.clone();
                                 let seal_session = outcome.session_id.clone();
-                                let sealed = tokio::task::spawn_blocking(move || {
+                                let sealed = tokio::time::timeout(
+                                    Duration::from_secs(10),
+                                    tokio::task::spawn_blocking(move || {
                                     let scope = match capture_scope {
                                         Ok(Some(scope)) => scope,
                                         Ok(None) => {
@@ -1537,10 +1564,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                     };
                                     crate::native_memory::references::seal_scope(&seal_root, &scope)
                                         .map(Some)
-                                })
+                                    }),
+                                )
                                 .await
-                                .unwrap_or_else(|_| {
-                                    Err("native history sealing worker stopped".into())
+                                .map_err(|_| "native history sealing timed out".to_string())
+                                .and_then(|result| {
+                                    result.unwrap_or_else(|_| {
+                                        Err("native history sealing worker stopped".into())
+                                    })
                                 });
                                 let _ = reference_sender.send(reference_journal::Started {
                                     run: reference_run,
@@ -1552,6 +1583,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                             Err(e) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("{e:#}"),
                                     ..Default::default()
                                 });

@@ -1625,6 +1625,10 @@ impl App {
                     return;
                 }
                 if let Some(account) = id.strip_prefix("use:") {
+                    if self.busy {
+                        self.push_system("an active turn is still running; finish it before switching accounts");
+                        return;
+                    }
                     if let Err(e) = select_account(&self.state_root, account) {
                         self.push_system(format!("account switch failed — {e}"));
                         return;

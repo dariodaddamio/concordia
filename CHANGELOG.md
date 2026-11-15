@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-14d)
+
+- Provider turns now have a bounded transport wait, identify failed provider sessions, preserve
+  the failed prompt for retry, and release the active-turn state after transport or history
+  sealing failures. Prompts submitted during a turn enter the editable queue, and account
+  switching is deferred until the active turn finishes.
+
 ### Fixed (2026-11-14c)
 
 - `/model` now accepts the pinned Claude CLI version and newer native releases, and shows each

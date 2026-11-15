@@ -1446,7 +1446,25 @@ impl App {
             self.flash("recent messages are loading; your draft is kept");
             return;
         }
-        if self.busy && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough) {
+        if self.busy
+            && (!line.starts_with('/') || user_prompt.is_some())
+            && !provider_passthrough
+            && !line.starts_with("/use")
+        {
+            let queued = crate::attachments::Message {
+                text: line,
+                attachments: std::mem::take(&mut self.images.draft),
+                invalid: None,
+            }
+            .encode();
+            self.editor.clear();
+            self.clear_selections();
+            self.queue.items.push(queued);
+            self.queue_changed();
+            self.flash("Queued while the active turn runs; Up focuses it for edit or Del removes it.");
+            return;
+        }
+        if self.busy && provider_passthrough {
             let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
                 armed.prompt == original_prompt
                     && armed.conversation == self.deleg.d.conversation_id()
