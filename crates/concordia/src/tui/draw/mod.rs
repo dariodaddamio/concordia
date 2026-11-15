@@ -360,7 +360,7 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
         ("Ctrl+E", "open full activity detail"),
         ("F5", "toggle full activity"),
         ("F1 / ?", "open this shortcut sheet"),
-        ("/terminal native", "open the selected provider's native UI in a separate session"),
+        ("/terminal native", "open the selected provider's native UI on this chat's session"),
         ("/terminal help", "show terminal modes and native-provider controls"),
     ] {
         lines.push(Line::from(format!("  {key:<14} {description}")));

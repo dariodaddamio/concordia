@@ -13,7 +13,7 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-    /// Provider-native commands are discoverable; unsupported transport operations stay disabled.
+    /// Provider-native commands are discoverable; unsupported transport operations open the native UI.
     pub provider: bool,
     pub disabled: bool,
 }
@@ -60,14 +60,14 @@ pub fn matching_for_provider(
                 format!("{} (provider transport)", c.description)
             } else {
                 format!(
-                    "{} (disabled: {})",
+                    "{} (native terminal: {})",
                     c.description,
                     crate::provider::command_unavailable_reason(provider.unwrap(), c.name)
                 )
             },
             custom: false,
             provider: true,
-            disabled: !crate::provider::command_supported(provider.unwrap(), c.name),
+            disabled: false,
         });
     let custom = user
         .iter()
@@ -212,8 +212,8 @@ go",
             .iter()
             .find(|entry| entry.command == "/diff")
             .unwrap();
-        assert!(entry.disabled);
-        assert!(entry.help.contains("no matching RPC"));
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("native terminal"));
     }
 
     #[test]

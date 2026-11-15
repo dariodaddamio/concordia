@@ -74,7 +74,7 @@ impl App {
             if args.is_empty() {
                 self.open_guided_command("/terminal", vec![
                     PickerRow { id: "terminal:open".into(), label: "Open local PowerShell".into(), detail: "validated for this project; starts a terminal pane; undo: close the pane".into() },
-                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; opens a separate provider session; undo: close that session".into() },
+                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; resumes this chat's exact provider session when available; undo: close that session".into() },
                     PickerRow { id: "terminal:hide".into(), label: "Hide the running terminal".into(), detail: "validated when a terminal is running; keeps its process alive; undo: choose Open again".into() },
                     PickerRow { id: "terminal:close".into(), label: "Close the terminal".into(), detail: "validated when a terminal exists; stops its process; undo: open a new terminal".into() },
                 ]);
@@ -460,6 +460,20 @@ impl App {
             self.push_command(line);
             self.toggle_stats();
             return true;
+        }
+        if let SlashCommand::Unknown(name) = &cmd {
+            let command_name = format!("/{name}");
+            let unsupported = crate::provider::command_specs(self.provider)
+                .iter()
+                .any(|spec| {
+                    spec.name.eq_ignore_ascii_case(&command_name)
+                        && !crate::provider::command_supported(self.provider, spec.name)
+                });
+            if unsupported {
+                self.push_command(line);
+                crate::tui::local_terminal::native_command(self, line);
+                return true;
+            }
         }
         // Unknown slash names are provider-owned. Returning false deliberately sends the
         // original line through the active provider turn instead of manufacturing a Concordia

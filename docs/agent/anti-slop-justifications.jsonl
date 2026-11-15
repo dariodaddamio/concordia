@@ -284,3 +284,10 @@
 | crates/concordia/src/tui/run.rs, crates/concordia/src/tui/app/turn.rs | ok: 1, 2, 4, 8, 10 | Keep turn completion in the existing runner and app finalizer; bound only the provider transport and history-sealing waits evidenced by the audit, and preserve the native provider protocols. |
 | crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 6, 10 | Make the existing queue the single owner for busy prompts and keep account identity stable during an active turn. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing turn lifecycle repair under the existing release metadata owners. |
+
+### FIX4 native session parity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/local_terminal.rs, crates/concordia/src/tui/app/slash.rs, crates/concordia/src/tui/palette.rs, crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 7, 10 | Reuse the existing native launcher, provider command registry, and exact `native_session_id`; no new transport or synchronization layer. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing parity change under the existing release metadata owners. |

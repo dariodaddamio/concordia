@@ -334,7 +334,7 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         [],
         "[open|native|help|hide|close]",
         "open the local terminal or the selected provider's native interface",
-        "Run local shell commands, use native to open the selected provider's own interface in a separate session, or use help for terminal controls. Native works for every supported provider, including opencode. Hide keeps it alive; close stops it. Chat drafts stay separate.",
+        "Run local shell commands, or use native to open the selected provider's own interface on this chat's exact session when available. Native works for every supported provider, including opencode. Hide keeps it alive; close stops it. Chat drafts stay separate.",
         true,
         CommandCategory::Workspace,
         Some("F11"),

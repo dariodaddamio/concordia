@@ -484,7 +484,7 @@ pub(super) fn command(app: &mut App, args: &str) {
         "" | "open" => app.local_terminal.show(&app.cwd),
         "native" => native_controls(app),
         "help" => app.flash(
-            "/terminal open shows the local shell; native opens the selected provider's own interface in a separate session; hide keeps it running; close stops it",
+            "/terminal open shows the local shell; native opens the selected provider's own interface on this chat's exact session when available; hide keeps it running; close stops it",
         ),
         "hide" => app.local_terminal.view = View::Chat,
         "close" => app.local_terminal.stop(),
@@ -492,9 +492,18 @@ pub(super) fn command(app: &mut App, args: &str) {
     }
 }
 
-/// The real interactive CLI owns settings, promotions and approvals in a fresh
-/// session. It never shares the structured chat's in-flight request or session id.
+/// The real interactive CLI owns settings, promotions and approvals. When the chat has an
+/// explicit native session, the provider resumes that exact session rather than opening a fork.
 pub(super) fn native_controls(app: &mut App) {
+    open_native(app, None);
+}
+
+/// Open the provider UI and optionally run one provider-native command in it.
+pub(super) fn native_command(app: &mut App, command_line: &str) {
+    open_native(app, Some(command_line));
+}
+
+fn open_native(app: &mut App, initial_input: Option<&str>) {
     if app.local_terminal.session.is_some() {
         app.flash(
             "Close the existing terminal with /terminal close before opening native controls",
@@ -505,7 +514,7 @@ pub(super) fn native_controls(app: &mut App) {
         let located =
             crate::provider::locate_real(app.provider).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let mut program = located.path;
-        let mut args = Vec::new();
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
         let mut env = Vec::new();
         if app.provider == ProviderKind::Codex {
             if let Some(native) = crate::provider::npm::codex(&program.to_string_lossy()) {
@@ -515,20 +524,55 @@ pub(super) fn native_controls(app: &mut App) {
             // Start the provider's documented interactive interface. Codex versions
             // that use a daemon choose that transport internally; --no-daemon is not
             // accepted by the installed interactive CLI.
+            if let Some(session) = app
+                .native_session_id
+                .as_deref()
+                .filter(|session| !session.trim().is_empty())
+            {
+                args.extend(["resume".into(), session.to_owned().into()]);
+            }
         }
-        if crate::provider::launch::is_batch_shim(&program.to_string_lossy()) {
+        if app.provider == ProviderKind::Cursor {
+            if let Some(session) = app
+                .native_session_id
+                .as_deref()
+                .filter(|session| !session.trim().is_empty())
+            {
+                args.extend(["--resume".into(), session.to_owned().into()]);
+            }
+            let provider_args = std::mem::take(&mut args);
+            let (interactive_program, interactive_args, interactive_env) =
+                crate::cursor_usage::interactive_launch(&program.to_string_lossy());
+            program = std::path::PathBuf::from(interactive_program);
+            args.extend(interactive_args.into_iter().map(std::ffi::OsString::from));
+            args.extend(provider_args);
+            env.extend(interactive_env);
+        } else if crate::provider::launch::is_batch_shim(&program.to_string_lossy()) {
             if let Some((node, script)) =
                 crate::provider::npm::node_bridge(&program.to_string_lossy(), app.provider)
             {
+                let provider_args = std::mem::take(&mut args);
                 program = node;
                 args.push(script.into_os_string());
+                args.extend(provider_args);
             } else {
                 // Windows installs for opencode and the other CLIs can be published as
                 // .cmd shims. Run the selected shim in cmd.exe without changing the
                 // provider's arguments or account environment.
                 let shim = program;
+                let provider_args = std::mem::take(&mut args);
                 program = which::which("cmd.exe")?;
                 args.extend(["/d".into(), "/c".into(), shim.into_os_string()]);
+                args.extend(provider_args);
+            }
+        }
+        if app.provider == ProviderKind::Claude {
+            if let Some(session) = app
+                .native_session_id
+                .as_deref()
+                .filter(|session| !session.trim().is_empty())
+            {
+                args.extend(["--resume".into(), session.to_owned().into()]);
             }
         }
         let mut command = CommandBuilder::new(program);
@@ -568,7 +612,7 @@ pub(super) fn native_controls(app: &mut App) {
         }
         let mut session = Session::start(&app.cwd, Some(command))?;
         session.name = format!(
-            "{} · {} · native controls · separate session",
+            "{} · {} · native controls",
             app.provider.as_str(),
             app.account
         );
@@ -577,6 +621,10 @@ pub(super) fn native_controls(app: &mut App) {
     match launch() {
         Ok(session) => {
             app.local_terminal.session = Some(session);
+            if let Some(command_line) = initial_input {
+                app.local_terminal
+                    .write(format!("{command_line}\r").into_bytes());
+            }
             app.local_terminal.view = View::Shell;
             app.local_terminal.notice = None;
         }

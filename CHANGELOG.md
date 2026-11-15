@@ -588,6 +588,9 @@
 
 ## Unreleased
 
+- Resume `/terminal native` on the chat's exact Claude, Codex or Cursor session, and route
+  provider commands unsupported by Concordia's transport into that native terminal.
+
 - W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local
   output feed, and their public catalogs; local-time headers are configurable and enabled by default.
 
