@@ -558,12 +558,14 @@ impl App {
         let previous_home = self.continuity_home();
         let automatic_cross_account = self.continuation.automatic && target != self.account;
         if automatic_cross_account {
-            if !crate::store::same_provider_terms_accepted(&self.state_root, self.provider)
-                || !crate::store::automatic_handoff_allowed(
+            if !crate::store::same_provider_automatic(&self.state_root)
+                || !crate::store::same_provider_terms_accepted(&self.state_root, self.provider)
+                || crate::store::reserve_automatic_handoff(
                     &self.state_root,
                     target,
                     &automatic_handoff_day(),
                 )
+                .is_err()
             {
                 self.push_system("automatic handoff is not permitted by the saved provider consent or daily cap; choose a target explicitly");
                 self.continuation.automatic = false;
@@ -611,13 +613,6 @@ impl App {
         }
         self.continuation.dispatching = true;
         self.run_line(instruction, tx);
-        if automatic_cross_account {
-            let _ = crate::store::record_automatic_handoff(
-                &self.state_root,
-                target,
-                &automatic_handoff_day(),
-            );
-        }
         self.continuation.dispatching = false;
         if preserve_draft {
             self.restore_composer(&unsent);
@@ -629,14 +624,8 @@ impl App {
 }
 
 fn automatic_handoff_day() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        .checked_div(86_400)
-        .unwrap_or_default()
-        .to_string()
+    let now = crate::prompt_time::now();
+    format!("{:04}-{:02}-{:02}", now.year, now.month, now.day)
 }
 
 #[cfg(test)]

@@ -751,6 +751,23 @@ pub fn record_automatic_handoff(root: &Path, account: &str, day: &str) -> Result
     })
 }
 
+/// Atomically check and reserve one automatic handoff for an account/day.
+pub fn reserve_automatic_handoff(root: &Path, account: &str, day: &str) -> Result<()> {
+    modify_store(root, |store| {
+        let cap = crate::config::for_root(root)
+            .continuation
+            .automatic_handoff_cap
+            .min(store.settings.automatic_handoff_cap) as u8;
+        let key = format!("{day}:{account}");
+        let count = store.settings.automatic_handoffs_today.entry(key).or_default();
+        if *count >= cap {
+            return Err(anyhow::anyhow!("automatic handoff daily cap exhausted"));
+        }
+        *count = count.saturating_add(1);
+        Ok(())
+    })
+}
+
 pub fn set_trust_mode(root: &Path, trust: TrustMode) -> Result<OrchestratorSettings> {
     modify_store(root, |store| {
         store.settings.trust = trust;

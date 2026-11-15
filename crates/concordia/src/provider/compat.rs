@@ -1208,6 +1208,7 @@ mod planning_tests {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
             trust: TrustMode::Plan,
             context_prefix: None,

@@ -659,7 +659,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             let running = app.deleg.d.get(id).is_some_and(|j| !j.state.is_finished());
             if running {
                 app.deleg.d.cancel(id, Instant::now());
-                app.flash("cancelling worker (Esc); /delegate stop <account> also works");
+                app.flash("cancelling worker (Esc); select the worker in Ctrl+G to cancel it");
             } else {
                 app.deleg.selected = None;
             }
@@ -832,7 +832,7 @@ impl App {
                 let job = self.deleg.d.get(id).ok_or("unknown worker run")?;
                 let declarations: Vec<_> = job.workspace.as_ref().map(|request| request.claims.iter().map(|claim| crate::workspaces::Declaration { path: claim.relative.clone(), access: claim.access }).collect()).unwrap_or_default();
                 let managed = job.workspace.as_ref().and_then(|request| request.binding.managed.as_ref()).map(|managed| managed.id.clone());
-                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref(), None)
+                self.start_delegate_workspace(&account, &task, Origin::User, &[], &declarations, managed.as_deref(), None, None)
             }),
             ["recover", id] => {
                 let request = id.parse::<u32>().map_err(|_| "invalid run id".to_string()).and_then(|id| self.deleg.d.recovery_source(id).map(|(root,source)| (id,root,source)));
@@ -929,7 +929,7 @@ impl App {
             match result {
                 Ok(text) => {
                     let restored = self.deleg.d.restore_result(id, text.clone()).is_ok();
-                    self.push_system(format!("Worker #{id} native source:\n{text}\n{}", if restored { "Completed result available for explicit /delegate use. Automatic return remains paused." } else { "Run completion is uncertain. Inspect actions before an explicit retry." }));
+                    self.push_system(format!("Worker #{id} native source:\n{text}\n{}", if restored { "Completed result available from the selected Agents-panel row. Automatic return remains paused." } else { "Run completion is uncertain. Inspect actions before an explicit retry in Ctrl+G." }));
                 }
                 Err(e) => self.push_system(format!("worker #{id} source unavailable: {e}")),
             }
@@ -1038,7 +1038,7 @@ impl App {
         } else {
             self.deleg.auto_return_paused = true;
             self.flash(
-                "worker return paused; fix recovery storage, then /delegate collect to retry",
+                "worker return paused; fix recovery storage, then select Return in Ctrl+G to retry",
             );
         }
     }
@@ -1110,11 +1110,12 @@ impl App {
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
                         let prior_ids: std::collections::HashSet<u32> =
                             self.deleg.d.jobs.iter().map(|job| job.id).collect();
-                        match self.start_delegate_with_model(
+                        match self.start_delegate_with_model_effort(
                             &block.to,
                             &block.task,
                             Origin::Protocol,
                             proposal.model.as_deref(),
+                            proposal.effort.as_deref(),
                         ) {
                             Ok(message) => {
                                 if let Some(job) = self.deleg.d.jobs.iter_mut().find(|job| {
@@ -1252,7 +1253,18 @@ impl App {
         origin: Origin,
         model: Option<&str>,
     ) -> Result<String, String> {
-        self.start_delegate_scoped_model(target, task, origin, &[], &[], model)
+        self.start_delegate_scoped_model_effort(target, task, origin, &[], &[], model, None)
+    }
+
+    fn start_delegate_with_model_effort(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<String, String> {
+        self.start_delegate_scoped_model_effort(target, task, origin, &[], &[], model, effort)
     }
 
     fn start_delegate_after(
@@ -1285,7 +1297,20 @@ impl App {
         declarations: &[crate::workspaces::Declaration],
         model: Option<&str>,
     ) -> Result<String, String> {
-        self.start_delegate_workspace(target, task, origin, after, declarations, None, model)
+        self.start_delegate_scoped_model_effort(target, task, origin, after, declarations, model, None)
+    }
+
+    fn start_delegate_scoped_model_effort(
+        &mut self,
+        target: &str,
+        task: &str,
+        origin: Origin,
+        after: &[u32],
+        declarations: &[crate::workspaces::Declaration],
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<String, String> {
+        self.start_delegate_workspace(target, task, origin, after, declarations, None, model, effort)
     }
 
     fn start_delegate_workspace(
@@ -1297,6 +1322,7 @@ impl App {
         declarations: &[crate::workspaces::Declaration],
         managed: Option<&str>,
         model: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<String, String> {
         #[cfg(not(test))]
         if !self.deleg.d.recovery_ready() {
@@ -1385,7 +1411,7 @@ impl App {
                 spec: JobSpec {
                     native_input,
                     model: model.map(str::to_owned),
-                    effort: None,
+                    effort: effort.map(str::to_owned),
                     home,
                     cwd: self.cwd.clone(),
                     prompt: task.to_string(),
@@ -1411,12 +1437,12 @@ impl App {
             })
             .unwrap_or_default();
         Ok(format!(
-            "delegated #{id} to {} ({}) \u{b7} {} \u{b7} trust {}{} \u{b7} {note} \u{b7} /delegate stop {account} cancels{workspace_note}",
+            "delegated #{id} to {} ({}) \u{b7} {} \u{b7} trust {}{} \u{b7} {note} \u{b7} Ctrl+G selects this worker for cancellation{workspace_note}",
             crate::accounts::display_account_name(acct.provider, &account),
             acct.provider.as_str(),
             match queued_behind {
                 Some(b) => format!("queued behind #{b}"),
-                None if !after.is_empty() => format!("approved after {after:?}; /delegate graph shows readiness"),
+                None if !after.is_empty() => format!("approved after {after:?}; Ctrl+G shows readiness"),
                 None => "running in the background".into(),
             },
             trust.as_str(),
@@ -1450,7 +1476,7 @@ impl App {
                         usize::from(self.deleg.d.cancel(active[0], now))
                     } else {
                         self.push_system(
-                            "usage: /delegate stop <account> (or select a worker row first)",
+                            "select a worker row in Ctrl+G to cancel it",
                         );
                         return;
                     }
@@ -1476,7 +1502,7 @@ impl App {
             return;
         }
         if self.busy {
-            self.push_system("the orchestrator is busy - wait for it (or Esc), then /delegate use");
+            self.push_system("the orchestrator is busy - wait for it (or Esc), then select Return in Ctrl+G");
             return;
         }
         let want = acct.map(normalize_account_id);
@@ -1534,7 +1560,7 @@ impl App {
     /// One main-agent turn for up to three newly completed results, preserving the composer.
     fn delegate_collect(&mut self) {
         if self.busy || self.update_running() || self.session_ui.loading() {
-            self.push_system("wait for the current operation, then /delegate collect");
+            self.push_system("wait for the current operation, then select Return in Ctrl+G");
             return;
         }
         self.deleg.auto_return_paused = false;
@@ -1558,7 +1584,7 @@ impl App {
         if jobs.is_empty() {
             if report_empty {
                 self.push_system(
-                    "no new completed worker results; /delegate use can resend a selected result",
+                    "no new completed worker results; Ctrl+G can resend a selected result",
                 );
             }
             return;
