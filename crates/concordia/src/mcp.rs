@@ -25,13 +25,14 @@ fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Opti
             .iter()
             .position(|b| *b == b'\n')
             .map_or(chunk.len(), |i| i + 1);
+        let ended = take < chunk.len() || chunk[take - 1] == b'\n';
         if out.len().saturating_add(take) > limit {
             input.consume(take);
             return Ok(Some(Vec::new()));
         }
         out.extend_from_slice(&chunk[..take]);
         input.consume(take);
-        if take < chunk.len() || out.last() == Some(&b'\n') {
+        if ended {
             return Ok(Some(out));
         }
     }
