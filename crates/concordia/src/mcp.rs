@@ -403,10 +403,127 @@ fn remote_sequence(
         let _ = child.kill();
         return Ok(values);
     }
-    requests
-        .into_iter()
-        .map(|request| remote_request(transport, request))
-        .collect()
+    if let crate::mcp_registry::Transport::Remote { url, headers } = transport {
+        let mut session = HttpSession::new(url, headers)?;
+        let mut values = Vec::new();
+        for (index, request) in requests.into_iter().enumerate() {
+            let value = session.request(&request)?;
+            if index == 0 {
+                let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+                let _ = session.request(&notification)?;
+            }
+            if request.get("id").is_some() {
+                values.push(value);
+            }
+        }
+        return Ok(values);
+    }
+    Err("unsupported MCP transport".into())
+}
+
+struct HttpSession<'a> {
+    url: &'a str,
+    headers: &'a std::collections::BTreeMap<String, crate::mcp_registry::SecretRef>,
+    session_id: Option<String>,
+    protocol: &'static str,
+}
+impl<'a> HttpSession<'a> {
+    fn new(
+        url: &'a str,
+        headers: &'a std::collections::BTreeMap<String, crate::mcp_registry::SecretRef>,
+    ) -> Result<Self, String> {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("unsupported MCP URL".into());
+        }
+        Ok(Self {
+            url,
+            headers,
+            session_id: None,
+            protocol: LATEST_PROTOCOL,
+        })
+    }
+    fn request(&mut self, request: &Value) -> Result<Value, String> {
+        if self.url.starts_with("https://") {
+            return Err("HTTPS MCP session requires the WinHTTP session path".into());
+        }
+        let rest = self.url.strip_prefix("http://").ok_or("invalid MCP URL")?;
+        let (host_path, path) = rest
+            .split_once('/')
+            .map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
+        let (host, port) = host_path
+            .split_once(':')
+            .map_or((host_path, 80), |(h, p)| (h, p.parse().unwrap_or(80)));
+        let address = (host, port)
+            .to_socket_addrs()
+            .map_err(|_| "remote MCP host could not be resolved")?
+            .next()
+            .ok_or("remote MCP host could not be resolved")?;
+        let mut stream = TcpStream::connect(address).map_err(|_| "remote MCP connection failed")?;
+        stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
+        let body = serde_json::to_string(request)
+            .map_err(|_| "remote MCP request could not be encoded")?;
+        let mut extra = String::new();
+        for (key, reference) in self.headers {
+            let value = crate::mcp_registry::resolve_secret(reference)
+                .ok_or("remote MCP credential unavailable")?;
+            crate::redact::register_runtime_secret(value.clone());
+            extra.push_str(&format!("{key}: {value}\r\n"));
+        }
+        if let Some(id) = &self.session_id {
+            extra.push_str(&format!("MCP-Session-Id: {id}\r\n"));
+        }
+        let wire = format!("POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}", self.protocol, body.len());
+        stream
+            .write_all(wire.as_bytes())
+            .map_err(|_| "remote MCP request failed")?;
+        let mut bytes = Vec::new();
+        stream
+            .take((MAX_UPSTREAM_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "remote MCP response failed")?;
+        if bytes.len() > MAX_UPSTREAM_BYTES {
+            return Err("remote MCP response exceeded the size limit".into());
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        let (head, payload) = text
+            .split_once("\r\n\r\n")
+            .ok_or("remote MCP response was malformed")?;
+        let status = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.parse::<u16>().ok())
+            .ok_or("remote MCP status missing")?;
+        if !(200..300).contains(&status) {
+            return Err(format!("remote MCP server returned HTTP {status}"));
+        }
+        for line in head.lines() {
+            if let Some(value) = line.strip_prefix("MCP-Session-Id:") {
+                self.session_id = Some(value.trim().to_string());
+            }
+        }
+        if status == 202 || payload.trim().is_empty() {
+            return Ok(json!({}));
+        }
+        if head.to_ascii_lowercase().contains("text/event-stream") {
+            for line in payload.lines() {
+                if let Some(data) = line.strip_prefix("data:") {
+                    if let Ok(value) = serde_json::from_str::<Value>(data.trim()) {
+                        if value.get("id") == request.get("id") {
+                            return Ok(value);
+                        }
+                    }
+                }
+            }
+            return Err("remote MCP SSE response had no matching response ID".into());
+        }
+        let value: Value =
+            serde_json::from_str(payload).map_err(|_| "remote MCP response was not JSON")?;
+        if request.get("id").is_some() && value.get("id") != request.get("id") {
+            return Err("remote MCP response ID mismatch".into());
+        }
+        Ok(value)
+    }
 }
 
 #[cfg(windows)]
