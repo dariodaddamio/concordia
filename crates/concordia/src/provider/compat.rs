@@ -117,6 +117,20 @@ fn numeric(v: &str) -> Option<Vec<u64>> {
     parts.filter(|p| !p.is_empty())
 }
 
+/// Whether a provider version is at least the required numeric version.
+///
+/// Provider metadata protocols are pinned to a known-good minimum, while newer native
+/// executables may continue to expose the same initialize/control schema.
+pub fn version_at_least(version: &str, required: &str) -> bool {
+    let Some(version) = numeric(version) else {
+        return false;
+    };
+    let Some(required) = numeric(required) else {
+        return false;
+    };
+    version >= required
+}
+
 fn compare_against(token: &str, observed: &[&str]) -> VersionComparison {
     let Some(v) = numeric(token) else {
         return VersionComparison::Unknown;

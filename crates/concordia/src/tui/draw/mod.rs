@@ -360,7 +360,7 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
         ("Ctrl+E", "open full activity detail"),
         ("F5", "toggle full activity"),
         ("F1 / ?", "open this shortcut sheet"),
-        ("/terminal native", "open the selected provider's native UI in a separate session"),
+        ("/terminal native", "open the selected provider's native UI on this chat's session"),
         ("/terminal help", "show terminal modes and native-provider controls"),
     ] {
         lines.push(Line::from(format!("  {key:<14} {description}")));
@@ -418,7 +418,16 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         + 2;
     let help_col = entries
         .iter()
-        .map(|e| e.help.chars().count() + if e.custom || e.provider { 10 } else { 0 })
+        .map(|e| {
+            e.help.chars().count()
+                + if e.shared {
+                    16
+                } else if e.custom || e.provider {
+                    10
+                } else {
+                    0
+                }
+        })
         .max()
         .unwrap_or(12);
     let max_width = f.area().width.saturating_sub(2);
@@ -450,7 +459,9 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                 ),
                 Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.provider {
+                    if e.shared {
+                        "  shared · choose"
+                    } else if e.provider {
                         "  provider"
                     } else if e.custom {
                         "  custom"
@@ -575,13 +586,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_attention = None;
     app.areas.home_documentation = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
-    let model = if app.model == "?" {
-        "model ?".to_string()
-    } else {
-        crate::models::find_at(&app.state_root, app.provider, &app.account, &app.model)
-            .map(|entry| entry.display_name)
-            .unwrap_or_else(|| app.model.clone())
-    };
+    let model = app.model_label();
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;

@@ -1874,23 +1874,26 @@ pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>
     if sections.is_empty() && notices.is_empty() {
         return (String::new(), notices);
     }
-    let mut body = sections.join("\n");
+    let mut body = sections.join(";");
     if !notices.is_empty() {
         if !body.is_empty() {
-            body.push('\n');
+            body.push(';');
         }
         body.push_str(
             &notices
                 .iter()
-                .map(|notice| format!("UNAVAILABLE: {notice}"))
+                .map(|notice| format!("unavailable={notice}"))
                 .collect::<Vec<_>>()
-                .join("\n"),
+                .join(";"),
         );
     }
-    let instructions = if sections.is_empty() {
-        "No exact source is available; do not invent earlier messages or assume tool completion. Reconcile the workspace or ask for missing information."
+    let read = if sections.is_empty() {
+        "read_native=none; do not invent unavailable history"
     } else {
-        "Use concordia chat sources INDEX [--from-message N] to page message ordinals. Read exact UTF-8 JSONL chunks with concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]; follow next_offset. For older history use chat index SESSION --account ACCOUNT --provider PROVIDER --scope whole, following history.next_cursor with --cursor INDEX. Check source identity before continuing. Do not invent unavailable history."
+        "read_native=concordia chat sources INDEX [--from-message N]; read_exact=concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]"
     };
-    (format!("[native source pointers]\n{body}\n{instructions}\nNative tool/approval state is not transferred."), notices)
+    (
+        format!("src={body}\n{read}\nnative approvals/tools not transferred"),
+        notices,
+    )
 }

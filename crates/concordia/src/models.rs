@@ -147,6 +147,25 @@ pub(crate) fn find_at(
         })
 }
 
+pub(crate) fn canonical_id_at(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    model: &str,
+) -> Option<String> {
+    available_at(root, provider, account)
+        .into_iter()
+        .find(|entry| {
+            entry.id.eq_ignore_ascii_case(model)
+                || entry.display_name.eq_ignore_ascii_case(model)
+                || entry
+                    .id
+                    .split('-')
+                    .any(|part| part.eq_ignore_ascii_case(model))
+        })
+        .map(|entry| entry.id)
+}
+
 fn native_entry(model: catalog::NativeModel) -> ModelEntry {
     let mut entry = entry_named(model.id, model.display_name, ModelSource::Cached);
     entry.efforts = model
@@ -329,7 +348,10 @@ fn list_claude(home: &Path) -> Result<Vec<ModelEntry>, String> {
     }
     let version = crate::provider::compat::run_cli(Path::new(&program), &["--version"])?;
     let required = crate::capacity::claude_capacity::CLI_VERSION;
-    if crate::provider::compat::version_token(&version).as_deref() != Some(required) {
+    let Some(observed) = crate::provider::compat::version_token(&version) else {
+        return Err(format!("Claude model metadata requires current CLI {required}"));
+    };
+    if !crate::provider::compat::version_at_least(&observed, required) {
         return Err(format!(
             "Claude model metadata requires current CLI {required}"
         ));
@@ -395,7 +417,14 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
         }
         let payload = &value["response"]["response"];
         if value["response"]["subtype"] != "success"
-            || payload["claude_code_version"] != crate::capacity::claude_capacity::CLI_VERSION
+            || !payload["claude_code_version"]
+                .as_str()
+                .is_some_and(|version| {
+                    crate::provider::compat::version_at_least(
+                        version,
+                        crate::capacity::claude_capacity::CLI_VERSION,
+                    )
+                })
         {
             return Err("Claude model initialization response/version mismatch".into());
         }
@@ -406,7 +435,7 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
         let mut entries = Vec::new();
         let mut ids = HashSet::new();
         for model in models {
-            let id = model["value"]
+            let selectable = model["value"]
                 .as_str()
                 .filter(|id| {
                     !id.is_empty()
@@ -414,6 +443,14 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
                         && !id.chars().any(|c| c.is_whitespace() || c.is_control())
                 })
                 .ok_or("Claude returned an invalid native model value")?;
+            let id = model["resolvedModel"]
+                .as_str()
+                .filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 256
+                        && !id.chars().any(|c| c.is_whitespace() || c.is_control())
+                })
+                .unwrap_or(selectable);
             let name = model["displayName"]
                 .as_str()
                 .filter(|name| {
@@ -747,7 +784,7 @@ mod tests {
         }
         let response = serde_json::json!({"type":"control_response","response":{"subtype":"success","request_id":"fixture-models","response":{
             "claude_code_version":crate::capacity::claude_capacity::CLI_VERSION,
-            "models":[{"value":"opus","displayName":"Native Opus","resolvedModel":"not-a-selectable-alias","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"haiku","displayName":"Native Haiku","supportsEffort":false,"supportedEffortLevels":["low"]}]
+            "models":[{"value":"opus","displayName":"Native Opus","resolvedModel":"claude-opus-5-5","supportsEffort":true,"supportedEffortLevels":["low","high"]},{"value":"haiku","displayName":"Native Haiku","resolvedModel":"claude-haiku-4-5","supportsEffort":false,"supportedEffortLevels":["low"]}]
         }}});
         let listed =
             parse_claude_models(response.to_string().as_bytes(), "fixture-models").unwrap();
@@ -757,9 +794,7 @@ mod tests {
         assert!(
             parse_claude_models(wrong_version.to_string().as_bytes(), "fixture-models").is_err()
         );
-        assert!(!listed
-            .iter()
-            .any(|model| model.id == "not-a-selectable-alias"));
+        assert_eq!(listed[0].id, "claude-opus-5-5");
         assert_eq!(listed[0].effort_names(), ["low", "high"]);
         assert!(listed[1].efforts.is_empty());
         let other = selected_identity(root.path(), ProviderKind::Claude, "other-fixture").unwrap();
@@ -782,7 +817,7 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["opus", "haiku"]
+            ["claude-opus-5-5", "claude-haiku-4-5"]
         );
         assert!(!models.iter().any(|model| model.id == "other-account-only"));
         assert!(available_at(root.path(), ProviderKind::Codex, "claude-fixture").is_empty());

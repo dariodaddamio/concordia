@@ -163,11 +163,14 @@ fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
     app.background_update_checks = true;
-    app.install_update_on_launch = crate::config::for_root(state_root).updates.install_on_launch;
+    app.install_update_on_launch = crate::config::for_root(state_root)
+        .updates
+        .install_on_launch;
     // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
     // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
     // The normal persist tick still retries a real dirty lease when the tab is used.
     app.prior_provider = app.provider;
+    app.prior_account = app.account.clone();
     app.prior_home = app.continuity_home();
     app.workspace.set_native_windows(use_window);
     app
@@ -397,7 +400,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     let (mut saved_window, mut tabs) = window_session::open(&state_root, &cwd, use_window);
-    let install_update_on_launch = crate::config::for_root(&state_root).updates.install_on_launch;
+    let install_update_on_launch = crate::config::for_root(&state_root)
+        .updates
+        .install_on_launch;
     for tab in &mut tabs.tabs {
         tab.app.background_update_checks = true;
         tab.app.install_update_on_launch = install_update_on_launch;
@@ -601,8 +606,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 let mut needs_attention = false;
                 let mut working = false;
                 let mut notification = None;
-                let notifications_enabled =
-                    super::appearance::notifications_enabled(&state_root);
+                let notifications_enabled = super::appearance::notifications_enabled(&state_root);
                 terminal
                     .backend_mut()
                     .notifications_enabled(notifications_enabled);
@@ -636,9 +640,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     super::native_window::StatusDot::Idle
                 });
                 if let Some((item_id, text)) = notification {
-                    terminal
-                        .backend_mut()
-                        .attention_notification(item_id, text);
+                    terminal.backend_mut().attention_notification(item_id, text);
                     force_attention_save = true;
                 }
             }
@@ -1103,6 +1105,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         Err(error) => {
                             app.on_turn_done(
                                 TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("native interaction owner: {error}"),
                                     ..Default::default()
                                 },
@@ -1146,9 +1149,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     app.native_usage_session = app.native_session_id.clone();
                     let session = app.native_session_id.clone();
                     let prior_prov = app.prior_provider;
+                    let prior_account = app.prior_account.clone();
                     let prior_home = app.prior_home.clone();
                     // This dispatch carries any pending switch; later turns resume the new session.
                     app.prior_provider = app.provider;
+                    app.prior_account = app.account.clone();
                     app.prior_home = owner
                         .home
                         .as_ref()
@@ -1235,6 +1240,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(p) => p.unwrap_or_default(),
                             Err(error) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("invalid context policy: {error}"),
                                     ..Default::default()
                                 });
@@ -1257,6 +1263,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(mode) => mode,
                             Err(error) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!(
                                         "invalid native-input preference: {error}"
                                     ),
@@ -1295,7 +1302,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         }
                         let need_pack_hint = need_pack_hint || rollover;
                         if rollover && native_sources.is_empty() {
-                            let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
+                            let _ = done_tx.send(TurnOutcome { failed: true, stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
                             return;
                         }
                         // Pack only after an explicit switch (need_pack_hint). Planner clears
@@ -1342,7 +1349,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             match indexed {
                                 Ok((sources, notices)) => {
                                     if rollover && (sources.is_empty() || !notices.is_empty()) {
-                                        let _ = done_tx.send(TurnOutcome { stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
+                                        let _ = done_tx.send(TurnOutcome { failed: true, stderr_tail: "proactive rollover stopped: original native sources could not all be verified".into(), ..Default::default() });
                                         return;
                                     }
                                     for notice in notices {
@@ -1358,6 +1365,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 Err(error) => {
                                     if rollover {
                                         let _ = done_tx.send(TurnOutcome {
+                                            failed: true,
                                             stderr_tail: format!(
                                                 "proactive source preparation failed: {error}"
                                             ),
@@ -1383,6 +1391,32 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Some(scope) = scope_intent {
                             prefix.get_or_insert_with(String::new).push_str(&format!("\n[User-declared cooperative workspace scope]\n{scope}\nFollow these declared paths. Scheduler reservations grant no additional native permissions."));
                         }
+                        if need_pack_hint && !decision.native_resume {
+                            if let Some(detail) =
+                                prefix.as_deref().filter(|text| !text.trim().is_empty())
+                            {
+                                let pointer_count = crate::threads::handoff_pointer_count(detail);
+                                let card = crate::provider::StreamCard {
+                                    id: format!(
+                                        "handoff:{}:{}",
+                                        prior_prov.as_str(),
+                                        provider.as_str()
+                                    ),
+                                    title: format!(
+                                        "Handoff {} / {} → {} / {} · {} pointers · ~{} tokens",
+                                        prior_prov.as_str(),
+                                        prior_account,
+                                        provider.as_str(),
+                                        account,
+                                        pointer_count,
+                                        crate::context::estimate_tokens(detail.chars().count())
+                                    ),
+                                    detail: Some(detail.to_owned()),
+                                    status: crate::provider::CardStatus::Done,
+                                };
+                                let _ = progress_tx.send(TurnProgress::Card(card)).await;
+                            }
+                        }
                         let standing_tools = crate::provider::standing_context::tools_for_transport(
                             provider,
                             native_input,
@@ -1399,12 +1433,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         prefix
                             .get_or_insert_with(String::new)
                             .insert_str(0, &crate::provider::standing_context::tag(&standing));
-                        if let Some(context) = prefix.as_ref().filter(|text| !text.is_empty()) {
-                            let _ = progress_tx.send(TurnProgress::Notice(format!(
-                                "Context for this message · {}\nConversation references are included for the selected provider. Native tool and approval state stays with its original session.\n\n{context}",
-                                account
-                            ))).await;
-                        }
                         let req = ProviderTurnRequest {
                             images: &image_inputs,
                             provider,
@@ -1430,6 +1458,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Ok(plan) => plan,
                             Err(e) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("{e:#}"),
                                     ..Default::default()
                                 });
@@ -1487,6 +1516,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 handle.cancel();
                             }
                         };
+                        let conversation_id = owner.conversation_id.clone();
                         let turn = run_provider_turn_with_transport(
                             &req,
                             owner,
@@ -1495,16 +1525,32 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Some(progress_tx),
                         );
                         tokio::pin!(turn);
-                        let result = loop {
-                            tokio::select! {
-                                biased;
-                                Some(handle) = started_rx.recv() => forward_started(handle),
-                                result = &mut turn => {
-                                    while let Ok(handle) = started_rx.try_recv() {
-                                        forward_started(handle);
+                        let result = match tokio::time::timeout(Duration::from_secs(45), async {
+                            loop {
+                                tokio::select! {
+                                    biased;
+                                    Some(handle) = started_rx.recv() => forward_started(handle),
+                                    result = &mut turn => {
+                                        while let Ok(handle) = started_rx.try_recv() {
+                                            forward_started(handle);
+                                        }
+                                        break result;
                                     }
-                                    break result;
                                 }
+                            }
+                        })
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => {
+                                while let Ok(handle) = started_rx.try_recv() {
+                                    handle.cancel();
+                                }
+                                Err(anyhow::anyhow!(
+                                    "{} session {} timed out waiting for provider completion",
+                                    provider.as_str(),
+                                    conversation_id
+                                ))
                             }
                         };
                         match result {
@@ -1513,34 +1559,42 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 let seal_home = home.clone();
                                 let seal_account = account.clone();
                                 let seal_session = outcome.session_id.clone();
-                                let sealed = tokio::task::spawn_blocking(move || {
-                                    let scope = match capture_scope {
-                                        Ok(Some(scope)) => scope,
-                                        Ok(None) => {
-                                            let home = seal_home
-                                                .as_deref()
-                                                .ok_or("native history home unavailable")?;
-                                            let session = seal_session
-                                                .as_deref()
-                                                .ok_or("native history session unavailable")?;
-                                            let binding = crate::native_memory::Binding::new(
-                                                provider,
-                                                &seal_account,
-                                                home,
-                                                session,
-                                            )?;
-                                            crate::native_memory::references::fresh_scope(
-                                                &seal_root, &binding,
-                                            )?
-                                        }
-                                        Err(error) => return Err(error),
-                                    };
-                                    crate::native_memory::references::seal_scope(&seal_root, &scope)
+                                let sealed = tokio::time::timeout(
+                                    Duration::from_secs(10),
+                                    tokio::task::spawn_blocking(move || {
+                                        let scope = match capture_scope {
+                                            Ok(Some(scope)) => scope,
+                                            Ok(None) => {
+                                                let home = seal_home
+                                                    .as_deref()
+                                                    .ok_or("native history home unavailable")?;
+                                                let session = seal_session
+                                                    .as_deref()
+                                                    .ok_or("native history session unavailable")?;
+                                                let binding = crate::native_memory::Binding::new(
+                                                    provider,
+                                                    &seal_account,
+                                                    home,
+                                                    session,
+                                                )?;
+                                                crate::native_memory::references::fresh_scope(
+                                                    &seal_root, &binding,
+                                                )?
+                                            }
+                                            Err(error) => return Err(error),
+                                        };
+                                        crate::native_memory::references::seal_scope(
+                                            &seal_root, &scope,
+                                        )
                                         .map(Some)
-                                })
+                                    }),
+                                )
                                 .await
-                                .unwrap_or_else(|_| {
-                                    Err("native history sealing worker stopped".into())
+                                .map_err(|_| "native history sealing timed out".to_string())
+                                .and_then(|result| {
+                                    result.unwrap_or_else(|_| {
+                                        Err("native history sealing worker stopped".into())
+                                    })
                                 });
                                 let _ = reference_sender.send(reference_journal::Started {
                                     run: reference_run,
@@ -1552,6 +1606,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             }
                             Err(e) => {
                                 let _ = done_tx.send(TurnOutcome {
+                                    failed: true,
                                     stderr_tail: format!("{e:#}"),
                                     ..Default::default()
                                 });
@@ -1636,9 +1691,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             {
                 if tabs.tabs.iter().any(|t| t.app.reexec_path.is_some())
                     && tabs.tabs.iter().any(|t| {
-                        t.app.busy
-                            || t.app.deleg.d.any_active()
-                            || t.app.deleg.has_pending_prompt()
+                        t.app.busy || t.app.deleg.d.any_active() || t.app.deleg.has_pending_prompt()
                     })
                 {
                     continue;

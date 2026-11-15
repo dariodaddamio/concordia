@@ -13,19 +13,17 @@ pub struct State<'a> {
 
 /// Return the Concordia tools exposed by the selected provider transport.
 /// The MCP catalog and the ACP question bridge are separate registrations.
-pub fn tools_for_transport(
-    provider: ProviderKind,
-    mode: crate::native_input::Mode,
-) -> Vec<String> {
+pub fn tools_for_transport(provider: ProviderKind, mode: crate::native_input::Mode) -> Vec<String> {
     if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
         crate::mcp::registered_tool_names()
     } else if matches!(
         (provider, mode),
-        (
-            ProviderKind::Cursor,
-            crate::native_input::Mode::CursorAcp
-        ) | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
-            | (ProviderKind::Opencode, crate::native_input::Mode::OpencodeAcp)
+        (ProviderKind::Cursor, crate::native_input::Mode::CursorAcp)
+            | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+            | (
+                ProviderKind::Opencode,
+                crate::native_input::Mode::OpencodeAcp
+            )
     ) {
         vec!["ask_user".into()]
     } else {
@@ -39,26 +37,28 @@ pub fn render(state: &State<'_>) -> String {
     } else {
         state.tools.join(", ")
     };
-    let guidance = match (state.tools.iter().any(|tool| tool == "agents"), state.tools.iter().any(|tool| tool == "ask_user")) {
-        (true, true) => " Use agents to delegate work and ask_user to ask the user to choose or clarify.",
-        (true, false) => " Use agents to delegate work. Ask through the provider's native question surface when it provides one.",
-        (false, true) => " Use ask_user to ask the user to choose or clarify.",
-        (false, false) => " No Concordia tools are registered in this session.",
+    let guidance = match (
+        state.tools.iter().any(|tool| tool == "agents"),
+        state.tools.iter().any(|tool| tool == "ask_user"),
+    ) {
+        (true, true) => " Delegate with agents; clarify choices with ask_user.",
+        (true, false) => " Delegate with agents; use native questions when available.",
+        (false, true) => " Use ask_user for choices or clarification.",
+        (false, false) => " No Concordia tools are registered.",
     };
-    let handoff = state
-        .handoff_map
-        .filter(|map| !map.trim().is_empty())
-        .map(|map| format!(" Continued-task handoff map: {}.", compact(map)))
-        .unwrap_or_default();
     let text = format!(
-        "You are running inside Concordia, a native Windows app that hosts provider CLIs. The user reads your replies in Concordia's window. This session is {provider}, account {account}, role {role}. Registered Concordia tools: {tools}.{guidance} Do not tell the user to perform work Concordia can do. Preserve the provider's native approvals and session identity.{handoff}",
+        "You run inside Concordia, which hosts native provider CLIs. Provider: {provider}. Account: {account}. Role: {role}. Tools: {tools}.{guidance} Preserve native approvals and explicit session identity. Do not ask the user to do work Concordia can do.",
         provider = state.provider.as_str(),
         account = compact(state.account),
         role = compact(state.role),
         tools = compact(&tools),
         guidance = guidance,
     );
-    text.split_whitespace().take(149).collect::<Vec<_>>().join(" ")
+    let _ = state.handoff_map;
+    text.split_whitespace()
+        .take(60)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub fn tag(text: &str) -> String {
@@ -119,10 +119,10 @@ mod tests {
             tools: &tools,
             handoff_map: Some("source map 42"),
         });
-        assert!(text.split_whitespace().count() < 150);
+        assert!(text.split_whitespace().count() <= 60);
         assert!(text.contains("inside Concordia"));
         assert!(text.contains("agents, ask_user"));
-        assert!(text.contains("source map 42"));
+        assert!(!text.contains("source map 42"));
         assert_eq!(tag(&tag("identity")), tag("identity"));
     }
 }

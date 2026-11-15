@@ -51,11 +51,12 @@ fn regular(path: &Path) -> Result<bool, String> {
     }
 }
 
-/// Cursor questions, plans, permission grants and images only exist over ACP, so it is Cursor's
-/// default; `/native ACCOUNT off` saves an explicit opt-out.
+/// Cursor's interactive native terminal resumes print-mode `create-chat` sessions. Keep the
+/// default on that same explicit-session path so `/terminal native` can reopen the chat's session;
+/// ACP remains available as an explicit native-input mode where its capabilities are required.
 fn default_for(provider: ProviderKind) -> Mode {
     match provider {
-        ProviderKind::Cursor => Mode::CursorAcp,
+        ProviderKind::Cursor => Mode::Standard,
         ProviderKind::Grok => Mode::GrokAcp,
         ProviderKind::Opencode => Mode::OpencodeAcp,
         ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,

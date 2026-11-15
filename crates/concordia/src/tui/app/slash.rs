@@ -1,6 +1,39 @@
 use super::super::*;
 
 impl App {
+    fn open_shared_command_picker(&mut self, line: &str, name: &str) {
+        let mut rows = vec![PickerRow {
+            id: "shared:concordia".into(),
+            label: "Concordia".into(),
+            detail: "run Concordia's command".into(),
+        }];
+        for account in accounts_with_auth(&self.state_root) {
+            if crate::provider::command_specs(account.provider)
+                .iter()
+                .any(|command| command.name.eq_ignore_ascii_case(name))
+            {
+                let transport = crate::provider::command_supported(account.provider, name);
+                rows.push(PickerRow {
+                    id: format!("shared:account:{}", account.account),
+                    label: format!("{} · {}", account.label, account.provider.as_str()),
+                    detail: if transport {
+                        "run the provider command through its transport".into()
+                    } else {
+                        "open the provider command in this chat's native session".into()
+                    },
+                });
+            }
+        }
+        self.shared_command = Some(line.trim().to_owned());
+        self.show_picker(
+            PickerKind::SharedCommand,
+            format!("{} · choose who runs it", name),
+            rows,
+            false,
+        );
+        self.footer_left = "↑↓ choose · Enter run · Esc cancels with nothing sent".into();
+    }
+
     fn run_mcp_command(&mut self, args: &str) {
         let words: Vec<_> = args.split_whitespace().collect();
         if words.is_empty() {
@@ -69,12 +102,30 @@ impl App {
 
     pub(in crate::tui) fn handle_slash(&mut self, line: &str) -> bool {
         let trimmed = line.trim();
+        if self
+            .provider_command
+            .as_deref()
+            .is_some_and(|pending| pending.eq_ignore_ascii_case(trimmed))
+        {
+            self.provider_command = None;
+            return false;
+        }
+        let bypass = self
+            .shared_command
+            .as_deref()
+            .is_some_and(|pending| pending.eq_ignore_ascii_case(trimmed));
+        if bypass {
+            self.shared_command = None;
+        } else if let Some(name) = crate::commands::shared_command_name(trimmed, self.provider) {
+            self.open_shared_command_picker(trimmed, &name);
+            return true;
+        }
         if trimmed == "/terminal" || trimmed.starts_with("/terminal ") {
             let args = trimmed.strip_prefix("/terminal").unwrap_or_default().trim();
             if args.is_empty() {
                 self.open_guided_command("/terminal", vec![
                     PickerRow { id: "terminal:open".into(), label: "Open local PowerShell".into(), detail: "validated for this project; starts a terminal pane; undo: close the pane".into() },
-                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; opens a separate provider session; undo: close that session".into() },
+                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; resumes this chat's exact provider session when available; undo: close that session".into() },
                     PickerRow { id: "terminal:hide".into(), label: "Hide the running terminal".into(), detail: "validated when a terminal is running; keeps its process alive; undo: choose Open again".into() },
                     PickerRow { id: "terminal:close".into(), label: "Close the terminal".into(), detail: "validated when a terminal exists; stops its process; undo: open a new terminal".into() },
                 ]);
@@ -460,6 +511,20 @@ impl App {
             self.push_command(line);
             self.toggle_stats();
             return true;
+        }
+        if let SlashCommand::Unknown(name) = &cmd {
+            let command_name = format!("/{name}");
+            let unsupported = crate::provider::command_specs(self.provider)
+                .iter()
+                .any(|spec| {
+                    spec.name.eq_ignore_ascii_case(&command_name)
+                        && !crate::provider::command_supported(self.provider, spec.name)
+                });
+            if unsupported {
+                self.push_command(line);
+                crate::tui::local_terminal::native_command(self, line);
+                return true;
+            }
         }
         // Unknown slash names are provider-owned. Returning false deliberately sends the
         // original line through the active provider turn instead of manufacturing a Concordia

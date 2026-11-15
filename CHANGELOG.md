@@ -1,5 +1,52 @@
 # Changelog
 
+### Fixed (2026-11-14n)
+
+- Cursor chats now use explicit print-mode sessions by default so the native Cursor terminal can
+  resume the same chat session and return its turn to the Concordia transcript.
+
+### Fixed (2026-11-14m)
+
+- Reopening native controls reuses the existing provider terminal, and returning to chat refreshes
+  the exact native session transcript.
+
+### Fixed (2026-11-14l)
+
+- Claude `/context` now opens Claude Code's native controls, preserving the chat's exact session.
+
+### Fixed (2026-11-14k)
+
+- Handoff cards now retain the source account identity, and Ctrl+O expands the handoff card when
+  later provider activity would otherwise take focus.
+
+### Fixed (2026-11-14j)
+
+- `/model` rows, headers and using lines now show the display name with the full model ID;
+  effort levels remain in the row detail and the picker footer is consistent across providers.
+
+### Fixed (2026-11-14g)
+
+- Shared slash commands now open a picker for Concordia or each registered provider account;
+  provider commands use their transport when available and otherwise the chat's native session.
+
+### Fixed (2026-11-14e)
+
+- Cross-provider handoffs now use a compact grouped map, keep standing context under 60 words,
+  and show the injected handoff as a collapsed expandable card with pointer and estimated-token cost.
+
+### Fixed (2026-11-14d)
+
+- Provider turns now have a bounded transport wait, identify failed provider sessions, preserve
+  the failed prompt for retry, and release the active-turn state after transport or history
+  sealing failures. Prompts submitted during a turn enter the editable queue, and account
+  switching is deferred until the active turn finishes.
+
+### Fixed (2026-11-14c)
+
+- `/model` now accepts the pinned Claude CLI version and newer native releases, and shows each
+  provider-reported display name with its full model ID and reported effort levels.
+- Corrected two settings separators that contained mojibake instead of a middle dot.
+
 ### Fixed (2026-11-14b)
 
 - The usage page moves between account cards with all four arrow keys, and keeps one heading and
@@ -569,6 +616,9 @@
   records and bounded final results for status/result reads.
 
 ## Unreleased
+
+- Resume `/terminal native` on the chat's exact Claude, Codex or Cursor session, and route
+  provider commands unsupported by Concordia's transport into that native terminal.
 
 - W2d cleanup removes provider awareness injection, `/context`, `/search`, `/worktree`, the local
   output feed, and their public catalogs; local-time headers are configurable and enabled by default.

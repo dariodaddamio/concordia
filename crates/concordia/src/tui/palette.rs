@@ -13,8 +13,10 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-    /// Provider-native commands are discoverable; unsupported transport operations stay disabled.
+    /// Provider-native commands are discoverable; unsupported transport operations open the native UI.
     pub provider: bool,
+    /// Concordia and the active provider both advertise this command; Enter opens a choice.
+    pub shared: bool,
     pub disabled: bool,
 }
 
@@ -48,26 +50,33 @@ pub fn matching_for_provider(
             help: c.description.to_string(),
             custom: false,
             provider: false,
+            shared: provider.is_some_and(|p| {
+                crate::provider::command_specs(p)
+                    .iter()
+                    .any(|command| command.name.eq_ignore_ascii_case(c.name))
+            }),
             disabled: false,
         });
     let provider_commands = provider
         .into_iter()
         .flat_map(crate::provider::command_specs)
         .filter(|c| c.name.starts_with(&typed))
+        .filter(|c| !command_registry().iter().any(|builtin| builtin.name.eq_ignore_ascii_case(c.name)))
         .map(|c| Entry {
             command: c.name.to_string(),
             help: if crate::provider::command_supported(provider.unwrap(), c.name) {
                 format!("{} (provider transport)", c.description)
             } else {
                 format!(
-                    "{} (disabled: {})",
+                    "{} (native terminal: {})",
                     c.description,
                     crate::provider::command_unavailable_reason(provider.unwrap(), c.name)
                 )
             },
             custom: false,
             provider: true,
-            disabled: !crate::provider::command_supported(provider.unwrap(), c.name),
+            shared: false,
+            disabled: false,
         });
     let custom = user
         .iter()
@@ -77,6 +86,7 @@ pub fn matching_for_provider(
             help: c.description.to_string(),
             custom: true,
             provider: false,
+            shared: false,
             disabled: false,
         });
     let mut entries: Vec<_> = builtin.chain(provider_commands).chain(custom).collect();
@@ -212,8 +222,8 @@ go",
             .iter()
             .find(|entry| entry.command == "/diff")
             .unwrap();
-        assert!(entry.disabled);
-        assert!(entry.help.contains("no matching RPC"));
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("native terminal"));
     }
 
     #[test]
@@ -297,6 +307,7 @@ pub fn matching_arguments(
                 help,
                 custom: false,
                 provider: false,
+                shared: false,
                 disabled: false,
             });
         }

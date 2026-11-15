@@ -549,6 +549,7 @@ impl App {
         let checkpoint_cleared = self.save_turn_checkpoint(true);
         self.need_context_pack = false;
         self.prior_provider = provider;
+        self.prior_account = self.account.clone();
         self.prior_home = home
             .canonicalize()
             .ok()

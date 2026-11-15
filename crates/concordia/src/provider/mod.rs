@@ -80,6 +80,14 @@ const CODEX_COMMANDS: &[CommandSpec] = &[
 
 const CLAUDE_COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/model",
+        description: "choose a Claude model",
+    },
+    CommandSpec {
+        name: "/context",
+        description: "show context window usage",
+    },
+    CommandSpec {
         name: "/compact",
         description: "compact the conversation",
     },
@@ -175,7 +183,7 @@ pub fn command_specs(kind: ProviderKind) -> &'static [CommandSpec] {
 pub fn command_supported(kind: ProviderKind, name: &str) -> bool {
     match kind {
         ProviderKind::Codex => matches!(name, "/compact" | "/review"),
-        ProviderKind::Claude => name != "/vim",
+        ProviderKind::Claude => !matches!(name, "/vim" | "/context"),
         ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => true,
     }
 }

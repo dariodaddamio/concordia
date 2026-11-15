@@ -84,7 +84,7 @@ pub(super) fn open(app: &mut App) {
         row(
             "updates",
             format!(
-                "Updates Â· {}",
+                "Updates · {}",
                 if crate::config::for_root(&app.state_root).updates.install_on_launch {
                     "install on next launch"
                 } else {
@@ -571,7 +571,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
                 }
                 ProviderKind::Grok | ProviderKind::Opencode => hook_rows(
                     &home.join("hooks.json"),
-                    "User Â· selected account",
+                    "User · selected account",
                     &mut rows,
                 ),
             }

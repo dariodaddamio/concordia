@@ -1717,6 +1717,7 @@ fn model_picker_filter_matches_names_and_ids() {
         filter: "5.6-sol".into(),
         state: ratatui::widgets::ListState::default(),
         usage_scroll: 0,
+        usage_cols: 0,
     };
     assert_eq!(
         picker

@@ -149,6 +149,7 @@ pub(in crate::tui) struct PendingLogin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) enum PickerKind {
     Guided,
+    SharedCommand,
     Doctor,
     DoctorConfirm,
     ChatRepair,
@@ -384,6 +385,7 @@ pub(crate) struct App {
     pub(in crate::tui) preparing_cancel: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(in crate::tui) native_sources: Vec<crate::native_memory::Binding>,
     pub(in crate::tui) prior_provider: ProviderKind,
+    pub(in crate::tui) prior_account: String,
     pub(in crate::tui) prior_home: Option<String>,
     pub(in crate::tui) need_context_pack: bool,
     pub(in crate::tui) thread: Option<crate::threads::ThreadLog>,
@@ -445,6 +447,8 @@ pub(crate) struct App {
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
     pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
     pub(in crate::tui) fallback_role: Option<String>,
+    pub(in crate::tui) shared_command: Option<String>,
+    pub(in crate::tui) provider_command: Option<String>,
 }
 
 impl App {
@@ -496,6 +500,14 @@ impl App {
                         .and_then(|h| inspect_provider(self.provider, h).model)
                 })
                 .unwrap_or_else(|| "?".into());
+            if let Some(canonical) = crate::models::canonical_id_at(
+                &self.state_root,
+                self.provider,
+                &self.account,
+                &self.model,
+            ) {
+                self.model = canonical;
+            }
             self.effort = sel.effort.or_else(|| {
                 crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
                     .and_then(|model| model.default_effort)
@@ -504,6 +516,15 @@ impl App {
         self.refresh_account_email();
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
+    }
+
+    pub(in crate::tui) fn model_label(&self) -> String {
+        if self.model == "?" {
+            return "model ?".into();
+        }
+        crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+            .map(|entry| format!("{} · {}", entry.display_name, self.model))
+            .unwrap_or_else(|| self.model.clone())
     }
 
     pub(in crate::tui) fn refresh_account_email(&mut self) {
@@ -1446,7 +1467,25 @@ impl App {
             self.flash("recent messages are loading; your draft is kept");
             return;
         }
-        if self.busy && (!line.starts_with('/') || user_prompt.is_some() || provider_passthrough) {
+        if self.busy
+            && (!line.starts_with('/') || user_prompt.is_some())
+            && !provider_passthrough
+            && !line.starts_with("/use")
+        {
+            let queued = crate::attachments::Message {
+                text: line,
+                attachments: std::mem::take(&mut self.images.draft),
+                invalid: None,
+            }
+            .encode();
+            self.editor.clear();
+            self.clear_selections();
+            self.queue.items.push(queued);
+            self.queue_changed();
+            self.flash("Queued while the active turn runs; Up focuses it for edit or Del removes it.");
+            return;
+        }
+        if self.busy && provider_passthrough {
             let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
                 armed.prompt == original_prompt
                     && armed.conversation == self.deleg.d.conversation_id()
@@ -1863,6 +1902,7 @@ impl App {
             preparing_cancel: None,
             native_sources: Vec::new(),
             prior_provider: ProviderKind::Codex,
+            prior_account: String::new(),
             prior_home: None,
             need_context_pack: false,
             thread: crate::threads::start(&state_root_for_usage),
@@ -1923,6 +1963,8 @@ impl App {
             needs_you: crate::needs_you::Queue::default(),
             grok_bot_form: None,
             fallback_role: None,
+            shared_command: None,
+            provider_command: None,
         }
     }
 }
@@ -1970,14 +2012,15 @@ pub(in crate::tui) fn model_picker_rows(
             PickerRow {
                 id: format!("model:{}", model.id),
                 label: format!(
-                    "{}{}",
+                    "{} · {}{}",
                     model.display_name,
+                    model.id,
                     if current { " · current" } else { "" }
                 ),
                 detail: if model.efforts.is_empty() {
-                    model.id
+                    "no provider-reported effort levels".into()
                 } else {
-                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
+                    format!("efforts: {}", model.effort_names().join(", "))
                 },
             }
         })

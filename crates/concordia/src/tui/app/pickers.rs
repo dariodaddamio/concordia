@@ -22,6 +22,9 @@ impl App {
             picker.title = format!("{command} · This panel lets you {does}.");
             self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
         }
+        if command == "/model" {
+            self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+        }
     }
 
     pub(in crate::tui) fn open_resume_picker(&mut self) {
@@ -273,7 +276,8 @@ impl App {
             .home_path
             .as_ref()
             .map(|home| home.to_string_lossy().into_owned());
-        let prior_provider = self.provider;
+        let prior_provider = self.prior_provider;
+        let prior_account = self.prior_account.clone();
         let prior_session = self.native_session_id.clone();
         self.refresh_binding();
         let new_home = self
@@ -303,7 +307,8 @@ impl App {
         {
             self.push_system(decision.reason);
         }
-        self.prior_provider = self.provider;
+        self.prior_provider = prior_provider;
+        self.prior_account = prior_account;
         self.prior_home = self.continuity_home();
     }
     pub(in crate::tui) fn open_use_picker(&mut self) {
@@ -720,6 +725,7 @@ impl App {
                         }
                         None => {
                             self.prior_provider = self.provider;
+                            self.prior_account = self.account.clone();
                             self.prior_home = self.continuity_home();
                             self.account.clear();
                             self.home_path = None;
@@ -1101,6 +1107,14 @@ impl App {
         }
     }
     pub(in crate::tui) fn dismiss_picker(&mut self) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::SharedCommand)
+        {
+            self.shared_command = None;
+            self.provider_command = None;
+        }
         let restore_handoff = self
             .picker
             .as_ref()
@@ -1312,6 +1326,7 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        let shared_command = self.shared_command.clone();
         if row.disabled() {
             return;
         }
@@ -1339,6 +1354,48 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::SharedCommand => {
+                let Some(command) = shared_command else {
+                    self.push_system("shared command choice expired; nothing was sent");
+                    return;
+                };
+                if id == "shared:concordia" {
+                    self.shared_command = Some(command.clone());
+                    if let Some(tx) = turn_tx {
+                        self.run_line(command, tx);
+                    } else {
+                        self.handle_slash(&command);
+                    }
+                    return;
+                }
+                let Some(account) = id.strip_prefix("shared:account:") else {
+                    self.push_system("shared command choice was invalid; nothing was sent");
+                    return;
+                };
+                let Some(def) = accounts_with_auth(&self.state_root)
+                    .into_iter()
+                    .find(|candidate| candidate.account == account)
+                else {
+                    self.push_system("shared command account is no longer registered; nothing was sent");
+                    return;
+                };
+                if let Err(error) = select_account(&self.state_root, account) {
+                    self.push_system(format!("shared command account switch failed · {error}"));
+                    return;
+                }
+                self.refresh_account_continuity();
+                if crate::provider::command_supported(def.provider, &command.split_whitespace().next().unwrap_or_default()) {
+                    self.provider_command = Some(command.clone());
+                    if let Some(tx) = turn_tx {
+                        self.run_line(command, tx);
+                    } else {
+                        self.push_system("provider command selected; press Enter to run it");
+                    }
+                } else {
+                    self.push_command(&command);
+                    crate::tui::local_terminal::native_command(self, &command);
+                }
+            }
             PickerKind::Guided => {
                 match id.as_str() {
                     "terminal:open" => {
@@ -1625,6 +1682,10 @@ impl App {
                     return;
                 }
                 if let Some(account) = id.strip_prefix("use:") {
+                    if self.busy {
+                        self.push_system("an active turn is still running; finish it before switching accounts");
+                        return;
+                    }
                     if let Err(e) = select_account(&self.state_root, account) {
                         self.push_system(format!("account switch failed — {e}"));
                         return;
@@ -1638,7 +1699,7 @@ impl App {
                     self.push_system(format!(
                         "using {} · {idn} · {}",
                         self.account_label(),
-                        self.model
+                        self.model_label()
                     ));
                 }
             }
@@ -1737,11 +1798,15 @@ impl App {
                     } else {
                         selected_model.clone()
                     };
+                    self.messages.retain(|message| {
+                        !(message.role == MsgRole::System && message.text.starts_with("using "))
+                    });
                     if selected_model.is_empty() {
                         self.push_system("model → provider default");
                     } else {
                         self.push_system(format!("model → {selected_model}"));
                     }
+                    self.push_system(format!("using {} · {}", self.account_label(), self.model_label()));
                 }
             }
             PickerKind::Effort => {
@@ -1785,7 +1850,7 @@ impl App {
                         return;
                     }
                     self.refresh_account_continuity();
-                    self.push_system(format!("using {} · {}", self.account_label(), self.model));
+                    self.push_system(format!("using {} · {}", self.account_label(), self.model_label()));
                 }
             }
             PickerKind::Continuation => {

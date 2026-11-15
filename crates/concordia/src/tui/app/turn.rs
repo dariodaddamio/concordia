@@ -481,11 +481,20 @@ impl App {
             self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
         }
         if failed {
-            self.push_system(match outcome.exit_code {
+            let session = self
+                .native_session_id
+                .as_deref()
+                .unwrap_or_else(|| self.deleg.d.conversation_id());
+            let reason = match outcome.exit_code {
                 Some(0) => "provider reported a turn failure".to_string(),
                 Some(code) => format!("provider exited with code {code}"),
                 None => "provider could not run".to_string(),
-            });
+            };
+            self.push_system(format!(
+                "{} session {}: {reason}. The prompt is kept; retry when ready.",
+                self.provider.as_str(),
+                session
+            ));
             let tail = outcome.stderr_tail.trim();
             if tail.contains("apply_patch verification failed") {
                 self.push_card(StreamCard {

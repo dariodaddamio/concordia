@@ -756,9 +756,10 @@ async fn run_provider_turn_inner(
         })
         .await?
         .map_err(anyhow::Error::msg)?;
+        let observed_version = super::compat::version_token(&version)
+            .ok_or_else(|| anyhow::anyhow!("Claude native PDF input returned no version"))?;
         anyhow::ensure!(
-            super::compat::version_token(&version).as_deref()
-                == Some(claude_native::SUPPORTED_VERSION),
+            super::compat::version_at_least(&observed_version, claude_native::SUPPORTED_VERSION),
             "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained",
             claude_native::SUPPORTED_VERSION
         );

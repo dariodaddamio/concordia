@@ -274,6 +274,7 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                     }
                 }
                 app.prior_provider = app.provider;
+                app.prior_account = app.account.clone();
                 app.prior_home = app.continuity_home();
                 app.workspace.set_native_windows(native);
                 if saved.home_open && !checkpoint {
@@ -400,6 +401,7 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 ));
             }
             app.prior_provider = app.provider;
+            app.prior_account = app.account.clone();
             app.prior_home = app.continuity_home();
             app.workspace.set_native_windows(native);
             let mut tab = RunTab::new(app);
@@ -530,6 +532,7 @@ fn append_orphan_requests(
         app.queue.paused = true;
         app.queue.dispatch = super::super::queue::Dispatch::Idle;
         app.prior_provider = app.provider;
+        app.prior_account = app.account.clone();
         app.prior_home = app.continuity_home();
         app.workspace.set_native_windows(native);
         if bound {
