@@ -1,5 +1,19 @@
 # Changelog
 
+### Fixed (2026-11-14n)
+
+- Cursor chats now use explicit print-mode sessions by default so the native Cursor terminal can
+  resume the same chat session and return its turn to the Concordia transcript.
+
+### Fixed (2026-11-14m)
+
+- Reopening native controls reuses the existing provider terminal, and returning to chat refreshes
+  the exact native session transcript.
+
+### Fixed (2026-11-14l)
+
+- Claude `/context` now opens Claude Code's native controls, preserving the chat's exact session.
+
 ### Fixed (2026-11-14k)
 
 - Handoff cards now retain the source account identity, and Ctrl+O expands the handoff card when

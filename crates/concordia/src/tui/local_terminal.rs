@@ -505,9 +505,12 @@ pub(super) fn native_command(app: &mut App, command_line: &str) {
 
 fn open_native(app: &mut App, initial_input: Option<&str>) {
     if app.local_terminal.session.is_some() {
-        app.flash(
-            "Close the existing terminal with /terminal close before opening native controls",
-        );
+        app.local_terminal.view = View::Shell;
+        app.local_terminal.notice = None;
+        if let Some(command_line) = initial_input {
+            app.local_terminal
+                .write(format!("{command_line}\r").into_bytes());
+        }
         return;
     }
     let launch = || -> anyhow::Result<Session> {
@@ -645,6 +648,9 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
     {
         if app.local_terminal.visible() {
             app.local_terminal.view = View::Chat;
+            if let Some(session) = app.native_session_id.clone() {
+                app.reload_restored_history(&session);
+            }
         } else if app.rename_editor.is_none() && !worker_input::active(app) && !app.raster.active()
         {
             app.local_terminal.show(&app.cwd);

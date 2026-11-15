@@ -1,5 +1,12 @@
 ## This slice
 
+### FIX4b native live proof repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 10 | Correct the existing provider capability declaration so Claude `/context` uses the already-owned native terminal path; no new command router or duplicate capability table. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible native-command correction under the required build identity. |
+
 ### FIX3b live handoff proof repairs - anti-slop gate
 
 | path | tendency_check | justification |
@@ -314,3 +321,10 @@
 | ---- | -------------- | ------------- |
 | crates/concordia/src/tui/local_terminal.rs, crates/concordia/src/tui/app/slash.rs, crates/concordia/src/tui/palette.rs, crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 7, 10 | Reuse the existing native launcher, provider command registry, and exact `native_session_id`; no new transport or synchronization layer. |
 | crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing parity change under the existing release metadata owners. |
+
+### FIX4b live native session parity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/native_input.rs | ok: 1, 4, 5, 6, 7, 10 | Remove the evidenced ACP/interactive-session mismatch; reuse the existing explicit print-mode session path instead of adding a bridge or duplicate session store. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing Cursor session behavior under the existing release metadata owners. |
