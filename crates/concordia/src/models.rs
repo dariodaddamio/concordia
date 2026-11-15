@@ -147,6 +147,25 @@ pub(crate) fn find_at(
         })
 }
 
+pub(crate) fn canonical_id_at(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    model: &str,
+) -> Option<String> {
+    available_at(root, provider, account)
+        .into_iter()
+        .find(|entry| {
+            entry.id.eq_ignore_ascii_case(model)
+                || entry.display_name.eq_ignore_ascii_case(model)
+                || entry
+                    .id
+                    .split('-')
+                    .any(|part| part.eq_ignore_ascii_case(model))
+        })
+        .map(|entry| entry.id)
+}
+
 fn native_entry(model: catalog::NativeModel) -> ModelEntry {
     let mut entry = entry_named(model.id, model.display_name, ModelSource::Cached);
     entry.efforts = model

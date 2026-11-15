@@ -22,6 +22,9 @@ impl App {
             picker.title = format!("{command} · This panel lets you {does}.");
             self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
         }
+        if command == "/model" {
+            self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+        }
     }
 
     pub(in crate::tui) fn open_resume_picker(&mut self) {
@@ -1693,7 +1696,7 @@ impl App {
                     self.push_system(format!(
                         "using {} · {idn} · {}",
                         self.account_label(),
-                        self.model
+                        self.model_label()
                     ));
                 }
             }
@@ -1792,11 +1795,15 @@ impl App {
                     } else {
                         selected_model.clone()
                     };
+                    self.messages.retain(|message| {
+                        !(message.role == MsgRole::System && message.text.starts_with("using "))
+                    });
                     if selected_model.is_empty() {
                         self.push_system("model → provider default");
                     } else {
                         self.push_system(format!("model → {selected_model}"));
                     }
+                    self.push_system(format!("using {} · {}", self.account_label(), self.model_label()));
                 }
             }
             PickerKind::Effort => {
@@ -1840,7 +1847,7 @@ impl App {
                         return;
                     }
                     self.refresh_account_continuity();
-                    self.push_system(format!("using {} · {}", self.account_label(), self.model));
+                    self.push_system(format!("using {} · {}", self.account_label(), self.model_label()));
                 }
             }
             PickerKind::Continuation => {

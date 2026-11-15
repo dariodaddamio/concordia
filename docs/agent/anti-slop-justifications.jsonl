@@ -1,5 +1,12 @@
 ## This slice
 
+### FIX1b model picker details - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,app/pickers.rs,draw/mod.rs}, crates/concordia/src/tui/continuation.rs | ok: 1, 4, 5, 6, 10 | Keep model presentation derived from the existing account-bound catalog and picker state; remove the duplicate row detail and reuse one label/footer path without adding a model store or provider protocol. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible picker correction under the required build metadata owners. |
+
 ### FIX5 shared command picker - anti-slop gate
 
 | path | tendency_check | justification |

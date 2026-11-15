@@ -565,7 +565,7 @@ impl App {
         self.editor.clear();
         self.images.draft.clear();
         self.persist_draft_now();
-        self.push_system(format!("continuing with {} · {} using the conversation map; native tool and approval state stay with the previous account", self.account_label(), self.model));
+        self.push_system(format!("continuing with {} · {} using the conversation map; native tool and approval state stay with the previous account", self.account_label(), self.model_label()));
         let instruction = crate::attachments::Message{text:format!("Continue the interrupted request in this new native session. First inspect the workspace and recorded completed actions. Reconcile any uncertain tool result before proceeding; do not blindly repeat commands or edits. Follow the current provider's approval rules. Original request:\n{}",original.text),..original}.encode();
         if self.continuation.context_limited {
             self.continuation.context_rollovers =

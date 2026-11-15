@@ -499,6 +499,14 @@ impl App {
                         .and_then(|h| inspect_provider(self.provider, h).model)
                 })
                 .unwrap_or_else(|| "?".into());
+            if let Some(canonical) = crate::models::canonical_id_at(
+                &self.state_root,
+                self.provider,
+                &self.account,
+                &self.model,
+            ) {
+                self.model = canonical;
+            }
             self.effort = sel.effort.or_else(|| {
                 crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
                     .and_then(|model| model.default_effort)
@@ -507,6 +515,15 @@ impl App {
         self.refresh_account_email();
         self.trust = get_settings(&self.state_root).trust;
         self.refresh_usage();
+    }
+
+    pub(in crate::tui) fn model_label(&self) -> String {
+        if self.model == "?" {
+            return "model ?".into();
+        }
+        crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
+            .map(|entry| format!("{} · {}", entry.display_name, self.model))
+            .unwrap_or_else(|| self.model.clone())
     }
 
     pub(in crate::tui) fn refresh_account_email(&mut self) {
@@ -1999,9 +2016,9 @@ pub(in crate::tui) fn model_picker_rows(
                     if current { " · current" } else { "" }
                 ),
                 detail: if model.efforts.is_empty() {
-                    model.id
+                    "no provider-reported effort levels".into()
                 } else {
-                    format!("{} · efforts: {}", model.id, model.effort_names().join(", "))
+                    format!("efforts: {}", model.effort_names().join(", "))
                 },
             }
         })

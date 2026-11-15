@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-14j)
+
+- `/model` rows, headers and using lines now show the display name with the full model ID;
+  effort levels remain in the row detail and the picker footer is consistent across providers.
+
 ### Fixed (2026-11-14g)
 
 - Shared slash commands now open a picker for Concordia or each registered provider account;

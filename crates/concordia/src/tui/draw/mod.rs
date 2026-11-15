@@ -586,13 +586,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_attention = None;
     app.areas.home_documentation = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
-    let model = if app.model == "?" {
-        "model ?".to_string()
-    } else {
-        crate::models::find_at(&app.state_root, app.provider, &app.account, &app.model)
-            .map(|entry| entry.display_name)
-            .unwrap_or_else(|| app.model.clone())
-    };
+    let model = app.model_label();
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
