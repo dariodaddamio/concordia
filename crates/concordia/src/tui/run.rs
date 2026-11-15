@@ -481,6 +481,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     #[cfg(windows)]
     let wake_handle = terminal_input.wake_handle();
     #[cfg(windows)]
+    let install_watcher =
+        crate::install_watch::start(crate::update::install_bin_dir().join("concordia.exe"), {
+            let wake_handle = wake_handle.clone();
+            move || wake_handle.wake()
+        });
+    #[cfg(windows)]
     let mut detached_windows =
         use_window.then(|| detached::DetachedWindows::new(terminal_input.wake_handle()));
 
@@ -563,6 +569,23 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let input_result = (|| -> Result<()> {
         loop {
             let mut force_attention_save = false;
+            #[cfg(windows)]
+            if let Some(path) = install_watcher
+                .as_ref()
+                .and_then(|watcher| watcher.try_take())
+            {
+                let work_active = tabs
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.app.restart_blocked_by_work());
+                tabs.active_mut().app.queue_update_restart(path);
+                if work_active && !tabs.active().app.restart_blocked_by_work() {
+                    tabs.active_mut().app.push_system(
+                        "Update installed; it will load when the current work finishes.",
+                    );
+                }
+                dirty = true;
+            }
             for tab in tabs.tabs.iter_mut() {
                 dirty |= tab.refresh_chat_ownership();
             }
@@ -1689,9 +1712,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
             }
 
-            if !tabs.tabs.iter().any(|t| {
-                t.app.busy || t.app.deleg.d.any_active() || t.app.deleg.has_pending_prompt()
-            }) {
+            if !tabs.tabs.iter().any(|t| t.app.restart_blocked_by_work()) {
                 for tab in &mut tabs.tabs {
                     if tab.app.restart_when_idle {
                         tab.app.restart_when_idle = false;

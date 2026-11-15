@@ -1359,7 +1359,7 @@ impl App {
     }
 
     pub(in crate::tui) fn restart_ready_update(&mut self) {
-        if self.busy || self.deleg.d.any_active() || self.deleg.has_pending_prompt() {
+        if self.restart_blocked_by_work() {
             self.restart_when_idle = true;
             self.push_system(
                 "Restart is waiting for active work and will continue when it finishes.",
@@ -1369,6 +1369,24 @@ impl App {
         if let Some(path) = self.ready_update_path.take() {
             self.reexec_path = Some(path);
             self.should_quit = true;
+        }
+    }
+
+    pub(in crate::tui) fn restart_blocked_by_work(&self) -> bool {
+        self.busy
+            || self.deleg.d.any_active()
+            || self.deleg.has_pending_prompt()
+            || self.questions.waiting()
+    }
+
+    pub(in crate::tui) fn queue_update_restart(&mut self, path: PathBuf) {
+        if self.ready_update_path.as_ref() == Some(&path) {
+            return;
+        }
+        self.ready_update_path = Some(path);
+        self.restart_when_idle = true;
+        if self.restart_blocked_by_work() {
+            self.push_system("Update installed; it will load when the current work finishes.");
         }
     }
 
@@ -1402,13 +1420,7 @@ impl App {
         match result {
             JobResult::Update(Ok(UpdateOutcome::Installed(result))) if self.background_update => {
                 self.background_update = false;
-                if self.install_update_on_launch {
-                    self.ready_update_path = None;
-                    self.push_system("A Concordia update was installed for the next launch. This session will keep running.");
-                } else {
-                    self.ready_update_path = Some(result.install_path);
-                    self.push_system("A Concordia update is ready. Restart now (R) or Later (L). It will not take focus.");
-                }
+                self.queue_update_restart(result.install_path);
             }
             JobResult::Update(Ok(UpdateOutcome::Installed(result))) => {
                 crate::logging::info(&format!(
@@ -1431,8 +1443,7 @@ impl App {
                         String::new()
                     }
                 ));
-                self.reexec_path = Some(result.install_path);
-                self.should_quit = true;
+                self.queue_update_restart(result.install_path);
             }
             JobResult::Update(Ok(UpdateOutcome::UpToDate(msg))) => self.push_system(msg),
             JobResult::Update(Err(e)) if cancelled || e.to_string() == "cancelled" => {

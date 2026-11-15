@@ -19,6 +19,7 @@ pub(crate) mod fs_safe;
 pub mod grok_bot;
 pub mod harness;
 pub mod identity;
+pub mod install_watch;
 pub mod integration;
 pub mod logging;
 pub mod mcp;

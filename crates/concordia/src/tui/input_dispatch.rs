@@ -254,6 +254,7 @@ pub(super) fn handle_key(
             KeyCode::Char('l' | 'L') => {
                 app.ready_update_path = None;
                 app.restart_when_idle = false;
+                // L postpones this update until the next app start or until another install arrives.
                 app.push_system("Update kept for a later restart.");
                 return false;
             }

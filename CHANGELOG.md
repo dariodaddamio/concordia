@@ -1,5 +1,9 @@
 # Changelog
 
+### Fixed (2026-11-15c)
+
+- Concordia restarts into a new version by itself. A window notices when its installed program is replaced, by an in-app update, a background update, an update at launch or `concordia install` from another terminal, and restarts as soon as no turn, worker or question is active. Tabs, drafts and queues are kept. `L` postpones the restart until the next start.
+
 ### Fixed (2026-11-15b)
 
 - Typing on Home is no longer delayed. Drawing a frame read the disk for every saved chat, every chat title and the model catalog; those results are now kept between frames. Measured key-to-paint fell from about 35 ms to about 5 ms.
