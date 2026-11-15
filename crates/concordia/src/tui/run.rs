@@ -1062,6 +1062,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
                 while let Ok(h) = handle_rx.try_recv() {
                     app.accept_cancel_handle(h);
+                    // Launch acceptance commits the one-shot handoff transaction.
+                    app.pending_repair_map = None;
+                    app.need_context_pack = false;
                     dirty = true;
                 }
 
@@ -1089,6 +1092,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let provider = app.provider;
                     let account = app.account.clone();
                     let model = app.model.clone();
+                    let effort = app.effort.clone();
                     let trust = app.trust;
                     let owner = crate::provider::interaction::InteractionOwner {
                         conversation_id: app.deleg.d.conversation_id().to_owned(),
@@ -1170,7 +1174,9 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         pack_msgs
                     };
                     let native_sources = app.native_sources.clone();
-                    let repair_map = app.pending_repair_map.take();
+                    // Keep handoff material in App until the transport confirms an
+                    // owned child handle. Preparation failures must be retryable.
+                    let repair_map = app.pending_repair_map.clone();
                     let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     app.preparing_cancel = Some(preparing_cancel.clone());
                     let need_pack_hint = app.need_context_pack;
@@ -1178,7 +1184,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let done_tx = done_tx.clone();
                     let handle_tx = handle_tx.clone();
                     let progress_tx = progress_tx.clone();
-                    app.need_context_pack = false;
                     app.live_cards.clear();
                     app.live_text.clear();
                     app.live_thinking.clear();
@@ -1447,6 +1452,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             } else {
                                 Some(model.as_str())
                             },
+                            effort: effort.as_deref(),
                             native_session_id: session_out.as_deref(),
                             trust,
                             context_prefix: prefix.as_deref(),

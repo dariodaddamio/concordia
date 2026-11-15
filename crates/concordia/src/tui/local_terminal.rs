@@ -77,6 +77,10 @@ struct Session {
     pending_bytes: usize,
     refused_input: bool,
     name: String,
+    /// None is the explicitly opened local shell. Native sessions carry an exact
+    /// provider/account/native-session binding so they can never be reused after a
+    /// chat or account switch.
+    owner: Option<String>,
     size: (u16, u16),
 }
 
@@ -474,6 +478,7 @@ impl Session {
             pending_bytes: 0,
             refused_input: false,
             name,
+            owner: None,
             size,
         })
     }
@@ -504,7 +509,22 @@ pub(super) fn native_command(app: &mut App, command_line: &str) {
 }
 
 fn open_native(app: &mut App, initial_input: Option<&str>) {
-    if app.local_terminal.session.is_some() {
+    let expected_owner = format!(
+        "{}\0{}\0{}\0{}",
+        app.provider.as_str(),
+        app.account,
+        app.home_path
+            .as_deref()
+            .map(|p| p.to_string_lossy())
+            .unwrap_or_default(),
+        app.native_session_id.as_deref().unwrap_or_default()
+    );
+    if app
+        .local_terminal
+        .session
+        .as_ref()
+        .is_some_and(|session| session.owner.as_deref() == Some(expected_owner.as_str()))
+    {
         app.local_terminal.view = View::Shell;
         app.local_terminal.notice = None;
         if let Some(command_line) = initial_input {
@@ -512,6 +532,11 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
                 .write(format!("{command_line}\r").into_bytes());
         }
         return;
+    }
+    // A shell or a native session belonging to another conversation is not a
+    // valid target. Stop it explicitly and launch a new bound session.
+    if app.local_terminal.session.is_some() {
+        app.local_terminal.stop();
     }
     let launch = || -> anyhow::Result<Session> {
         let located =
@@ -614,6 +639,7 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
             command.env_remove("XAI_API_KEY");
         }
         let mut session = Session::start(&app.cwd, Some(command))?;
+        session.owner = Some(expected_owner.clone());
         session.name = format!(
             "{} · {} · native controls",
             app.provider.as_str(),

@@ -729,7 +729,7 @@ pub fn automatic_handoff_allowed(root: &Path, account: &str, day: &str) -> bool 
     let cap = crate::config::for_root(root)
         .continuation
         .automatic_handoff_cap
-        .max(settings.automatic_handoff_cap);
+        .min(settings.automatic_handoff_cap);
     settings
         .automatic_handoffs_today
         .get(&format!("{day}:{account}"))

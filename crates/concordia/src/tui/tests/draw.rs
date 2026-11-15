@@ -59,6 +59,7 @@ fn empty_paused_queue_has_no_attention_badge() {
     assert!(h.app.picker.is_none());
 }
 
+#[test]
 fn pending_approval_is_a_needs_you_item() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());

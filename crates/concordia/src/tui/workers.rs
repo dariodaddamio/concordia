@@ -816,7 +816,7 @@ impl App {
                 self.deleg.owners.clear();
                 self.deleg.auto_return_paused = n > 0;
                 if n > 0 {
-                    self.push_system(format!("Recovered {n} worker run records. All automatic returns are paused. Ctrl+G inspects runs; /delegate recover ID reads a completed result from its exact source. Reconcile uncertain work before /delegate retry ID reconciled."));
+                    self.push_system(format!("Recovered {n} worker run records. All automatic returns are paused. Ctrl+G inspects runs; select a completed result there to read its exact source and retry only after reconciliation."));
                 }
             }
             Err(e) => self.push_system(format!("worker recovery unavailable: {e}")),
@@ -844,7 +844,7 @@ impl App {
                     Ok(format!("Reading exact native result for worker #{id}; no provider task is started"))
                 })
             }
-            _ => Err("/delegate fallback on|off · /delegate recover ID · /delegate retry ID reconciled (inspect uncertain actions first)".into()),
+            _ => Err("Use Ctrl+G to inspect worker runs; select a run for recovery, retry or cancellation (inspect uncertain actions first)".into()),
         };
         self.push_system(result.unwrap_or_else(|e| format!("worker recovery: {e}")));
     }
@@ -1095,7 +1095,7 @@ impl App {
                     crate::mcp::update_agent(
                         &self.state_root,
                         &proposal.agent_id,
-                        "running",
+                        "starting",
                         None,
                         "accepted by Concordia",
                     );
@@ -1107,8 +1107,27 @@ impl App {
                             proposal.model.as_deref(),
                         ) {
                             Ok(message) => self.push_system(message),
-                            Err(error) => self.push_system(format!("delegate failed - {error}")),
+                            Err(error) => {
+                                crate::mcp::update_agent(
+                                    &self.state_root,
+                                    &proposal.agent_id,
+                                    "failed",
+                                    Some(error.to_string()),
+                                    "worker start rejected before a provider process was accepted",
+                                );
+                                self.push_system(format!("delegate failed - {error}; retry remains available from the Agents panel"));
+                            }
                         }
+                    } else {
+                        let error = "invalid worker target or task";
+                        crate::mcp::update_agent(
+                            &self.state_root,
+                            &proposal.agent_id,
+                            "failed",
+                            Some(error.into()),
+                            "worker start rejected during validation",
+                        );
+                        self.push_system(error);
                     }
                 }
             }
@@ -1272,7 +1291,7 @@ impl App {
             return Err("no other connected account is logged in".into());
         }
         let acct = get_account(&self.state_root, &account).ok_or_else(|| {
-            format!("account {account} no longer exists - /workers remove {account}")
+            format!("account {account} no longer exists - remove it from the Agents panel")
         })?;
         let home = acct.home_path.clone();
         if !home
@@ -1317,6 +1336,7 @@ impl App {
                 spec: JobSpec {
                     native_input,
                     model: model.map(str::to_owned),
+                    effort: None,
                     home,
                     cwd: self.cwd.clone(),
                     prompt: task.to_string(),
@@ -1433,7 +1453,7 @@ impl App {
                 self.deleg.outbox = Some((use_prompt(j), vec![j.id]));
             }
             None => {
-                self.push_system("no finished worker result to send - /workers shows the last ones")
+                self.push_system("no finished worker result to send - Ctrl+G shows the last ones")
             }
         }
     }

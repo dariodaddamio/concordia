@@ -79,17 +79,6 @@ impl App {
         let editor = if action == FileAction::Editor {
             if config.program.is_empty() {
                 None
-            } else if config.program.is_empty() {
-                ["nvim", "hx", "vim"]
-                    .iter()
-                    .find_map(|name| which::which(name).ok())
-                    .map(|program| {
-                        if program.file_stem().is_some_and(|name| name == "hx") {
-                            EditorSpec::new(program, ["{file}:{line}:{column}"])
-                        } else {
-                            EditorSpec::new(program, ["+{line}", "--", "{file}"])
-                        }
-                    })
             } else {
                 Some(EditorSpec::new(&config.program, &config.args))
             }

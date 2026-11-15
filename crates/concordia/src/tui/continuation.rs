@@ -436,6 +436,20 @@ impl App {
                     return None;
                 }
                 let pair = format!("{} {}", account, model.as_deref().unwrap_or(&self.model));
+                if self.continuation.automatic
+                    && account != self.account
+                    && (!crate::store::same_provider_terms_accepted(
+                        &self.state_root,
+                        self.provider,
+                    )
+                        || !crate::store::automatic_handoff_allowed(
+                            &self.state_root,
+                            &account,
+                            &automatic_handoff_day(),
+                        ))
+                {
+                    continue;
+                }
                 if self.continuation.tried.contains(&pair)
                     || (account == self.account
                         && model.as_deref().is_none_or(|model| model == self.model))
@@ -534,6 +548,20 @@ impl App {
         let previous_provider = self.provider;
         let previous_account = self.account.clone();
         let previous_home = self.continuity_home();
+        let automatic_cross_account = self.continuation.automatic && target != self.account;
+        if automatic_cross_account {
+            if !crate::store::same_provider_terms_accepted(&self.state_root, self.provider)
+                || !crate::store::automatic_handoff_allowed(
+                    &self.state_root,
+                    target,
+                    &automatic_handoff_day(),
+                )
+            {
+                self.push_system("automatic handoff is not permitted by the saved provider consent or daily cap; choose a target explicitly");
+                self.continuation.automatic = false;
+                return;
+            }
+        }
         let trust = self.trust;
         if let Err(error) = select_account(&self.state_root, target) {
             self.push_system(format!("continuation account unavailable: {error}"));
@@ -575,6 +603,13 @@ impl App {
         }
         self.continuation.dispatching = true;
         self.run_line(instruction, tx);
+        if automatic_cross_account {
+            let _ = crate::store::record_automatic_handoff(
+                &self.state_root,
+                target,
+                &automatic_handoff_day(),
+            );
+        }
         self.continuation.dispatching = false;
         if preserve_draft {
             self.restore_composer(&unsent);
@@ -583,6 +618,17 @@ impl App {
         // The failure finalizer paused the queue; continuation must finish before explicit resume.
         self.queue.dispatch.clear_automatic();
     }
+}
+
+fn automatic_handoff_day() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .checked_div(86_400)
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[cfg(test)]

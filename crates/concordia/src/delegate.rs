@@ -203,6 +203,8 @@ pub struct JobSpec {
     #[serde(default)]
     pub native_input: crate::native_input::Mode,
     pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
     pub home: Option<PathBuf>,
     pub cwd: PathBuf,
     pub prompt: String,
@@ -927,6 +929,7 @@ impl Delegates {
                 cwd: &spec.cwd,
                 home_path: spec.home.as_deref(),
                 model: spec.model.as_deref(),
+                effort: spec.effort.as_deref(),
                 // Always a fresh native session: never `resume --last`, never a foreign id.
                 native_session_id: None,
                 trust: spec.trust,
@@ -976,7 +979,6 @@ impl Delegates {
                     .await;
                 return;
             }
-            scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
             let run = async {
                 match native_owner {
                     Some(owner) => {
@@ -1010,6 +1012,10 @@ impl Delegates {
                     }
                     Some(h) = hs_rx.recv() => {
                         running = Some(h.clone());
+                        // A workspace is "invoked" only after the provider transport
+                        // hands us its owned child handle. Preparation and planning
+                        // failures must remain safely releasable.
+                        scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
                         forward_worker_event(&tx, Event::Started(id, h), &preparation_cancel, running.as_deref()).await;
                     }
                     Some(p) = pg_rx.recv() => {
@@ -1025,6 +1031,7 @@ impl Delegates {
             };
             while let Ok(h) = hs_rx.try_recv() {
                 running = Some(h.clone());
+                scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
                 forward_worker_event(
                     &tx,
                     Event::Started(id, h),
@@ -1392,6 +1399,7 @@ impl Delegates {
             spec: JobSpec {
                 native_input: Default::default(),
                 model: None,
+                effort: None,
                 home: None,
                 cwd: PathBuf::from("."),
                 prompt: String::new(),
@@ -1536,19 +1544,15 @@ fn apply_outcome(j: &mut Job, out: TurnOutcome, now: Instant) {
     if j.session_id.is_none() {
         j.session_id = out.session_id.clone();
     }
-    if j.cards.is_empty() {
-        for c in out.cards.iter().cloned() {
-            upsert_card(&mut j.cards, c);
-        }
+    // The final provider snapshot is authoritative for every card, including
+    // cards that streamed earlier and cards first observed only at completion.
+    for c in out.cards.iter().cloned() {
+        upsert_card(&mut j.cards, c);
     }
     let failed = !out.cancelled && (out.failed || out.exit_code != Some(0));
     for c in j.cards.iter_mut() {
         if c.status == CardStatus::Running {
-            c.status = if failed || out.cancelled || j.cancel_requested {
-                CardStatus::Error
-            } else {
-                CardStatus::Done
-            };
+            c.status = CardStatus::Error;
         }
     }
     if j.text.trim().is_empty() && !out.cancelled {

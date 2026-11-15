@@ -99,7 +99,7 @@ impl App {
                 Ok(())
             }
             Admission::Conflict { run, path } => Err(format!("workspace path {} is reserved by run {run}; request remains paused", path.display())),
-            Admission::ReconcileRequired => Err("old native process completion is uncertain; inspect it, then /scope stopped acknowledges it has stopped before explicit continuation".into()),
+            Admission::ReconcileRequired => Err("old native process completion is uncertain; inspect it, then acknowledge stopped in the workspace panel before explicit continuation".into()),
         }
     }
 
@@ -126,9 +126,9 @@ impl App {
             Ok(()) => {
                 if !confirmed {
                     self.push_system(if outcome.exit_code.is_some() {
-                        "Native process exited before all tool completions were confirmed; workspace reservation retained. Inspect unfinished tool effects and any remaining child processes before /scope stopped and explicit continuation."
+                        "Native process exited before all tool completions were confirmed; workspace reservation retained. Inspect unfinished tool effects and remaining child processes, then acknowledge stopped in the workspace panel before explicit continuation."
                     } else {
-                        "Native process exit is uncertain; workspace reservation retained. Inspect the old process before /scope stopped and explicit continuation."
+                        "Native process exit is uncertain; workspace reservation retained. Inspect the old process, then acknowledge stopped in the workspace panel before explicit continuation."
                     });
                 }
                 confirmed
