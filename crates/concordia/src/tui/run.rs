@@ -1528,32 +1528,35 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Some(progress_tx),
                         );
                         tokio::pin!(turn);
-                        let result = match tokio::time::timeout(Duration::from_secs(45), async {
-                            loop {
-                                tokio::select! {
-                                    biased;
-                                    Some(handle) = started_rx.recv() => forward_started(handle),
-                                    result = &mut turn => {
-                                        while let Ok(handle) = started_rx.try_recv() {
-                                            forward_started(handle);
-                                        }
-                                        break result;
+                        // Bound only the start: a provider that never launches is an error, but a
+                        // started turn may legitimately run silent for a long time (a long build in
+                        // a tool call). The user can still cancel it with Esc.
+                        let start_deadline = tokio::time::sleep(Duration::from_secs(45));
+                        tokio::pin!(start_deadline);
+                        let mut started = false;
+                        let result = loop {
+                            tokio::select! {
+                                biased;
+                                Some(handle) = started_rx.recv() => {
+                                    started = true;
+                                    forward_started(handle);
+                                }
+                                result = &mut turn => {
+                                    while let Ok(handle) = started_rx.try_recv() {
+                                        forward_started(handle);
                                     }
+                                    break result;
                                 }
-                            }
-                        })
-                        .await
-                        {
-                            Ok(result) => result,
-                            Err(_) => {
-                                while let Ok(handle) = started_rx.try_recv() {
-                                    handle.cancel();
+                                _ = &mut start_deadline, if !started => {
+                                    while let Ok(handle) = started_rx.try_recv() {
+                                        handle.cancel();
+                                    }
+                                    break Err(anyhow::anyhow!(
+                                        "{} session {} did not start within 45 seconds",
+                                        provider.as_str(),
+                                        conversation_id
+                                    ));
                                 }
-                                Err(anyhow::anyhow!(
-                                    "{} session {} timed out waiting for provider completion",
-                                    provider.as_str(),
-                                    conversation_id
-                                ))
                             }
                         };
                         match result {
