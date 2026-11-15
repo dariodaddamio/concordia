@@ -77,9 +77,12 @@ Source: the audit in `_work/audit/out/` (lanes U1 to U6, CL, CX, CU, OR), run on
 - `resize` yields a smaller grid than requested (U1-2); add clipboard read and a way to drive
   detached windows (U3-3, U5-4). Every later task proves its screens through this channel.
 
-Open owner decision: `/mcp`. The 2026-11-11 rule gives every provider command name to the
-provider, but Concordia's MCP registry (2026-11-13) took `/mcp`, which hides Codex's and Claude's
-own `/mcp` (CX-1).
+Shared command names (owner, 2026-11-14): when a command name exists in Concordia and in a
+provider (for example `/mcp`, `/model`, `/usage`, `/config`, `/doctor`, `/resume`), running it opens
+a picker to choose who runs it: Concordia, or a specific account's own provider (`claude`, `codex`,
+`codex-2`, `codex-3`, `cursor`). The provider choice runs the native command on that account,
+through the transport or the native terminal on the same session. This replaces the 2026-11-11 rule
+that every shared name belongs to the provider, and settles the `/mcp` conflict (CX-1).
 
 ## Cleanup closeout
 
