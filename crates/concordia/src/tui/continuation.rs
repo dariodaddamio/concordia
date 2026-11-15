@@ -270,8 +270,12 @@ impl App {
             .any(|e| usage_exhausted(self.provider, e))
             || (outcome.exit_code.is_some_and(|code| code != 0)
                 && usage_exhausted(self.provider, &outcome.stderr_tail));
-        self.continuation.context_limited = false;
-        if !exhausted {
+        let failure_kind = crate::provider::failure::classify_failure(self.provider, outcome);
+        self.continuation.context_limited = matches!(
+            failure_kind,
+            crate::provider::failure::FailureKind::Context
+        );
+        if !exhausted && !self.continuation.context_limited {
             if crate::provider::turn::thread_recording_failed(self.provider, &outcome.stderr_tail) {
                 self.continuation.pending = self.continuation.prompt.clone();
                 self.continuation.retry_draft = self.last_sent.clone();
@@ -296,9 +300,13 @@ impl App {
         } else {
             Retry::Ready
         };
-        self.push_system(
-            "usage limit reached; choose another account or model to continue. Queued prompts stay paused.",
-        );
+        if self.continuation.context_limited {
+            self.push_system("context limit reached; Concordia will prepare one fresh native session with the conversation map. Queued prompts stay paused.");
+        } else {
+            self.push_system(
+                "usage limit reached; choose another account or model to continue. Queued prompts stay paused.",
+            );
+        }
         if !self.continuation.automatic {
             self.open_continuation_picker();
         }
