@@ -448,7 +448,7 @@ impl App {
                             &automatic_handoff_day(),
                         ))
                 {
-                    continue;
+                    return None;
                 }
                 if self.continuation.tried.contains(&pair)
                     || (account == self.account

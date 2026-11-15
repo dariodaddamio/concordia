@@ -954,17 +954,17 @@ impl App {
             let Some(j) = self.deleg.d.get(id) else {
                 continue;
             };
-            crate::mcp::update_matching(
-                &self.state_root,
-                &j.account,
-                &j.task,
-                if j.state == WorkerState::Done {
-                    "finished"
-                } else {
-                    "failed"
-                },
-                Some(j.final_text()),
-            );
+            if let Some(agent_id) = j.mcp_agent_id.as_deref() {
+                let status = if j.state == WorkerState::Done { "finished" } else { "failed" };
+                let _ = crate::mcp::update_agent_run(
+                    &self.state_root,
+                    agent_id,
+                    &j.run_id,
+                    status,
+                    Some(j.final_text()),
+                    "worker run finished",
+                );
+            }
             crate::logging::info(&format!(
                 "delegate-finish id={} worker={} state={} ms={} cards={} origin={:?}",
                 j.id,
@@ -1092,6 +1092,18 @@ impl App {
             changed = true;
             match proposal {
                 crate::mcp::PendingProposal::Delegate(proposal) => {
+                    let canonical_cwd = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
+                    let owner_ok = proposal.from_thread == self.deleg.d.conversation_id()
+                        && proposal.workspace.as_ref().is_some_and(|workspace| {
+                            std::fs::canonicalize(workspace)
+                                .map(|path| path == canonical_cwd)
+                                .unwrap_or(false)
+                        })
+                        && proposal.parent_run_id.as_deref() == Some(self.continuation.run_id());
+                    if !owner_ok {
+                        self.push_system("worker proposal paused: its parent conversation, workspace or run does not match this chat");
+                        continue;
+                    }
                     crate::mcp::update_agent(
                         &self.state_root,
                         &proposal.agent_id,
@@ -1106,7 +1118,26 @@ impl App {
                             Origin::Protocol,
                             proposal.model.as_deref(),
                         ) {
-                            Ok(message) => self.push_system(message),
+                            Ok(message) => {
+                                let conversation_id = self.deleg.d.conversation_id().to_owned();
+                                if let Some(job) = self.deleg.d.jobs.iter_mut().rev().find(|job| {
+                                    job.origin == Origin::Protocol
+                                        && job.task == block.task
+                                        && job.conversation_id == conversation_id
+                                }) {
+                                    let _ = crate::mcp::bind_agent_run(
+                                        &self.state_root,
+                                        &proposal.agent_id,
+                                        &proposal.from_thread,
+                                        &canonical_cwd,
+                                        proposal.parent_run_id.as_deref(),
+                                        &job.run_id,
+                                    );
+                                    job.bind_mcp_agent(proposal.agent_id.clone());
+                                    let _ = self.deleg.d.save_recovery();
+                                }
+                                self.push_system(message)
+                            },
                             Err(error) => {
                                 crate::mcp::update_agent(
                                     &self.state_root,

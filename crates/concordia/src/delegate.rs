@@ -234,6 +234,8 @@ enum TaskProjection {
 pub struct Job {
     input: input::State,
     pub run_id: String,
+    /// Exact MCP record associated with this worker, when launched from a proposal.
+    pub mcp_agent_id: Option<String>,
     pub conversation_id: String,
     pub source_id: Option<String>,
     reference_storage: bool,
@@ -275,6 +277,9 @@ pub struct Job {
 }
 
 impl Job {
+    pub fn bind_mcp_agent(&mut self, agent_id: String) {
+        self.mcp_agent_id = Some(agent_id);
+    }
     pub fn attempt_accounts(&self) -> impl Iterator<Item = &str> {
         self.attempt_records
             .iter()
@@ -595,6 +600,7 @@ impl Delegates {
         self.jobs.push(Job {
             input: input::State::default(),
             run_id,
+            mcp_agent_id: None,
             conversation_id: self.conversation_id.clone(),
             source_id: None,
             reference_storage: true,
@@ -1362,6 +1368,7 @@ impl Delegates {
         self.jobs.push(Job {
             input: input::State::default(),
             run_id: uuid::Uuid::new_v4().to_string(),
+            mcp_agent_id: None,
             conversation_id: self.conversation_id.clone(),
             source_id: None,
             reference_storage: true,

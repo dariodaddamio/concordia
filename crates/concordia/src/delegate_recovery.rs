@@ -647,6 +647,8 @@ struct Ledger {
 struct SavedJob {
     id: u32,
     run_id: String,
+    #[serde(default)]
+    mcp_agent_id: Option<String>,
     conversation: String,
     account: String,
     provider: ProviderKind,
@@ -944,7 +946,7 @@ impl Delegates {
                 }
                 jobs.push(Job {
                     input:input::State::default(),
-                    run_id:saved.run_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable,
+                    run_id:saved.run_id, mcp_agent_id:saved.mcp_agent_id, conversation_id:saved.conversation, source_id:saved.source, reference_storage:saved.reference_storage, task_reference:saved.task_reference, task_reference_unavailable,
                     workspace:saved.workspace, workspace_notice:saved.workspace_notice, workspace_next_check:None, workspace_invoked:None, preparation_cancel:Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     attempts:saved.attempts, attempt_records:saved.attempt_records, id:saved.id, account:saved.account, provider:saved.provider,
                     task:saved.task, model:saved.spec.model.clone(), trust:saved.spec.trust, spec:saved.spec,
@@ -1020,6 +1022,7 @@ impl Delegates {
                 SavedJob {
                     id: j.id,
                     run_id: j.run_id.clone(),
+                    mcp_agent_id: j.mcp_agent_id.clone(),
                     conversation: j.conversation_id.clone(),
                     account: j.account.clone(),
                     provider: j.provider,
