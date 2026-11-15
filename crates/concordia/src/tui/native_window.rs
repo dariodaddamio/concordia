@@ -268,11 +268,19 @@ impl WindowBackend {
         state.draws.push(elapsed.as_secs_f64() * 1000.0);
     }
     pub(super) fn set_status_dot(&mut self, status: StatusDot) {
-        *self
-            .shared
-            .requested_status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = status;
+        {
+            let mut requested = self
+                .shared
+                .requested_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            // The run loop reports the dot on every pass. Repainting only on a real change keeps
+            // an idle window from redrawing (and re-blitting its images) many times a second.
+            if *requested == status {
+                return;
+            }
+            *requested = status;
+        }
         if let Some(test) = self.shared.test_control.as_ref() {
             test.state
                 .lock()
@@ -294,13 +302,17 @@ impl WindowBackend {
             .unwrap_or_else(|e| e.into_inner())
             .as_deref()
             == Some(item_id.as_str());
-        if !already_targeted && !pending.iter().any(|(id, _)| id == &item_id) {
-            pending.push_back((item_id, text));
+        if already_targeted || pending.iter().any(|(id, _)| id == &item_id) {
+            return;
         }
+        pending.push_back((item_id, text));
+        drop(pending);
         let _ = self.post(UPDATE);
     }
     pub(super) fn set_notifications_enabled(&mut self, enabled: bool) {
-        self.shared.notifications_enabled.store(enabled, Ordering::Release);
+        if self.shared.notifications_enabled.swap(enabled, Ordering::AcqRel) == enabled {
+            return;
+        }
         if !enabled {
             self.shared
                 .pending_attention

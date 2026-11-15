@@ -1402,16 +1402,19 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                         prior_prov.as_str(),
                                         provider.as_str()
                                     ),
+                                    // A short route title; the body drops the header line the
+                                    // title already covers.
                                     title: format!(
-                                        "Handoff {} / {} → {} / {} · {} pointers · ~{} tokens",
-                                        prior_prov.as_str(),
-                                        prior_account,
-                                        provider.as_str(),
-                                        account,
-                                        pointer_count,
+                                        "Handoff {prior_account} → {account} · {pointer_count} pointers · ~{} tokens",
                                         crate::context::estimate_tokens(detail.chars().count())
                                     ),
-                                    detail: Some(detail.to_owned()),
+                                    detail: Some(
+                                        detail
+                                            .lines()
+                                            .filter(|line| !line.starts_with("[concordia map]"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n"),
+                                    ),
                                     status: crate::provider::CardStatus::Done,
                                 };
                                 let _ = progress_tx.send(TurnProgress::Card(card)).await;

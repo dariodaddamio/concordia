@@ -949,7 +949,8 @@ fn meter_reset_label(raw: &str, expired: bool) -> String {
 /// One heading per account (plan, credits, limit state), then one row per usage window.
 fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     let snapshot = &meter.snapshot;
-    let mut heading = format!("{} {}", meter.provider.as_str(), meter.account);
+    // The same account name `/usage` shows (for example "Codex 2"), not "codex codex-2".
+    let mut heading = crate::accounts::display_account_name(meter.provider, &meter.account);
     if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
         heading.push_str(&format!(" · {plan}"));
     }
@@ -998,7 +999,11 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
         }
     }
     if snapshot.windows.is_empty() {
-        lines.push(clipped("  usage unknown".into(), width));
+        // Say what is happening (checking, not shown by this provider, unavailable) rather
+        // than a bare "unknown" while `/usage` is reading the same account.
+        let state = snapshot.summary.trim();
+        let state = if state.is_empty() { "usage unknown" } else { state };
+        lines.push(clipped(format!("  {state}"), width));
     }
     lines
 }
@@ -1228,12 +1233,8 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             ));
             lines.push(Line::default());
             lines.push(Line::styled("What's new", selected));
-            for heading in include_str!("../../../../CHANGELOG.md")
-                .lines()
-                .filter(|line| line.starts_with("### "))
-                .take(3)
-            {
-                lines.push(Line::from(heading.trim_start_matches("### ")));
+            for item in super::brand::whats_new(3, inner.width as usize) {
+                lines.push(Line::from(item));
             }
             lines.push(Line::default());
             let documentation_row = lines.len();
@@ -1257,11 +1258,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         if compact_intro {
             let mut lines = vec![Line::styled("What's new", selected)];
             lines.extend(
-                include_str!("../../../../CHANGELOG.md")
-                    .lines()
-                    .filter(|line| line.starts_with("### "))
-                    .take(3)
-                    .map(|heading| Line::from(heading.trim_start_matches("### "))),
+                super::brand::whats_new(3, inner.width as usize)
+                    .into_iter()
+                    .map(Line::from),
             );
             lines.push(Line::default());
             let documentation_row = lines.len();

@@ -1566,14 +1566,13 @@ fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
         let screen = s.screen();
         screen.contains("Documentation")
             && screen.contains("F1  Shortcuts")
-            && screen.contains("Fixed (2026-11-13q)")
-            && screen.contains("Fixed (2026-11-13p)")
-            && screen.contains("Fixed (2026-11-13o)")
+            && screen.contains("What's new")
+            && !screen.contains("Fixed (")
             && screen.contains("5h")
             && screen.contains("reset unavailable")
-            && screen.contains("codex codex")
-            && screen.contains("claude claude")
-            && screen.contains("cursor cursor")
+            && screen.contains("Codex")
+            && screen.contains("Claude")
+            && screen.contains("Cursor")
     });
     let screen = s.screen();
     assert!(!screen.contains("Continue a chat or start a new one."));

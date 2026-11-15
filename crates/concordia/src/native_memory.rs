@@ -1893,7 +1893,7 @@ pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>
         "read_native=concordia chat sources INDEX [--from-message N]; read_exact=concordia chat excerpt INDEX --message N [--offset BYTE --max-bytes 4096]"
     };
     (
-        format!("src={body}\n{read}\nnative approvals/tools not transferred"),
+        format!("src={body}\n{read}"),
         notices,
     )
 }

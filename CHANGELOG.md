@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-14o)
+
+- `/model` opens the model list directly again instead of asking who runs it first; Concordia's
+  `/model` already shows the active provider's own models.
+
 ### Fixed (2026-11-14n)
 
 - Cursor chats now use explicit print-mode sessions by default so the native Cursor terminal can

@@ -904,12 +904,11 @@ pub fn build_map(
         if file_ordinals.len() > 8 {
             let first = file_ordinals.iter().min().copied().unwrap_or(1);
             let last = file_ordinals.iter().max().copied().unwrap_or(first);
-            let more = if stored && !thread_id.is_empty() {
-                format!("concordia chat thread read {thread_id} --range {first}-{last}")
-            } else {
-                "concordia chat index SESSION --account ACCOUNT --provider PROVIDER".into()
-            };
-            lines.push(format!("changed_more={more}"));
+            if stored && !thread_id.is_empty() {
+                lines.push(format!(
+                    "changed_more=concordia chat thread read {thread_id} --range {first}-{last}"
+                ));
+            }
         }
     }
     if let Some((ordinal, detail)) = last_error {
@@ -960,13 +959,9 @@ pub fn build_map(
             "ptr={}",
             grouped_pointer_commands(thread_id, &ordinals)
         ));
-    } else if !pointers.is_empty() {
-        lines.push("ptr=attached native-source indexes; use the source read command".into());
     }
     if stored && !thread_id.is_empty() {
         lines.push(format!("read=concordia chat thread read {thread_id}"));
-    } else {
-        lines.push("read=concordia chat index SESSION --account ACCOUNT --provider PROVIDER (thread log off; pointers not stored)".into());
     }
     if let Some(state) = workspace {
         lines.push(format!(

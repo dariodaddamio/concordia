@@ -27,9 +27,9 @@ pub struct MdLine {
 }
 
 fn code_style() -> Style {
-    Style::default()
-        .fg(Color::Indexed(223))
-        .bg(Color::Indexed(236))
+    // Semantic roles (docs/design-system.md): code is `purple` text on the `panel` surface, so it
+    // stays distinct from prose and from accent links in every theme.
+    Style::default().fg(Color::Magenta).bg(Color::DarkGray)
 }
 
 fn dim() -> Style {
@@ -122,7 +122,7 @@ pub fn render_width_state(text: &str, width: usize) -> (Vec<MdLine>, bool) {
                 }
                 if !lang.is_empty() {
                     out.push(MdLine {
-                        base: dim().add_modifier(Modifier::ITALIC),
+                        base: dim(),
                         indent: 2,
                         ..plain(lang.to_string())
                     });

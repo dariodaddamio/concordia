@@ -287,11 +287,17 @@ pub fn is_provider_passthrough(line: &str) -> bool {
     matches!(parse_slash(line), Some((SlashCommand::Unknown(_), _)))
 }
 
+/// Concordia commands that run the provider's own feature for the active account, so they never
+/// need the shared-command picker.
+const REUSES_PROVIDER: &[&str] = &["/model"];
+
 /// Returns the command name when the typed slash command is registered by both Concordia and
 /// the selected provider. Arguments remain in the original line and are routed by the caller.
 pub fn shared_command_name(line: &str, provider: ProviderKind) -> Option<String> {
     let name = line.split_whitespace().next()?.to_ascii_lowercase();
-    if !name.starts_with('/') {
+    // Concordia's `/model` already lists and sets the active provider's own models, so asking
+    // who runs it would only add a step before the list the owner expects.
+    if !name.starts_with('/') || REUSES_PROVIDER.contains(&name.as_str()) {
         return None;
     }
     let concordia = COMMAND_REGISTRY

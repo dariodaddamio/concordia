@@ -314,66 +314,91 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
 }
 
 fn draw_key_sheet(f: &mut Frame, app: &mut App) {
-    let bindings: Vec<_> = crate::commands::command_registry()
-        .iter()
-        .filter_map(|c| c.key_binding.map(|key| (key, c.name, c.description)))
-        .collect();
-    let mut lines = vec![Line::from("Key sheet")];
-    let mut last = None;
-    for (key, command, description) in bindings {
-        let category = crate::commands::command_registry()
-            .iter()
-            .find(|c| c.name == command)
-            .map(|c| format!("{:?}", c.category))
-            .unwrap_or_default();
-        if last.as_deref() != Some(category.as_str()) {
-            lines.push(Line::from(format!("  {category}")));
-            last = Some(category);
+    // Sections of (key, description). The key column is as wide as the longest key, so long
+    // keys such as Ctrl+Shift+PgUp never run into their description.
+    let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    for c in crate::commands::command_registry() {
+        let Some(key) = c.key_binding else { continue };
+        let category = format!("{:?}", c.category);
+        if sections.last().map(|(name, _)| name != &category).unwrap_or(true) {
+            sections.push((category, Vec::new()));
         }
-        lines.push(Line::from(format!("  {key:<14} {command} — {description}")));
+        if let Some((_, rows)) = sections.last_mut() {
+            rows.push((key.to_string(), format!("{} \u{2014} {}", c.name, c.description)));
+        }
     }
-    lines.push(Line::from("  Tabs"));
-    for (key, description) in [
-        ("Ctrl+T", "new tab"),
-        ("Ctrl+Shift+T", "reopen the last closed tab"),
-        ("Ctrl+Tab", "next tab"),
-        ("Ctrl+Shift+Tab", "previous tab"),
-        ("Ctrl+1..9", "select tab 1 through 9"),
-        ("Ctrl+Shift+PgUp", "move the current tab left"),
-        ("Ctrl+Shift+PgDn", "move the current tab right"),
-        ("Ctrl+W", "close the current tab"),
-        ("F2", "rename the current tab"),
-        ("double-click", "rename a tab title"),
-    ] {
-        lines.push(Line::from(format!("  {key:<14} {description}")));
+    let owned = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
+        rows.iter().map(|(k, d)| (k.to_string(), d.to_string())).collect()
+    };
+    sections.push((
+        "Tabs".into(),
+        owned(&[
+            ("Ctrl+T", "new tab"),
+            ("Ctrl+Shift+T", "reopen the last closed tab"),
+            ("Ctrl+Tab", "next tab"),
+            ("Ctrl+Shift+Tab", "previous tab"),
+            ("Ctrl+1..9", "select tab 1 through 9"),
+            ("Ctrl+Shift+PgUp", "move the current tab left"),
+            ("Ctrl+Shift+PgDn", "move the current tab right"),
+            ("Ctrl+W", "close the current tab"),
+            ("F2", "rename the current tab"),
+            ("double-click", "rename a tab title"),
+        ]),
+    ));
+    sections.push((
+        "Activity".into(),
+        owned(&[
+            ("Ctrl+O", "expand or collapse the last item in the last message"),
+            ("Ctrl+Shift+O", "expand or collapse every item in the last message"),
+            ("Ctrl+E", "open full activity detail"),
+            ("F5", "toggle full activity"),
+            ("F1 / ?", "open this shortcut sheet"),
+        ]),
+    ));
+    sections.push((
+        "Native provider".into(),
+        owned(&[
+            ("/terminal native", "open the provider's own interface on this chat's session"),
+            ("/terminal help", "show terminal modes and native-provider controls"),
+        ]),
+    ));
+    let key_width = sections
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|(k, _)| k.chars().count()))
+        .max()
+        .unwrap_or(8);
+    // Headings are bold foreground; yellow is the warning role, not emphasis.
+    let heading = Style::default().add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(Color::Cyan);
+    let mut lines: Vec<Line> = Vec::new();
+    for (name, rows) in &sections {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::styled(format!(" {name}"), heading));
+        for (key, description) in rows {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(format!("{key:<key_width$}"), key_style),
+                Span::raw("  "),
+                Span::raw(description.clone()),
+            ]));
+        }
     }
-    lines.push(Line::from("  Activity"));
-    for (key, description) in [
-        (
-            "Ctrl+O",
-            "expand or collapse the last item in the last message",
-        ),
-        (
-            "Ctrl+Shift+O",
-            "expand or collapse every item in the last message",
-        ),
-        ("Ctrl+E", "open full activity detail"),
-        ("F5", "toggle full activity"),
-        ("F1 / ?", "open this shortcut sheet"),
-        ("/terminal native", "open the selected provider's native UI on this chat's session"),
-        ("/terminal help", "show terminal modes and native-provider controls"),
-    ] {
-        lines.push(Line::from(format!("  {key:<14} {description}")));
-    }
-    lines.push(Line::from("  Icons"));
+    lines.push(Line::default());
+    lines.push(Line::styled(" Icons", heading));
     for (group, rows) in crate::tui::icons::legend() {
         lines.push(Line::from(format!("  {group}:")));
         for (glyph, meaning) in rows {
             lines.push(Line::from(format!("    {glyph}  {meaning}")));
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from("  ? / F1 / Esc  close"));
+    lines.push(Line::default());
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("? / F1 / Esc", key_style),
+        Span::raw("  close"),
+    ]));
     let width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;
     let height = lines.len() as u16 + 2;
     let area = Rect::new(

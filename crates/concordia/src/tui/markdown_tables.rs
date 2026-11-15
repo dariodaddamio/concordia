@@ -217,7 +217,10 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
         }
         // Keep wrapped body rows distinct. Without a rule here, a tall cell in one
         // row runs directly into the next row and the table loses its row structure.
-        out.push(rule(&widths, '├', '┼', '┤'));
+        // The last row is closed by the bottom border; a divider there reads as an empty row.
+        if r + 1 < cells.len() {
+            out.push(rule(&widths, '├', '┼', '┤'));
+        }
     }
     out.push(rule(&widths, '└', '┴', '┘'));
     out
