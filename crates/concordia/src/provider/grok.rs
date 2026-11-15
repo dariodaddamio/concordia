@@ -8,6 +8,7 @@ pub struct GrokTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
 }

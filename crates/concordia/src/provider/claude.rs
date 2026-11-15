@@ -7,6 +7,7 @@ pub struct ClaudeTurnRequest<'a> {
     pub cwd: &'a std::path::Path,
     pub config_dir: Option<&'a std::path::Path>,
     pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub standing_context: Option<&'a str>,
@@ -142,6 +143,23 @@ pub fn plan_claude_turn_with(
         cwd: req.cwd.to_string_lossy().into_owned(),
         new_session_id,
     })
+}
+
+/// Add Claude's native effort flag only when the installed CLI advertises it. This is kept at
+/// the launch boundary because older Claude CLIs reject the flag and effort levels are provider
+/// metadata, not a Concordia-owned enum.
+pub(crate) fn add_effort_if_supported(
+    command: &std::path::Path,
+    argv: &mut Vec<String>,
+    effort: Option<&str>,
+) -> Result<()> {
+    let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) else { return Ok(()) };
+    anyhow::ensure!(crate::catalog::valid_effort(effort), "unsupported Claude effort value");
+    let help = crate::provider::compat::run_cli(command, &["--help"])
+        .map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(help.contains("--effort"), "Claude CLI does not advertise native --effort");
+    argv.extend(["--effort".into(), effort.into()]);
+    Ok(())
 }
 
 pub fn assert_safe_claude_argv(argv: &[String], allow_bypass: bool) -> Result<()> {

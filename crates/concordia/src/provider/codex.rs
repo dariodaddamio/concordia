@@ -11,6 +11,8 @@ pub struct TurnRequest<'a> {
     pub cwd: &'a Path,
     pub codex_home: Option<&'a Path>,
     pub model: Option<&'a str>,
+    /// Provider-reported reasoning level for this turn, when selected.
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub standing_context: Option<&'a str>,
@@ -49,6 +51,10 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
         argv.push("-m".into());
         argv.push(model.to_string());
+    }
+    if let Some(effort) = req.effort.map(str::trim).filter(|e| !e.is_empty()) {
+        anyhow::ensure!(crate::catalog::valid_effort(effort), "unsupported Codex effort value");
+        argv.extend(["-c".into(), format!("model_reasoning_effort={effort}")]);
     }
     match req.trust {
         // Codex has no separate planning mode; a read-only sandbox is the closest guarantee.

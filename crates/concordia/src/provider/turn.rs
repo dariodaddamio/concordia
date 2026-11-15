@@ -113,6 +113,8 @@ pub struct ProviderTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
+    /// The selected provider-reported reasoning effort. Providers may encode this in model IDs.
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub context_prefix: Option<&'a str>,
@@ -293,6 +295,12 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 }
 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    if let Some(effort) = req.effort.map(str::trim).filter(|e| !e.is_empty()) {
+        anyhow::ensure!(
+            crate::catalog::valid_effort(effort),
+            "unsupported provider effort value"
+        );
+    }
     let document_message = pdf_message(req)?;
     let raw_prompt = document_message
         .as_ref()
@@ -328,6 +336,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 codex_home: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
                 standing_context,
@@ -366,6 +375,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 config_dir: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
                 standing_context,
@@ -396,6 +406,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 home_path: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
             })?;
@@ -417,6 +428,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 home_path: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
             })?;
@@ -748,6 +760,13 @@ async fn run_provider_turn_inner(
         }
     }
     let mut plan = plan_provider_turn(req)?;
+    if req.provider == ProviderKind::Claude {
+        super::claude::add_effort_if_supported(
+            Path::new(&plan.command),
+            &mut plan.argv,
+            req.effort,
+        )?;
+    }
     let documents = pdf_message(req)?;
     if documents.is_some() && mode == crate::native_input::Mode::Standard {
         let program = plan.command.clone();

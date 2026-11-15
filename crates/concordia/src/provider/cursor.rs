@@ -9,6 +9,8 @@ pub struct CursorTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
+    /// Cursor encodes effort in provider-owned model variant IDs; retained for contract parity.
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
 }

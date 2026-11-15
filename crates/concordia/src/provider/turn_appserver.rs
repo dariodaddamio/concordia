@@ -98,16 +98,11 @@ impl Connection {
                 continue;
             }
             if value["id"] == id {
-                anyhow::ensure!(
-                    value.get("error").is_none(),
-                    "Codex app-server rejected {method}: {}",
-                    value["error"]["message"]
-                        .as_str()
-                        .unwrap_or("native request failed")
-                        .chars()
-                        .take(1000)
-                        .collect::<String>()
-                );
+                if let Some(error) = value.get("error") {
+                    let structured = serde_json::to_string(error)
+                        .unwrap_or_else(|_| r#"{"code":"native_request_failed"}"#.into());
+                    anyhow::bail!("Codex app-server rejected {method}: {structured}");
+                }
                 return value
                     .get("result")
                     .cloned()
@@ -593,6 +588,9 @@ pub(super) async fn run(
         }
         let mut params=json!({"threadId":id,"input":content,"cwd":plan.cwd,"approvalPolicy":approval,"approvalsReviewer":"user","sandboxPolicy":policy});
         if let Some(model)=req.model {params["model"]=json!(model);}
+        if let Some(effort)=req.effort.filter(|effort| !effort.trim().is_empty()) {
+            params["reasoningEffort"] = json!(effort);
+        }
         let turn=tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"turn/start",params)).await??;
         conn.turn=Some(turn["turn"]["id"].as_str().filter(|id|!id.is_empty()&&id.len()<=4096).context("Native turn ID missing")?.into());
         conn.listen().await

@@ -70,6 +70,12 @@ pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> Failur
     for line in outcome.stderr_tail.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             structured.push(v);
+        } else if let Some(start) = line.find('{') {
+            // Native RPC adapters retain structured error objects after a short human prefix.
+            // Parse only the object suffix; prose remains non-evidence.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line[start..]) {
+                structured.push(v);
+            }
         }
     }
     for v in &structured {
