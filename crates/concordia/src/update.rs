@@ -198,11 +198,12 @@ impl JobControl {
             source: source.map(|value| bounded_redacted(&value, 512)),
             detail: bounded_redacted(rendered, 4096),
         };
+        if !matches!(diagnostic.severity.as_str(), "warning" | "error") {
+            return;
+        }
         if let Ok(mut snapshot) = self.snapshot.lock() {
             match diagnostic.severity.as_str() {
-                "error" | "failure" => {
-                    snapshot.error_count = snapshot.error_count.saturating_add(1).min(9999)
-                }
+                "error" => snapshot.error_count = snapshot.error_count.saturating_add(1).min(9999),
                 _ => snapshot.warning_count = snapshot.warning_count.saturating_add(1).min(9999),
             }
             if snapshot.diagnostics.len() < 32 {
@@ -451,16 +452,18 @@ fn run_child_with_format(
                                         .pointer("/target/name")
                                         .and_then(|value| value.as_str())
                                         .unwrap_or("target");
+                                    let fresh = record["fresh"].as_bool().unwrap_or(false);
                                     ctl.progress(
-                                        &format!("Building {target}"),
-                                        "Cargo reported a compiler artifact",
+                                        &if fresh {
+                                            format!("Ready: {target}")
+                                        } else {
+                                            format!("Compiling {target}")
+                                        },
+                                        "Preparing the verified build",
                                     );
                                 }
                                 Some("build-finished") if record["success"] == true => {
-                                    ctl.progress(
-                                        "Build finished",
-                                        "Cargo reported a successful build",
-                                    );
+                                    ctl.progress("Build ready", "Preparing the verified build");
                                 }
                                 _ => {}
                             },

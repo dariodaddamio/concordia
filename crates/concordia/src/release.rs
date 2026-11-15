@@ -722,6 +722,13 @@ pub(crate) fn install_release_controlled(
     }
 
     // It must run and be the version the release claims, or every launcher would break.
+    if let Some(control) = control {
+        control.stage(
+            crate::update::UpdateStage::Verifying,
+            "Verifying release",
+            "Checking the downloaded executable identity",
+        );
+    }
     let reported = verify_binary(&exe)?;
     let want = format!("concordia {} ", rel.version);
     if !reported.starts_with(&want) {
@@ -737,6 +744,13 @@ pub(crate) fn install_release_controlled(
     }
 
     ensure_active()?;
+    if let Some(control) = control {
+        control.stage(
+            crate::update::UpdateStage::Installing,
+            "Installing release",
+            "Staging the verified executable and switching the active pointer",
+        );
+    }
     let install_path = install_binary(&exe)?;
     Ok(UpdateResult {
         install_path,
