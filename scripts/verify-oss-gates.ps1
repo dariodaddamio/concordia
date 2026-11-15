@@ -60,21 +60,23 @@ $publicIdentifiers = @{
     'README.md' = @('dariodaddamio/concordia')
     'crates/concordia/Cargo.toml' = @('dariodaddamio/concordia')
     'crates/concordia/src/release.rs' = @('dariodaddamio/concordia')
+    'crates/concordia/src/tui/landing.rs' = @('https://dariodaddamio.github.io/concordia/')
     'docs/install.md' = @('dariodaddamio/concordia')
     'crates/concordia/src/harness/adapter.rs' = @('@dariodaddamio/harness')
     'scripts/install.ps1' = @('dariodaddamio/concordia')
     'scripts/test-install.ps1' = @('dariodaddamio/concordia')
-    'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/harness')
+    'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/harness', 'https://dariodaddamio.github.io/concordia/')
 }
 
-# Owner-requested public theme name. Permit this exact brand token only in its implementing
-# files/docs; personal paths and every other private-project token remain checked normally.
+# Owner-requested public brand name, including its shared CLI documentation. Permit this exact
+# token only in its implementing files/docs; personal paths and all other private tokens remain checked.
 $publicThemeFiles = @(
     'CHANGELOG.md', 'PLAN.md', 'crates/concordia/src/config.rs',
     'crates/concordia/src/tui/appearance.rs', 'crates/concordia/src/tui/brand.rs',
     'crates/concordia/src/tui/theme.rs', 'crates/concordia/src/tui/tests.rs',
     'docs/config.md', 'docs/archive/brand-direction.md', 'docs/chat-rendering.md',
     'docs/e2e-status.md', 'docs/architecture.md', 'crates/concordia/src/theme_library.rs',
+    'docs/preferences/ui-core.md',
     ('crates/concordia/src/themes/' + ('op' + 'ifex') + '.toml'), 'crates/concordia/src/tui/raster.rs',
     'crates/concordia/src/tui/tests/draw.rs', 'crates/concordia/src/tui/tests/input_dispatch.rs',
     'crates/concordia/src/tui/ux_tests.rs', 'site/astro.config.mjs', 'site/package.json',

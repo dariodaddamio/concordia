@@ -117,7 +117,6 @@ struct TestControl {
 struct TestState {
     focused_tab: String,
     overlays: Vec<String>,
-    status_dot: String,
     /// Test-only frame timing: the label, start and committed frame of the measured input.
     measure: Option<(String, std::time::Instant, u64)>,
     /// Every paint since `measure` started: milliseconds, frame shown and non-blank cells.
@@ -283,12 +282,6 @@ impl WindowBackend {
                 return;
             }
             *requested = status;
-        }
-        if let Some(test) = self.shared.test_control.as_ref() {
-            test.state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .status_dot = status.as_str().into();
         }
         let _ = self.post(UPDATE);
     }
@@ -1524,7 +1517,7 @@ fn test_response(shared: &Shared, request: &serde_json::Value) -> serde_json::Va
         "title": screen.title,
         "focused_tab": state.focused_tab,
         "overlays": state.overlays,
-        "status_dot": state.status_dot,
+        "status_dot": shared.requested_status.lock().unwrap_or_else(|e| e.into_inner()).as_str(),
         "notification_count": state.notification_count,
         "notification_texts": state.notification_texts,
         "columns": screen.size.width,

@@ -25,6 +25,12 @@ const FAKE: &str = env!("CARGO_BIN_EXE_concordia-fake-provider");
 static JOURNEY_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(windows)]
+fn artifact_root() -> PathBuf {
+    option_env!("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
+}
+
 unsafe extern "system" fn collect_window(hwnd: HWND, data: LPARAM) -> i32 {
     let pid = &mut *(data as *mut (u32, Vec<HWND>));
     let mut owner = 0;
@@ -633,6 +639,7 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
         serde_json::json!({
             "question": true,
             "question_then_approval": true,
+            "native_history": true,
             "finish_wait_for": "../gate"
         })
         .to_string(),
@@ -2181,7 +2188,7 @@ fn detached_file_windows_close_locally_and_can_be_reopened() {
         )
         .unwrap();
     }
-    let artifact = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/detached-window-close");
+    let artifact = artifact_root().join("preview/detached-window-close");
     std::fs::create_dir_all(&artifact).unwrap();
     let mut s = Session::launch(dir.path());
     let root_windows = process_windows(s.child.id());
@@ -2291,7 +2298,7 @@ fn main_window_close_checks_a_running_non_active_tab() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    let artifact = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/main-window-close-guard");
+    let artifact = artifact_root().join("preview/main-window-close-guard");
     std::fs::create_dir_all(&artifact).unwrap();
     let mut s = Session::launch(dir.path());
 
@@ -2467,7 +2474,7 @@ fn agents_reference_layout_supports_columns_selection_and_long_lists() {
             && screen.contains("633,883 / 1,000,000 tokens")
             && screen.contains("65.5% of compaction reference")
     });
-    let out = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/x2-agents");
+    let out = artifact_root().join("preview/x2-agents");
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("check-1.txt"), s.screen()).unwrap();
     let first = s.screen();

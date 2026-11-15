@@ -8,20 +8,24 @@ Provider-native logs and intentional repeated user requests are preserved.
 
 | Flow | Finding and resulting behavior | Evidence |
 | --- | --- | --- |
-| Current-chat file discovery | Relative/absolute aliases, Windows case variants, Markdown links and line references can name one file. Resolve and deduplicate by canonical identity, show at most one entry, and retain its location for preview. No repository walk or content read occurs during discovery. | `related_files::tests::discovery_deduplicates_aliases_and_locations_and_only_uses_chat_references` |
-| Current-chat preview | `/open` lists references from the current conversation; `@` mixes files with recorded chats. Tab/Enter inserts a file reference, Ctrl+P or a click previews it. Preview never dispatches the draft. | `chatref::tests::current_chat_files_complete_and_preview_without_dispatch_or_draft_loss` |
+| Current-chat file discovery | Canonical file identity collapses path aliases, Windows case variants, links and line references. Discovery keeps the preview location without walking the repository. | `related_files::tests::discovery_deduplicates_aliases_and_locations_and_only_uses_chat_references` |
+| Current-chat preview | `/open` lists current-chat references; `@` mixes files and chats. Tab/Enter inserts a reference; Ctrl+P or click previews it without dispatching the draft. | `chatref::tests::current_chat_files_complete_and_preview_without_dispatch_or_draft_loss` |
 | New/resumed conversations | Reset the file index on conversation replacement; discard results from an earlier discovery generation. | `related_files::tests::late_discovery_cannot_leak_files_into_another_conversation`, `chatref::tests::file_picker_deduplicates_and_new_conversation_clears_its_index` |
 | Missing sources | Deleted references fail visibly; a same-named file elsewhere is never substituted. | `chatref::tests::deleted_suggested_file_is_unavailable_without_opening_a_same_named_file_elsewhere` |
 | Suggestion arrival | New file results preserve the selected chat identity instead of changing what Enter would choose. | `chatref::tests::adding_file_suggestions_keeps_the_selected_chat_identity` |
-| Completed tool replay | The visible card was updated in place, but an identical completion was appended to the thread log again. Exact replay of the same card in the current turn now returns before logging. Reusing the ID in another turn remains a distinct action. | `tests::replayed_tool_completion_is_logged_once_but_reused_ids_in_new_turns_are_preserved` |
-| Complete provider snapshots | Identified complete snapshots could be emitted twice. A per-turn cache drops an exact replay with the same explicit identity, bounded to 128 entries / 4 MiB. Terminal events use the runner's single-turn identity, preventing repeated final usage from being counted twice. Unidentified text, partial-output events, distinct IDs and repeated deltas remain intact. | `provider::turn::replay_tests` |
+| Completed tool replay | An exact card completion replay in the same turn returns before duplicate logging. The same ID in a different turn remains a separate action. | `tests::replayed_tool_completion_is_logged_once_but_reused_ids_in_new_turns_are_preserved` |
+| Complete provider snapshots | Exact identified snapshots deduplicate within 128 entries / 4 MiB per turn. Terminal usage counts once; distinct IDs, partial text and repeated deltas remain intact. | `provider::turn::replay_tests` |
 | Handoff request fields | Identical first/latest requests were emitted in both `asked` and `now`. Omit only the redundant `now` field; retain source events and their count. | `threads::tests::map_omits_repeated_request_field_and_nonadjacent_identical_errors` |
 | Handoff errors | Adjacent-only deduplication missed a repeated error separated by a different one. Keep one copy of each displayed error, in original order. | same map regression |
-| File/chat ambiguity | A hexadecimal filename prefix followed by a path separator could expand as a chat map. Path-shaped references now stay literal. Repeated identical unresolved-reference notices are displayed once. | `chatref::tests::file_paths_with_hex_prefixes_are_never_expanded_as_chats_and_notices_are_unique` |
+| File/chat ambiguity | Path-shaped hexadecimal references stay literal. Identical unresolved-reference notices display once. | `chatref::tests::file_paths_with_hex_prefixes_are_never_expanded_as_chats_and_notices_are_unique` |
 | Active-chat self-reference | The current recorded conversation is omitted from related-chat suggestions; other chats retain their explicit IDs even when titles match file names. | `chatref::tests::current_conversation_is_not_offered_as_its_own_related_chat` |
 | Repeated chat references | Multiple references to one stored chat already expand its map once. Preserve those explicit references in the user's text. | existing `chatref::tests::at_most_three_references_and_repeats_expand_once` |
 | Native resume | Same provider/home with an explicit session uses native history without adding another context pack. | existing `context::tests::native_omits_pack` |
-| Streamed replies and tool output | Existing tests check streamed commentary/final-answer replay, one reply heading per group, and repeated tool-output chunks. | existing `tests::streamed_commentary_and_commands_keep_arrival_order_without_duplicate_final_reply`, `tests::tool_cards_stay_grouped_under_one_reply_label`, `stream_cards::tests::replaying_the_same_output_does_not_duplicate_it` |
+| Streamed replies and tool output | Existing tests check streamed commentary/final-answer replay, one reply heading per group, and repeated tool-output chunks. | Existing TUI stream-order, reply-grouping and stream-card replay checks; exact names below. |
+
+Stream-order evidence includes `tests::streamed_commentary_and_commands_keep_arrival_order_without_duplicate_final_reply`,
+`tests::tool_cards_stay_grouped_under_one_reply_label`, and
+`stream_cards::tests::replaying_the_same_output_does_not_duplicate_it`.
 
 ## Bounds and intentional distinctions
 
@@ -77,3 +81,35 @@ The installed `2026-10-31s` release passes five isolated fake-provider terminal 
 native handoff, restart recovery, capacity rollover, pinned-rule delivery and current-chat file
 preview. Source-directory and pinned-rule deduplication also have focused unit coverage; this
 does not establish that every possible provider output is free of repeated information.
+
+
+## Audit remediation in 2026-11-14p
+
+The two follow-up passes used baseline `a35932b`. Their identified defects and stale fixtures
+are addressed by the following canonical owners. [Current qualification](../e2e-status.md)
+distinguishes source inspection, deterministic flows and the two small native Codex turns.
+
+| Findings | Corrected owner and behavior |
+| --- | --- |
+| F1 | Native terminals bind conversation, workspace, provider, account, home and native session; local shells cannot receive native commands. |
+| F2, F8 | Queue resume respects native approvals; cancellation preserves independent drafts. |
+| F3 | Handoff context stays available until a provider launch handle is accepted. |
+| F4, F5 | Structured quota and terminal context errors reach continuation; context rollover occurs once with source pointers. |
+| F6, F7 | Final worker cards upsert by ID; unconfirmed running cards do not become successful. Invocation begins with the owned child handle. |
+| F9 | Nested source-reference checking uses exact historical edges and explicit history-extraction migrations; broad module exemptions are removed. |
+| F10, F11 | The approval attention check runs and the stale resolved item is withdrawn; unreachable editor branching is removed. |
+| F12 | Existing sent-history fixture closes inspection, dispatches prompts and uses valid distinct run IDs; two references survive restart. |
+| G1, G2 | MCP discovery and execution enforce effective project policy; ID/record boundaries reject traversal, links and oversized files. |
+| G3, G4, G9 | Proposals claim only their parent/workspace/run; binding and recovery save precede launch; completion requires exact agent/run IDs. Rejections are terminal and visible. |
+| G5, G14 | Invalid configuration stays unchanged; UI registry edits serialize read-modify-write with atomic publication. |
+| G6, G7, G8 | MCP initialization, ID matching, HTTP sessions/SSE, framing, deadlines, traffic budgets and child cleanup share owned transport paths. |
+| G10, G11 | Recovery help points to reachable controls. Same-provider automatic handoff requires consent and enabled policy; daily admission is atomic. |
+| G12, G13, G15 | All provider projections use server-bound proxies; references resolve only for the intended child/request. Redaction contains no value-derived fingerprint. |
+| Effort | Foreground and worker turns carry effort. Codex standard/app-server and supported Claude flags receive it; ACP providers retain native variant IDs. |
+
+`agent_records` owns durable lifecycle records; `native_history` owns bounded readback below CLI
+discovery; `text_safe` owns shared text boundaries. Provider-specific parsers stay separate where
+their protocol semantics differ. Identical task text is not a run identity or a deduplication key.
+
+The static gate retains historical cyclic edges; it does not claim the repository is acyclic.
+OAuth and broader native-provider qualification remain outside this repair evidence.

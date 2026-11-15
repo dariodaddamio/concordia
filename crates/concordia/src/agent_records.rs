@@ -107,7 +107,9 @@ fn modify_agent<T>(
         let excess = record.activity.len().saturating_sub(32);
         record.activity.drain(..excess);
         for activity in &mut record.activity {
-            if let Some((end, _)) = activity.char_indices().nth(256) { activity.truncate(end); }
+            if let Some((end, _)) = activity.char_indices().nth(256) {
+                activity.truncate(end);
+            }
         }
         write_agent(root, &record).map_err(std::io::Error::other)?;
         Ok(result)

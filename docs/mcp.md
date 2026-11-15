@@ -32,11 +32,11 @@ not contain value-derived fingerprints.
 
 Project switches are checked during discovery and again during `tools/call`; a disabled server is
 not reachable by naming it directly. Stdio exchanges have a 10-second deadline, 256 KiB frame
-limit, 2 MiB response budget and 256-frame cap, then clean up the child process. Remote HTTP has a
+limit, 2 MiB response budget and 256-frame cap, then clean up the child process. Windows remote HTTP has a
 10-second total deadline, 2 MiB response budget and 16 KiB header limit, preserves the negotiated
 MCP session ID and accepts matching JSON or SSE responses. Windows HTTPS uses native WinHTTP;
-non-Windows HTTPS is intentionally unsupported. OAuth browser sign-in and upstream HTTP session
-persistence are not shipped, so OAuth-only servers remain a live qualification gap.
+non-Windows HTTPS is intentionally unsupported. The session ID is retained within an exchange; reconnect/reuse across exchanges and OAuth browser
+sign-in are not shipped. OAuth-only servers remain a live qualification gap.
 
 ## Existing Concordia MCP server
 

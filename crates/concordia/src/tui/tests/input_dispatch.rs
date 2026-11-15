@@ -1671,8 +1671,18 @@ fn model_picker_hides_source_tags_and_marks_current() {
         }],
         Some("sol"),
     );
-    assert!(rows.iter().find(|row| row.id == "model:sol").unwrap().label.contains("current"));
-    assert!(!rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("cached"));
+    assert!(rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .label
+        .contains("current"));
+    assert!(!rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("cached"));
 }
 
 #[test]
@@ -1692,8 +1702,18 @@ fn model_picker_lists_provider_efforts_in_the_row() {
         }],
         None,
     );
-    assert!(rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("efforts: low"));
-    assert!(!rows.iter().find(|row| row.id == "model:sol").unwrap().detail.contains("reported by CLI"));
+    assert!(rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("efforts: low"));
+    assert!(!rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("reported by CLI"));
 }
 
 #[test]

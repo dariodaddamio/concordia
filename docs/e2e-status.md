@@ -1,8 +1,51 @@
 # Verification
 
-The installed baseline is **2026-11-09g**, a private Windows build. The audited runtime source
-and pre-rewrite documentation are preserved in local Git checkpoint `6fea4a9`. The current
-working changes are documentation and product-definition work; the feature roadmap is paused.
+The local audit-remediation candidate is **2026-11-14p**, based on `a35932b`. It has not been
+installed or published. The earlier installed-build record below is historical.
+
+## Audit repair qualification
+
+| Check | Covered behavior | Result |
+| --- | --- | --- |
+| 125 focused existing library tests | Queue, continuation, attention, models, history, provider events, MCP/storage, redaction and process constructors | Pass |
+| Bounded MCP process probes | Disabled/project-off enforcement, traversal rejection, oversized-frame resynchronization, initialized notification and matching IDs | Pass |
+| Quiet and streaming MCP peers | Quiet child returns after about 10 seconds and is reaped; lowercase session headers and matching chunked SSE succeed | Pass |
+| Fresh library probes | Config preservation, exact completion, owned proposals, secret-free projections, four concurrent mutations and consent/cap admission | Pass |
+| 2 provider process tests | Closed-start receiver cancellation; duplicate native requests and answer replay | Pass |
+| Windows native-window journey | Question, approval, notification and idle restart with synthetic native history | Pass |
+| Native Codex standard turn | `gpt-5.6-luna`, low effort, one-line prompt, read-only trust, reply `OK` | Pass |
+| Native Codex app-server turn | Same model/effort/prompt; accepted native `effort` field, reply `OK` | Pass |
+| Independent architecture, UI/logic and security review | Canonical seams, transition fixes, exact historical source-reference gate and boundary probes | Pass |
+
+Counts: queue 44, continuation 17, approval 1, model picker 5, history 10, provider failure/interaction/Claude/replay 14,
+registry/record/schema 9, config/redaction 22 and process constructors 3.
+
+The empty `provider::codex::tests` and `delegate::tests` filters are excluded from the 125 count.
+The history failure was an invalid fixture: queue inspection stayed focused and later fixture
+run IDs were not UUIDs. The corrected journey dispatches ordinary prompts with actual run IDs.
+Other stale picker fixtures now use provider-reported models and usage and select by explicit IDs.
+No new unit or integration test cases were added.
+
+Formatting, `cargo check --locked -p concordia`, documentation, OSS privacy, hidden-process and
+static cycle gates pass. The final independent process review is recorded in the
+[archived repair plan](plans/archived/2026-11-15-audit-remediation.md).
+The privacy check recognizes two existing public identifiers in exact files; it still scans personal
+paths and every other private token. The native-window journey required fixing the initial snapshot
+status and supplying the fake provider's missing native history; runtime recovery protection remained intact.
+The module-cycle check discovers nested/inline modules and source use trees, then checks exact
+historical ownership edges. It is a static approximation: macros, feature evaluation and compiler
+name resolution are outside its scope. Path attributes must be adjacent to their module declaration.
+
+No Claude inference ran while its quota was exhausted. Claude effort delivery was inspected and
+fixture-checked; a fresh live Claude turn remains unqualified. Cursor/Grok/opencode, credential-backed
+MCP delivery and TLS certificate/server combinations did not receive new live qualification.
+The HTTP/SSE mock uses loopback HTTP; Windows HTTP and HTTPS share the WinHTTP request owner.
+These checks establish the named flows, not universal provider parity or native hook enforcement.
+
+## Historical installed-build record
+
+Build **2026-11-09g** was a private Windows build. Its audited runtime source and pre-rewrite
+documentation are preserved in local Git checkpoint `6fea4a9`.
 
 Installed executable SHA-256:
 

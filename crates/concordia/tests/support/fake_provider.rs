@@ -193,7 +193,37 @@ fn fake_appserver() {
         println!("{value}");
         std::io::stdout().flush().unwrap();
     };
-    let mut thread = "native-fixture-thread".to_owned();
+    let append_history = |thread: &str, role: &str, text: &str| {
+        if fixture["native_history"] != true {
+            return;
+        }
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let path = home
+            .join("sessions")
+            .join(format!("rollout-{thread}.jsonl"));
+        let new = !path.exists();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        if new {
+            writeln!(
+                file,
+                "{}",
+                json!({"type":"session_meta","payload":{"id":thread,"cwd":root}})
+            )
+            .unwrap();
+        }
+        writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","role":role,"content":[{"type":if role=="user" {"input_text"} else {"output_text"},"text":text}]}})).unwrap();
+    };
+    let mut thread = if fixture["native_history"] == true {
+        "00000000-0000-4000-8000-000000000093"
+    } else {
+        "native-fixture-thread"
+    }
+    .to_owned();
     let mut question_answered = false;
     let mut approval_sent = false;
     let large_tool = |thread: &str| {
@@ -230,6 +260,7 @@ fn fake_appserver() {
         } else {
             "Native approval handled".into()
         };
+        append_history(thread, "assistant", &reply);
         emit(
             json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":reply}}),
         );
@@ -283,6 +314,18 @@ fn fake_appserver() {
                 json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user"})
             }
             "turn/start" => {
+                let prompt = value["params"]["input"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+                append_history(&thread, "user", &prompt);
+
                 // Deliberately arrive before the turn/start response: the client must buffer.
                 // Question fixtures do not start a command. Permission fixtures keep
                 // command lifetime distinct and complete it only after a native answer.

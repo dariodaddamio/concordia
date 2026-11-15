@@ -967,8 +967,11 @@ impl App {
                     status,
                     Some(j.final_text()),
                     "worker run finished",
-                ).err()
-            } else { None };
+                )
+                .err()
+            } else {
+                None
+            };
             crate::logging::info(&format!(
                 "delegate-finish id={} worker={} state={} ms={} cards={} origin={:?}",
                 j.id,
