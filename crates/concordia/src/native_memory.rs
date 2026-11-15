@@ -1155,7 +1155,7 @@ pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
     } else {
         ""
     };
-    Ok(format!("{}{suffix}", crate::chat_cli::terminal_safe(&text)))
+    Ok(format!("{}{suffix}", crate::text_safe::terminal_safe(&text)))
 }
 
 pub fn index_session(

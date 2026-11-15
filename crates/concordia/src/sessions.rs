@@ -220,11 +220,12 @@ pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagno
             }
             Some(_) => match find_native_record(root, &account, Some(provider), &native_session_id)
             {
-                Ok(Some(_)) => match crate::chat_cli::read_history(
+                Ok(Some((_, path))) => match crate::native_history::read_bound(
                     root,
                     &account,
                     provider,
                     &native_session_id,
+                    &path,
                 ) {
                     Ok(_) => ChatOpenability::Openable,
                     Err(error) => ChatOpenability::Unopenable(

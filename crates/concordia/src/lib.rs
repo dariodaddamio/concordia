@@ -23,6 +23,7 @@ pub mod logging;
 pub mod mcp;
 pub mod mcp_registry;
 pub mod models;
+pub(crate) mod native_history;
 pub mod native_input;
 pub mod native_memory;
 pub mod needs_you;
