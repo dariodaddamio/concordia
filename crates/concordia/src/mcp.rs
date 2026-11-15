@@ -446,7 +446,7 @@ impl<'a> HttpSession<'a> {
         if self.url.starts_with("https://") {
             #[cfg(windows)]
             {
-                return remote_https_request(self.url, self.headers, request);
+                return remote_https_request(self.url, self.headers, request.clone());
             }
             #[cfg(not(windows))]
             {
