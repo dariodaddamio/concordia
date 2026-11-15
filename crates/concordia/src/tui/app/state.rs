@@ -149,6 +149,7 @@ pub(in crate::tui) struct PendingLogin {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tui) enum PickerKind {
     Guided,
+    SharedCommand,
     Doctor,
     DoctorConfirm,
     ChatRepair,
@@ -445,6 +446,8 @@ pub(crate) struct App {
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
     pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
     pub(in crate::tui) fallback_role: Option<String>,
+    pub(in crate::tui) shared_command: Option<String>,
+    pub(in crate::tui) provider_command: Option<String>,
 }
 
 impl App {
@@ -1941,6 +1944,8 @@ impl App {
             needs_you: crate::needs_you::Queue::default(),
             grok_bot_form: None,
             fallback_role: None,
+            shared_command: None,
+            provider_command: None,
         }
     }
 }

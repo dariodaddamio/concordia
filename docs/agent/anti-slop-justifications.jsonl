@@ -1,5 +1,13 @@
 ## This slice
 
+### FIX5 shared command picker - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/commands.rs, crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 10 | Derive the shared-name predicate from the existing Concordia registry and provider command advertisements; no hand-written overlap list or second command owner. |
+| crates/concordia/src/tui/{palette.rs,draw/mod.rs,app/{state,slash,pickers}.rs} | ok: 1, 4, 5, 6, 7, 10 | Reuse the existing slash palette and picker lifecycle; the transient full command is the only added state, and selected provider execution delegates to existing transport/native-terminal paths. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible command-routing correction under the required build identity. |
+
 ### FIX3 compact handoff - anti-slop gate
 
 | path | tendency_check | justification |

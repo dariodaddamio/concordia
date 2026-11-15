@@ -80,6 +80,10 @@ const CODEX_COMMANDS: &[CommandSpec] = &[
 
 const CLAUDE_COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "/model",
+        description: "choose a Claude model",
+    },
+    CommandSpec {
         name: "/context",
         description: "show context window usage",
     },

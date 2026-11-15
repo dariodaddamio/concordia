@@ -287,6 +287,22 @@ pub fn is_provider_passthrough(line: &str) -> bool {
     matches!(parse_slash(line), Some((SlashCommand::Unknown(_), _)))
 }
 
+/// Returns the command name when the typed slash command is registered by both Concordia and
+/// the selected provider. Arguments remain in the original line and are routed by the caller.
+pub fn shared_command_name(line: &str, provider: ProviderKind) -> Option<String> {
+    let name = line.split_whitespace().next()?.to_ascii_lowercase();
+    if !name.starts_with('/') {
+        return None;
+    }
+    let concordia = COMMAND_REGISTRY
+        .iter()
+        .any(|command| command.name.eq_ignore_ascii_case(&name));
+    let provider = crate::provider::command_specs(provider)
+        .iter()
+        .any(|command| command.name.eq_ignore_ascii_case(&name));
+    concordia.then_some(name).filter(|_| provider)
+}
+
 pub fn parse_provider(s: &str) -> Option<ProviderKind> {
     match s.trim().to_lowercase().as_str() {
         "codex" => Some(ProviderKind::Codex),

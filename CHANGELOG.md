@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-14g)
+
+- Shared slash commands now open a picker for Concordia or each registered provider account;
+  provider commands use their transport when available and otherwise the chat's native session.
+
 ### Fixed (2026-11-14e)
 
 - Cross-provider handoffs now use a compact grouped map, keep standing context under 60 words,

@@ -1101,6 +1101,14 @@ impl App {
         }
     }
     pub(in crate::tui) fn dismiss_picker(&mut self) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::SharedCommand)
+        {
+            self.shared_command = None;
+            self.provider_command = None;
+        }
         let restore_handoff = self
             .picker
             .as_ref()
@@ -1312,6 +1320,7 @@ impl App {
         let id = row.id.clone();
         let label = row.label.clone();
         let kind = picker.kind;
+        let shared_command = self.shared_command.clone();
         if row.disabled() {
             return;
         }
@@ -1339,6 +1348,48 @@ impl App {
             return;
         }
         match kind {
+            PickerKind::SharedCommand => {
+                let Some(command) = shared_command else {
+                    self.push_system("shared command choice expired; nothing was sent");
+                    return;
+                };
+                if id == "shared:concordia" {
+                    self.shared_command = Some(command.clone());
+                    if let Some(tx) = turn_tx {
+                        self.run_line(command, tx);
+                    } else {
+                        self.handle_slash(&command);
+                    }
+                    return;
+                }
+                let Some(account) = id.strip_prefix("shared:account:") else {
+                    self.push_system("shared command choice was invalid; nothing was sent");
+                    return;
+                };
+                let Some(def) = accounts_with_auth(&self.state_root)
+                    .into_iter()
+                    .find(|candidate| candidate.account == account)
+                else {
+                    self.push_system("shared command account is no longer registered; nothing was sent");
+                    return;
+                };
+                if let Err(error) = select_account(&self.state_root, account) {
+                    self.push_system(format!("shared command account switch failed · {error}"));
+                    return;
+                }
+                self.refresh_account_continuity();
+                if crate::provider::command_supported(def.provider, &command.split_whitespace().next().unwrap_or_default()) {
+                    self.provider_command = Some(command.clone());
+                    if let Some(tx) = turn_tx {
+                        self.run_line(command, tx);
+                    } else {
+                        self.push_system("provider command selected; press Enter to run it");
+                    }
+                } else {
+                    self.push_command(&command);
+                    crate::tui::local_terminal::native_command(self, &command);
+                }
+            }
             PickerKind::Guided => {
                 match id.as_str() {
                     "terminal:open" => {
