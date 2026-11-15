@@ -435,6 +435,12 @@ pub struct Delegates {
     schedule: schedule::Graph,
 }
 
+impl Delegates {
+    pub fn save_recovery_state(&mut self) -> Result<(), String> {
+        self.save_recovery()
+    }
+}
+
 impl Default for Delegates {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel(crate::provider::turn::PROGRESS_CAPACITY);

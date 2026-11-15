@@ -956,7 +956,7 @@ impl App {
             };
             if let Some(agent_id) = j.mcp_agent_id.as_deref() {
                 let status = if j.state == WorkerState::Done { "finished" } else { "failed" };
-                let _ = crate::mcp::update_agent_run(
+                let _ = crate::mcp::records::update_agent_run(
                     &self.state_root,
                     agent_id,
                     &j.run_id,
@@ -1088,22 +1088,18 @@ impl App {
         }
         let slots = MAX_PENDING_CONFIRMS.saturating_sub(self.deleg.confirms.len());
         let mut changed = false;
-        for proposal in crate::mcp::take_pending(&self.state_root, slots) {
+        let parent = self.deleg.d.conversation_id().to_owned();
+        let canonical_cwd = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
+        let parent_run = self.continuation.run_id().to_owned();
+        for proposal in crate::mcp::take_pending_for(
+            &self.state_root,
+            slots,
+            &parent,
+            &canonical_cwd,
+            &parent_run,
+        ) {
             changed = true;
-            match proposal {
-                crate::mcp::PendingProposal::Delegate(proposal) => {
-                    let canonical_cwd = std::fs::canonicalize(&self.cwd).unwrap_or_else(|_| self.cwd.clone());
-                    let owner_ok = proposal.from_thread == self.deleg.d.conversation_id()
-                        && proposal.workspace.as_ref().is_some_and(|workspace| {
-                            std::fs::canonicalize(workspace)
-                                .map(|path| path == canonical_cwd)
-                                .unwrap_or(false)
-                        })
-                        && proposal.parent_run_id.as_deref() == Some(self.continuation.run_id());
-                    if !owner_ok {
-                        self.push_system("worker proposal paused: its parent conversation, workspace or run does not match this chat");
-                        continue;
-                    }
+            {
                     crate::mcp::update_agent(
                         &self.state_root,
                         &proposal.agent_id,
@@ -1112,6 +1108,8 @@ impl App {
                         "accepted by Concordia",
                     );
                     if let Some(block) = crate::delegate::block_from(&proposal.to, &proposal.task) {
+                        let prior_ids: std::collections::HashSet<u32> =
+                            self.deleg.d.jobs.iter().map(|job| job.id).collect();
                         match self.start_delegate_with_model(
                             &block.to,
                             &block.task,
@@ -1119,22 +1117,43 @@ impl App {
                             proposal.model.as_deref(),
                         ) {
                             Ok(message) => {
-                                let conversation_id = self.deleg.d.conversation_id().to_owned();
-                                if let Some(job) = self.deleg.d.jobs.iter_mut().rev().find(|job| {
-                                    job.origin == Origin::Protocol
-                                        && job.task == block.task
-                                        && job.conversation_id == conversation_id
+                                if let Some(job) = self.deleg.d.jobs.iter_mut().find(|job| {
+                                    !prior_ids.contains(&job.id) && job.origin == Origin::Protocol
                                 }) {
-                                    let _ = crate::mcp::bind_agent_run(
+                                    let Some(parent_run) = proposal.parent_run_id.as_deref() else {
+                                        self.push_system("worker proposal paused: missing parent run identity");
+                                        continue;
+                                    };
+                                    let binding = crate::mcp::records::bind_agent_run(
                                         &self.state_root,
                                         &proposal.agent_id,
-                                        &proposal.from_thread,
+                                        &parent,
                                         &canonical_cwd,
-                                        proposal.parent_run_id.as_deref(),
+                                        &parent_run,
                                         &job.run_id,
                                     );
-                                    job.bind_mcp_agent(proposal.agent_id.clone());
-                                    let _ = self.deleg.d.save_recovery();
+                                    if let Err(error) = binding {
+                                        crate::mcp::update_agent(
+                                            &self.state_root,
+                                            &proposal.agent_id,
+                                            "failed",
+                                            Some(error.clone()),
+                                            "worker identity binding failed before acceptance",
+                                        );
+                                        self.push_system(format!("delegate identity binding failed - {error}"));
+                                    } else {
+                                        job.bind_mcp_agent(proposal.agent_id.clone());
+                                        if let Err(error) = self.deleg.d.save_recovery_state() {
+                                            crate::mcp::update_agent(
+                                                &self.state_root,
+                                                &proposal.agent_id,
+                                                "failed",
+                                                Some(error.clone()),
+                                                "worker identity persistence failed before acceptance",
+                                            );
+                                            self.push_system(format!("delegate identity persistence failed - {error}"));
+                                        }
+                                    }
                                 }
                                 self.push_system(message)
                             },
@@ -1160,7 +1179,6 @@ impl App {
                         );
                         self.push_system(error);
                     }
-                }
             }
         }
         changed
