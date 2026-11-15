@@ -760,6 +760,28 @@ async fn run_provider_turn_inner(
         }
     }
     let mut plan = plan_provider_turn(req)?;
+    // Bind MCP child provenance to the already-validated app owner. Never derive these values
+    // from model parameters or allow stale inherited identities on unbound/manual turns.
+    const OWNER_ENV: [&str; 3] = [
+        "CONCORDIA_PARENT_CONVERSATION",
+        "CONCORDIA_PARENT_RUN",
+        "CONCORDIA_PROJECT_DIR",
+    ];
+    plan.env_remove.retain(|key| !OWNER_ENV.contains(&key.as_str()));
+    plan.env.retain(|(key, _)| !OWNER_ENV.contains(&key.as_str()));
+    if let Some(owner) = &owner {
+        plan.env.extend([
+            ("CONCORDIA_PARENT_CONVERSATION".into(), owner.conversation_id.clone()),
+            ("CONCORDIA_PARENT_RUN".into(), owner.run_id.clone()),
+            (
+                "CONCORDIA_PROJECT_DIR".into(),
+                owner.workspace.to_string_lossy().into_owned(),
+            ),
+        ]);
+    } else {
+        plan.env_remove
+            .extend(OWNER_ENV.into_iter().map(str::to_owned));
+    }
     if req.provider == ProviderKind::Claude {
         super::claude::add_effort_if_supported(&mut plan.argv, req.effort)?;
     }
