@@ -102,11 +102,43 @@ pub fn verify_binary(exe: &Path) -> Result<String> {
 // run on the UI thread. A job reports progress through `JobControl::say`, can be cancelled, and
 // delivers one result.
 
-/// Shared between the job thread and the UI: a cancel flag and the latest progress line.
+/// The coarse phases exposed to the update UI. These are stages, not percentages: an update
+/// cannot truthfully predict how long a compiler, network or installer operation will take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStage {
+    Preparing,
+    Building,
+    Downloading,
+    Verifying,
+    Installing,
+    Finishing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobDiagnostic {
+    pub severity: String,
+    pub message: String,
+    pub code: Option<String>,
+    pub source: Option<String>,
+    /// The bounded rendered compiler diagnostic, retained for an expandable details view.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct JobSnapshot {
+    pub stage: Option<UpdateStage>,
+    pub status: String,
+    pub detail: String,
+    pub diagnostics: Vec<JobDiagnostic>,
+    pub warning_count: usize,
+    pub error_count: usize,
+}
+
+/// Shared between the job thread and the UI: a cancel flag and one bounded progress snapshot.
 #[derive(Clone, Default)]
 pub struct JobControl {
     cancel: Arc<AtomicBool>,
-    status: Arc<Mutex<String>>,
+    snapshot: Arc<Mutex<JobSnapshot>>,
 }
 
 impl JobControl {
@@ -115,14 +147,85 @@ impl JobControl {
     }
 
     pub fn say(&self, line: &str) {
-        if let Ok(mut s) = self.status.lock() {
-            *s = line.trim().to_string();
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            snapshot.status = bounded_redacted(line.trim(), 512);
+            snapshot.detail.clear();
+        }
+    }
+
+    /// Set a truthful coarse phase and its user-facing status/detail.
+    pub fn stage(&self, stage: UpdateStage, status: &str, detail: impl AsRef<str>) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            snapshot.stage = Some(stage);
+            snapshot.status = bounded_redacted(status, 512);
+            snapshot.detail = bounded_redacted(detail.as_ref(), 4096);
+        }
+    }
+
+    /// Update only the status within the current stage. Compiler warnings never call this.
+    fn progress(&self, status: &str, detail: &str) {
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            snapshot.status = bounded_redacted(status, 512);
+            snapshot.detail = bounded_redacted(detail, 4096);
+        }
+    }
+
+    fn diagnostic(&self, record: &serde_json::Value) {
+        let Some(message) = record.pointer("/message") else {
+            return;
+        };
+        let severity = message["level"].as_str().unwrap_or("warning").to_owned();
+        let rendered = message["rendered"].as_str().unwrap_or_default();
+        let concise = message["message"].as_str().unwrap_or(rendered).trim();
+        let code = message
+            .pointer("/code/code")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let source = message["spans"]
+            .as_array()
+            .and_then(|spans| {
+                spans
+                    .iter()
+                    .find(|span| span["is_primary"] == true)
+                    .or_else(|| spans.first())
+            })
+            .and_then(|span| span["file_name"].as_str())
+            .map(str::to_owned);
+        let diagnostic = JobDiagnostic {
+            severity: bounded_redacted(&severity, 32),
+            message: bounded_redacted(concise, 512),
+            code: code.map(|value| bounded_redacted(&value, 64)),
+            source: source.map(|value| bounded_redacted(&value, 512)),
+            detail: bounded_redacted(rendered, 4096),
+        };
+        if let Ok(mut snapshot) = self.snapshot.lock() {
+            match diagnostic.severity.as_str() {
+                "error" | "failure" => {
+                    snapshot.error_count = snapshot.error_count.saturating_add(1).min(9999)
+                }
+                _ => snapshot.warning_count = snapshot.warning_count.saturating_add(1).min(9999),
+            }
+            if snapshot.diagnostics.len() < 32 {
+                snapshot.diagnostics.push(diagnostic);
+            }
         }
     }
 
     pub fn status(&self) -> String {
-        self.status.lock().map(|s| s.clone()).unwrap_or_default()
+        self.snapshot
+            .lock()
+            .map(|s| s.status.clone())
+            .unwrap_or_default()
     }
+
+    pub fn snapshot(&self) -> JobSnapshot {
+        self.snapshot.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
+fn bounded_redacted(value: &str, limit: usize) -> String {
+    let safe = crate::redact::redact(value);
+    safe.chars().take(limit).collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +335,10 @@ impl Job {
         self.ctl.status()
     }
 
+    pub fn snapshot(&self) -> JobSnapshot {
+        self.ctl.snapshot()
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.ctl.cancelled()
     }
@@ -337,19 +444,27 @@ fn run_child_with_format(
                 if !line.trim().is_empty() {
                     if cargo_json {
                         match serde_json::from_str::<serde_json::Value>(&line) {
-                            Ok(record) => {
-                                if let Some(message) = record
-                                    .pointer("/message/rendered")
-                                    .and_then(|value| value.as_str())
-                                {
-                                    ctl.say(message);
-                                } else if record["reason"] == "build-finished"
-                                    && record["success"] == true
-                                {
-                                    ctl.say("Release build finished");
+                            Ok(record) => match record["reason"].as_str() {
+                                Some("compiler-message") => ctl.diagnostic(&record),
+                                Some("compiler-artifact") => {
+                                    let target = record
+                                        .pointer("/target/name")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("target");
+                                    ctl.progress(
+                                        &format!("Building {target}"),
+                                        "Cargo reported a compiler artifact",
+                                    );
                                 }
-                            }
-                            Err(_) => ctl.say(&line),
+                                Some("build-finished") if record["success"] == true => {
+                                    ctl.progress(
+                                        "Build finished",
+                                        "Cargo reported a successful build",
+                                    );
+                                }
+                                _ => {}
+                            },
+                            Err(_) => {}
                         }
                     } else {
                         ctl.say(&line);
@@ -533,6 +648,11 @@ pub fn update_auto(cwd: &Path) -> Result<UpdateOutcome> {
 }
 
 pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
+    ctl.stage(
+        UpdateStage::Preparing,
+        "Preparing update",
+        "Checking the selected update channel",
+    );
     install_channel()?;
     if source_root(cwd).is_some() {
         return perform_update_ctl(cwd, ctl).map(UpdateOutcome::Installed);
@@ -542,7 +662,11 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
         "invalid release repository override; CONCORDIA_UPDATE_REPO must be owner/name (unset it to use the official feed)",
     )?;
     let fetch = crate::release::PowerShellFetcher;
-    ctl.say("checking for a newer release");
+    ctl.stage(
+        UpdateStage::Preparing,
+        "Checking for a newer release",
+        "Reading the configured release feed",
+    );
     let found = crate::release::check(&cfg, current, &fetch)?;
     if ctl.cancelled() {
         bail!("cancelled");
@@ -552,9 +676,18 @@ pub fn update_auto_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateOutcome> {
             "already up to date ({current})"
         ))),
         crate::release::Check::Available(rel) => {
-            ctl.say(&format!("Preparing {} update", rel.tag));
+            ctl.stage(
+                UpdateStage::Downloading,
+                &format!("Downloading {}", rel.tag),
+                "Fetching the checksum and executable",
+            );
             let result =
                 crate::release::install_release_controlled(&cfg, &rel, current, &fetch, Some(ctl))?;
+            ctl.stage(
+                UpdateStage::Finishing,
+                "Finishing update",
+                "Release verified and installed",
+            );
             sync_owned_shortcuts()?;
             Ok(UpdateOutcome::Installed(result))
         }
@@ -858,6 +991,11 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
 }
 
 pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> {
+    ctl.stage(
+        UpdateStage::Preparing,
+        "Preparing source update",
+        "Locating and checking the source checkout",
+    );
     install_channel()?;
     let root = source_root(cwd).context(
         "no source checkout found: run /update inside the repository once, or run `concordia install` from a build in it",
@@ -896,6 +1034,11 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
             }
         }
     };
+    ctl.stage(
+        UpdateStage::Verifying,
+        "Verifying source build",
+        "Checking the reported version and executable identity",
+    );
     anyhow::ensure!(
         built.is_file(),
         "Cargo-reported executable is missing: {}",
@@ -912,9 +1055,19 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
     );
 
     anyhow::ensure!(!ctl.cancelled(), "cancelled");
+    ctl.stage(
+        UpdateStage::Installing,
+        "Installing update",
+        "Staging the verified executable and switching the active pointer",
+    );
     let install_path = install_binary(&built)?;
     sync_owned_shortcuts()?;
     record_source_root(&root);
+    ctl.stage(
+        UpdateStage::Finishing,
+        "Finishing update",
+        "Refreshing owned shortcuts and source identity",
+    );
     Ok(UpdateResult {
         install_path,
         built_from: built,
@@ -1479,6 +1632,11 @@ fn run_cargo_build(
     target_dir: Option<&Path>,
     ctl: &JobControl,
 ) -> Result<(PathBuf, String)> {
+    ctl.stage(
+        UpdateStage::Building,
+        "Building update",
+        "Cargo is compiling Concordia",
+    );
     let mut cmd = crate::process_ui::command(cargo);
     cmd.args([
         "build",
