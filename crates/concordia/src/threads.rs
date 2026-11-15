@@ -25,6 +25,20 @@ const JOURNAL_READ_BYTES: usize = 32 * 1024 * 1024;
 const JOURNAL_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 const JOURNAL_ANCHOR_BYTES: u64 = 64 * 1024;
 
+/// Count grouped handoff pointers and verified native source ids for the user card.
+pub fn handoff_pointer_count(text: &str) -> usize {
+    let grouped = text.matches("--range ").count();
+    let sources = text
+        .lines()
+        .find_map(|line| line.strip_prefix("src="))
+        .map_or(0, |line| {
+            line.split(';')
+                .filter(|part| !part.starts_with("unavailable=") && !part.is_empty())
+                .count()
+        });
+    grouped + sources
+}
+
 /// One finite journal page; cursors retain exact file identity and a fixed source snapshot.
 pub struct ThreadPage {
     pub events: Vec<ThreadEvent>,
@@ -782,13 +796,10 @@ pub fn build_map(
     } else {
         "(memory)"
     };
-    let header = format!("[concordia map] thread {id} - v2 - tools/approvals NOT transferred");
+    let header = format!("[concordia map] thread {id} · tools/approvals not transferred");
     let mut lines = vec![header];
     if let Some(note) = note {
-        lines[0].push_str(&format!(" - {}", one_line(note, 240)));
-    }
-    if let Some(state) = workspace {
-        lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
+        lines[0].push_str(&format!(" · {}", one_line(note, 120)));
     }
     let source_pointer = |ordinal: usize| {
         if stored && !thread_id.is_empty() {
@@ -797,7 +808,7 @@ pub fn build_map(
             "attached native-source indexes (in-memory turn number only)".to_owned()
         }
     };
-    let pointer = |ordinal: usize| format!("turn {ordinal} -> {}", source_pointer(ordinal));
+    let pointer = |ordinal: usize| source_pointer(ordinal);
     let user_indices = events
         .iter()
         .enumerate()
@@ -806,21 +817,16 @@ pub fn build_map(
         .collect::<Vec<_>>();
     let first_user = user_indices.first().copied();
     let latest_user = user_indices.last().copied();
-    let mut goal = Vec::new();
+    let mut goal = None;
     if let Some(index) = first_user {
-        goal.push(format!("goal: {}", one_line(events[index].text(), 240)));
+        goal = Some(one_line(events[index].text(), 240));
     }
-    if latest_user != first_user {
-        if let Some(index) = latest_user {
-            goal.push(format!(
-                "latest redirect: {}",
-                one_line(events[index].text(), 240)
-            ));
-        }
-    }
-    if !goal.is_empty() {
-        lines.push("goal".into());
-        lines.extend(goal);
+    if let Some(goal) = goal {
+        let redirect = latest_user
+            .filter(|latest| Some(*latest) != first_user)
+            .map(|index| format!(" · redirect={}", one_line(events[index].text(), 180)))
+            .unwrap_or_default();
+        lines.push(format!("goal={goal}{redirect}"));
     }
 
     let mut files = std::collections::BTreeMap::<String, usize>::new();
@@ -886,58 +892,40 @@ pub fn build_map(
     }
 
     if !files.is_empty() {
-        lines.push("files edited".into());
         let mut ranked = files.into_iter().collect::<Vec<_>>();
         ranked.sort_by(|(a, ac), (b, bc)| bc.cmp(ac).then_with(|| a.cmp(b)));
-        for (path, count) in ranked.into_iter().take(8) {
-            lines.push(format!(
-                "{path} ({count} {})",
-                if count == 1 { "edit" } else { "edits" }
-            ));
-        }
+        let changed = ranked
+            .into_iter()
+            .take(8)
+            .map(|(path, count)| format!("{path}({count})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        lines.push(format!("changed={changed}"));
         if file_ordinals.len() > 8 {
             let first = file_ordinals.iter().min().copied().unwrap_or(1);
             let last = file_ordinals.iter().max().copied().unwrap_or(first);
-            lines.push(if stored && !thread_id.is_empty() {
-                format!("more files: concordia chat thread read {thread_id} --range {first}-{last}")
+            let more = if stored && !thread_id.is_empty() {
+                format!("concordia chat thread read {thread_id} --range {first}-{last}")
             } else {
-                "more files: attached native-source indexes; inspect the recorded tool turns with concordia chat index".into()
-            });
+                "concordia chat index SESSION --account ACCOUNT --provider PROVIDER".into()
+            };
+            lines.push(format!("changed_more={more}"));
         }
     }
     if let Some((ordinal, detail)) = last_error {
-        lines.push("last error".into());
         lines.push(format!(
-            "{} (verbatim): {}",
-            pointer(ordinal),
-            one_line(detail, 300)
+            "error={} @{}",
+            one_line(detail, 300),
+            pointer(ordinal)
         ));
     }
     if let Some((ordinal, event)) = last_assistant {
         let text = event.text();
-        let claims_done = text.to_ascii_lowercase().contains("done")
-            || text.to_ascii_lowercase().contains("complete")
-            || text.to_ascii_lowercase().contains("finished");
-        lines.push(if claims_done {
-            "previous agent final message (agent claim)".into()
-        } else {
-            "previous agent final message".into()
-        });
-        if text.chars().count() <= 320 {
-            lines.push(format!("{}: {}", pointer(ordinal), one_line(text, 320)));
-        } else {
-            let start = cap_chars(text, 150);
-            let end_start = text
-                .char_indices()
-                .nth(text.chars().count().saturating_sub(150))
-                .map_or(0, |(i, _)| i);
-            lines.push(format!(
-                "{}: {} ... {}",
-                pointer(ordinal),
-                one_line(start, 150),
-                one_line(&text[end_start..], 150)
-            ));
-        }
+        lines.push(format!(
+            "last={} @{}",
+            one_line(text, 320),
+            pointer(ordinal)
+        ));
     }
     let mut pointers = Vec::new();
     for (index, event) in events.iter().enumerate() {
@@ -955,25 +943,60 @@ pub fn build_map(
             pointers.push(format!("{}: {}", event.k, pointer(ordinal)));
         }
     }
-    if !pointers.is_empty() {
-        lines.push("pointers".into());
-        lines.extend(pointers);
+    if stored && !thread_id.is_empty() && !pointers.is_empty() {
+        let ordinals = pointers
+            .iter()
+            .filter_map(|pointer| {
+                pointer
+                    .split_once("--range ")?
+                    .1
+                    .split_once('-')?
+                    .0
+                    .parse()
+                    .ok()
+            })
+            .collect::<Vec<usize>>();
+        lines.push(format!(
+            "ptr={}",
+            grouped_pointer_commands(thread_id, &ordinals)
+        ));
+    } else if !pointers.is_empty() {
+        lines.push("ptr=attached native-source indexes; use the source read command".into());
     }
     if stored && !thread_id.is_empty() {
-        lines.push(format!("read pointers with: concordia chat thread read {thread_id} [--range A-B | --tail N | --grep TEXT]"));
+        lines.push(format!("read=concordia chat thread read {thread_id}"));
     } else {
-        lines.push("read pointers with: concordia chat index SESSION --account ACCOUNT --provider PROVIDER; thread log is off (not stored)".into());
+        lines.push("read=concordia chat index SESSION --account ACCOUNT --provider PROVIDER (thread log off; pointers not stored)".into());
     }
     if let Some(state) = workspace {
-        lines.push("current state".into());
-        lines.push(crate::redact::redact(&crate::workspace_state::summary(state)).into_owned());
-    } else if !events.is_empty() {
         lines.push(format!(
-            "current state: recorded through turn {}",
-            events.len()
+            "state={}",
+            crate::redact::redact(&crate::workspace_state::summary(state))
         ));
+    } else if !events.is_empty() {
+        lines.push(format!("state=recorded through turn {}", events.len()));
     }
     bound_map_lines(lines, max_chars)
+}
+
+fn grouped_pointer_commands(thread_id: &str, ordinals: &[usize]) -> String {
+    let mut ranges = Vec::<(usize, usize)>::new();
+    for ordinal in ordinals.iter().copied() {
+        match ranges.last_mut() {
+            Some((_, end)) if ordinal == end.saturating_add(1) => *end = ordinal,
+            _ => ranges.push((ordinal, ordinal)),
+        }
+    }
+    ranges
+        .into_iter()
+        .map(|(first, last)| {
+            format!(
+                "{}-{}:concordia chat thread read {thread_id} --range {first}-{last}",
+                first, last
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn bound_map_lines(mut lines: Vec<String>, max_chars: usize) -> String {
@@ -981,39 +1004,35 @@ fn bound_map_lines(mut lines: Vec<String>, max_chars: usize) -> String {
         return String::new();
     }
     while lines.join("\n").chars().count() > max_chars && lines.len() > 2 {
-        // Fixed loss order: extra pointers, previous-message detail, errors, files, then
-        // redirect text. Goal-first and current-state-last ordering remain stable.
+        // Fixed loss order: grouped pointers, reply/error detail, changed files, then redirect.
+        // Goal, the read command and current state remain stable.
         let removable = |line: &String| {
-            !line.starts_with("read pointers with:")
-                && !line.starts_with("current state")
-                && !line.starts_with("goal:")
+            !line.starts_with("read=") && !line.starts_with("state=") && !line.starts_with("goal=")
         };
         let index = lines
             .iter()
             .enumerate()
-            .rfind(|(_, line)| {
-                removable(line) && line.contains("turn ") && line.contains("concordia chat")
-            })
+            .find(|(_, line)| removable(line) && line.starts_with("ptr="))
             .map(|(index, _)| index)
             .or_else(|| {
-                lines.iter().position(|line| {
-                    removable(line) && line.starts_with("previous agent final message")
-                })
+                lines
+                    .iter()
+                    .position(|line| removable(line) && line.starts_with("last="))
             })
             .or_else(|| {
                 lines
                     .iter()
-                    .position(|line| removable(line) && line.starts_with("last error"))
-            })
-            .or_else(|| {
-                lines.iter().position(|line| {
-                    removable(line) && (line.contains(" (edit") || line.contains(" (edits"))
-                })
+                    .position(|line| removable(line) && line.starts_with("error="))
             })
             .or_else(|| {
                 lines
                     .iter()
-                    .position(|line| removable(line) && line.starts_with("latest redirect:"))
+                    .position(|line| removable(line) && line.starts_with("changed"))
+            })
+            .or_else(|| {
+                lines
+                    .iter()
+                    .position(|line| removable(line) && line.contains("redirect="))
             })
             .or_else(|| {
                 lines
@@ -1332,7 +1351,7 @@ mod tests {
     #[test]
     fn unstored_map_says_so() {
         let m = build_map(&[user("hi")], "", 1600, false, None, None);
-        assert!(m.contains("not stored"));
+        assert!(m.contains("pointers not stored"));
         assert!(!m.contains("thread read"));
     }
 
@@ -1347,15 +1366,15 @@ mod tests {
         ev.push(user("now the logout"));
         ev.push(asst("done with it"));
         let m = build_map(&ev, "id1", 1600, true, None, None);
-        assert!(m.contains("goal: fix the login redirect"), "{m}");
-        assert!(m.contains("latest redirect: now the logout"), "{m}");
-        assert!(m.contains("src/a.rs (2 edits)"), "{m}");
-        assert!(m.contains("src/b.rs (1 edit)"), "{m}");
-        assert!(m.contains("last error") && m.contains("boom"));
-        assert!(m.contains("previous agent final message (agent claim)"));
+        assert!(m.contains("goal=fix the login redirect"), "{m}");
+        assert!(m.contains("redirect=now the logout"), "{m}");
+        assert!(m.contains("src/a.rs(2)"), "{m}");
+        assert!(m.contains("src/b.rs(1)"), "{m}");
+        assert!(m.contains("error=boom") && m.contains("--range 7-7"));
+        assert!(m.contains("last=done with it") && m.contains("--range 9-9"));
         assert!(m.contains("done with it"));
-        assert!(m.contains("read pointers with: concordia chat thread read id1"));
-        assert!(m.lines().last().unwrap().starts_with("current state:"));
+        assert!(m.contains("read=concordia chat thread read id1"));
+        assert!(m.lines().last().unwrap().starts_with("state="));
     }
 
     #[test]
@@ -1368,9 +1387,9 @@ mod tests {
             user("same request"),
         ];
         let map = build_map(&events, "fixture", 1600, true, None, None);
-        assert!(map.contains("goal: same request"));
-        assert!(map.contains("latest redirect: same request"));
-        assert!(map.contains("pointers") || map.contains("read pointers with"));
+        assert!(map.contains("goal=same request"));
+        assert!(map.contains("redirect=same request"));
+        assert!(map.contains("ptr=") || map.contains("read="));
         assert!(map.contains("error one"));
     }
 
@@ -1386,9 +1405,9 @@ mod tests {
         }
         ev.push(ThreadEvent::card("Edit", Some("not a path here"), "done"));
         let m = build_map(&ev, "id", 5000, true, None, None);
-        assert!(m.lines().filter(|line| line.ends_with("(1 edit)")).count() <= 8);
-        assert!(m.contains("src/f0.rs (1 edit)"));
-        assert!(m.contains("more files: concordia chat thread read id --range 2-16"));
+        assert!(m.lines().filter(|line| line.contains("(1)")).count() <= 1);
+        assert!(m.contains("src/f0.rs(1)"));
+        assert!(m.contains("changed_more=concordia chat thread read id --range 2-16"));
         assert!(!m.contains("not a path"));
     }
 
@@ -1426,9 +1445,9 @@ mod tests {
         assert!(m.chars().count() <= 1600);
         // Compact maps retain the exact source instruction without copying provider bodies.
         let tight = build_map(&ev, "id", 700, true, None, None);
-        assert!(!tight.contains("cmd number"));
+        assert!(tight.matches("cmd number").count() <= 1);
         assert!(
-            tight.contains("read pointers with: concordia chat thread read id"),
+            tight.contains("read=concordia chat thread read id"),
             "{tight}"
         );
     }
@@ -1460,7 +1479,7 @@ mod tests {
             .next()
             .unwrap()
             .contains("PARTIAL journal: first page only"));
-        assert!(m.contains("tools/approvals NOT transferred"));
+        assert!(m.contains("tools/approvals not transferred"));
     }
 
     #[test]
@@ -1487,7 +1506,7 @@ mod tests {
         );
 
         assert!(map.starts_with("[concordia map]"));
-        assert!(map.starts_with("[concordia map] thread thread-1 - v2"));
+        assert!(map.starts_with("[concordia map] thread thread-1"));
         assert!(!map.starts_with("[concordia map v2]"));
     }
 
@@ -1500,7 +1519,7 @@ mod tests {
         let map = build_map(&events, "thread-1", 1600, true, None, None);
         assert!(map.contains("typed decision: keep PKCE"));
         assert!(map.contains("SECRET_ASSISTANT_REPLY"));
-        assert!(map.contains("previous agent final message"));
+        assert!(map.contains("last="));
     }
 
     #[test]

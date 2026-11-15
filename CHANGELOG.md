@@ -1,5 +1,10 @@
 # Changelog
 
+### Fixed (2026-11-14e)
+
+- Cross-provider handoffs now use a compact grouped map, keep standing context under 60 words,
+  and show the injected handoff as a collapsed expandable card with pointer and estimated-token cost.
+
 ### Fixed (2026-11-14d)
 
 - Provider turns now have a bounded transport wait, identify failed provider sessions, preserve

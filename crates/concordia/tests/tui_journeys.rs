@@ -14,13 +14,10 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{HWND, LPARAM};
 #[cfg(windows)]
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, PostMessageW, WM_CLOSE, WM_KEYDOWN,
-    WM_KEYUP,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 #[cfg(windows)]
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    VK_ESCAPE,
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, PostMessageW, WM_CLOSE, WM_KEYDOWN, WM_KEYUP,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
@@ -888,7 +885,11 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
 #[ignore = "ACP compaction wire journey; synthetic providers only"]
 fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    for provider in [ProviderKind::Cursor, ProviderKind::Grok, ProviderKind::Opencode] {
+    for provider in [
+        ProviderKind::Cursor,
+        ProviderKind::Grok,
+        ProviderKind::Opencode,
+    ] {
         let dir = tempfile::tempdir().unwrap();
         setup(dir.path(), provider);
         if provider == ProviderKind::Cursor {
@@ -905,8 +906,7 @@ fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
             s.screen().contains("ACP context verified")
         });
 
-        let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl"))
-            .unwrap();
+        let calls = std::fs::read_to_string(dir.path().join("workspace/acp-calls.jsonl")).unwrap();
         let messages: Vec<Value> = calls
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -915,17 +915,13 @@ fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
             .iter()
             .filter(|call| {
                 call["method"] == "session/prompt"
-                    && call["params"]["prompt"]
-                        .as_array()
-                        .is_some_and(|prompt| {
-                            prompt.iter().any(|part| {
-                                part["text"]
-                                    .as_str()
-                                    .is_some_and(|text| {
-                                        text.contains("inside Concordia") && text.contains("ask_user")
-                                    })
+                    && call["params"]["prompt"].as_array().is_some_and(|prompt| {
+                        prompt.iter().any(|part| {
+                            part["text"].as_str().is_some_and(|text| {
+                                text.contains("inside Concordia") && text.contains("ask_user")
                             })
                         })
+                    })
             })
             .collect();
         assert_eq!(context_prompts.len(), 2, "{provider:?}: {calls}");
@@ -935,14 +931,13 @@ fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
             ProviderKind::Opencode => concordia::native_input::Mode::OpencodeAcp,
             _ => unreachable!("ACP journey only uses ACP providers"),
         };
-        let expected_tools = concordia::provider::standing_context::tools_for_transport(
-            provider, mode,
-        );
+        let expected_tools =
+            concordia::provider::standing_context::tools_for_transport(provider, mode);
         for tool in expected_tools {
             assert!(
-                context_prompts.iter().all(|call| call["params"]["prompt"]
-                    .to_string()
-                    .contains(&tool)),
+                context_prompts
+                    .iter()
+                    .all(|call| call["params"]["prompt"].to_string().contains(&tool)),
                 "{provider:?}: ACP standing context omitted registered tool {tool}: {calls}"
             );
         }
@@ -959,8 +954,7 @@ fn acp_standing_context_is_sent_once_and_resent_once_after_compaction() {
         assert_eq!(
             messages
                 .iter()
-                .filter(|call| call["params"]["update"]["sessionUpdate"]
-                    == "compaction_update")
+                .filter(|call| call["params"]["update"]["sessionUpdate"] == "compaction_update")
                 .count(),
             2,
             "{provider:?}: duplicate compaction event fixture was not observed"
@@ -993,7 +987,11 @@ fn cli_standing_context_is_sent_again_after_compaction() {
         });
         session.submit("second context check");
         session.until("second provider turn", |s| {
-            s.journal().iter().filter(|event| event["kind"] == "done").count() == 2
+            s.journal()
+                .iter()
+                .filter(|event| event["kind"] == "done")
+                .count()
+                == 2
         });
 
         let journal = session.journal();
@@ -1603,7 +1601,9 @@ fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
     let artifact_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/preview/X1")
         .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/preview/X1"));
+        .unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/preview/X1")
+        });
     std::fs::create_dir_all(&artifact_dir).unwrap();
     std::fs::write(artifact_dir.join("check-1.txt"), &after_documentation).unwrap();
     std::fs::write(artifact_dir.join("check-2.txt"), &screen).unwrap();
@@ -2176,7 +2176,11 @@ fn detached_file_windows_close_locally_and_can_be_reopened() {
         ("second.txt", "DETACHED_SECOND"),
         ("third.txt", "DETACHED_THIRD"),
     ] {
-        std::fs::write(dir.path().join("workspace").join(name), format!("{marker}\n")).unwrap();
+        std::fs::write(
+            dir.path().join("workspace").join(name),
+            format!("{marker}\n"),
+        )
+        .unwrap();
     }
     let artifact = PathBuf::from(env!("CARGO_TARGET_DIR")).join("preview/detached-window-close");
     std::fs::create_dir_all(&artifact).unwrap();
@@ -2185,13 +2189,17 @@ fn detached_file_windows_close_locally_and_can_be_reopened() {
     assert_eq!(root_windows.len(), 1, "expected one root native window");
 
     s.submit("/open first.txt");
-    s.until("first detached file", |s| s.screen().contains("DETACHED_FIRST"));
+    s.until("first detached file", |s| {
+        s.screen().contains("DETACHED_FIRST")
+    });
     s.request(serde_json::json!({
         "op": "key",
         "code": "d",
         "modifiers": ["CTRL", "SHIFT"]
     }));
-    s.until("first detached window", |s| process_windows(s.child.id()).len() == 2);
+    s.until("first detached window", |s| {
+        process_windows(s.child.id()).len() == 2
+    });
     close_window(detached_window(s.child.id()));
     s.until("title-bar close keeps Concordia alive", |s| {
         process_windows(s.child.id()).len() == 1 && s.screen().contains("concordia")
@@ -2199,15 +2207,21 @@ fn detached_file_windows_close_locally_and_can_be_reopened() {
     std::fs::write(artifact.join("check-1.txt"), s.screen()).unwrap();
 
     s.submit("/open first.txt");
-    s.until("file can be reopened", |s| s.screen().contains("DETACHED_FIRST"));
+    s.until("file can be reopened", |s| {
+        s.screen().contains("DETACHED_FIRST")
+    });
     s.request(serde_json::json!({
         "op": "key",
         "code": "d",
         "modifiers": ["CTRL", "SHIFT"]
     }));
-    s.until("file can be detached again", |s| process_windows(s.child.id()).len() == 2);
+    s.until("file can be detached again", |s| {
+        process_windows(s.child.id()).len() == 2
+    });
     close_window(detached_window(s.child.id()));
-    s.until("reopened detached file closes cleanly", |s| process_windows(s.child.id()).len() == 1);
+    s.until("reopened detached file closes cleanly", |s| {
+        process_windows(s.child.id()).len() == 1
+    });
     std::fs::write(artifact.join("check-4.txt"), s.screen()).unwrap();
 
     for name in ["first.txt", "second.txt", "third.txt"] {
@@ -2220,34 +2234,54 @@ fn detached_file_windows_close_locally_and_can_be_reopened() {
             "code": "d",
             "modifiers": ["CTRL", "SHIFT"]
         }));
-        s.until("multi-window detach", |s| process_windows(s.child.id()).len() >= 2);
+        s.until("multi-window detach", |s| {
+            process_windows(s.child.id()).len() >= 2
+        });
     }
-    s.until("three detached windows", |s| process_windows(s.child.id()).len() == 4);
+    s.until("three detached windows", |s| {
+        process_windows(s.child.id()).len() == 4
+    });
     while process_windows(s.child.id()).len() > 1 {
         close_window(detached_window(s.child.id()));
-        s.until("one detached window closes", |s| process_windows(s.child.id()).len() >= 1);
+        s.until("one detached window closes", |s| {
+            process_windows(s.child.id()).len() >= 1
+        });
     }
     assert_eq!(process_windows(s.child.id()).len(), 1);
     std::fs::write(artifact.join("check-3.txt"), s.screen()).unwrap();
 
     s.submit("/open second.txt");
-    s.until("unsaved file opened", |s| s.screen().contains("DETACHED_SECOND"));
+    s.until("unsaved file opened", |s| {
+        s.screen().contains("DETACHED_SECOND")
+    });
     s.send("x");
-    s.until("unsaved edit visible", |s| s.screen().contains("xDETACHED_SECOND"));
+    s.until("unsaved edit visible", |s| {
+        s.screen().contains("xDETACHED_SECOND")
+    });
     s.request(serde_json::json!({
         "op": "key",
         "code": "d",
         "modifiers": ["CTRL", "SHIFT"]
     }));
-    s.until("unsaved file detached", |s| process_windows(s.child.id()).len() == 2);
+    s.until("unsaved file detached", |s| {
+        process_windows(s.child.id()).len() == 2
+    });
     close_window(detached_window(s.child.id()));
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(process_windows(s.child.id()).len(), 2, "save question must keep window open");
+    assert_eq!(
+        process_windows(s.child.id()).len(),
+        2,
+        "save question must keep window open"
+    );
     std::fs::write(artifact.join("check-2.txt"), s.screen()).unwrap();
 
     escape_window(detached_window(s.child.id()));
     std::thread::sleep(Duration::from_millis(100));
-    assert_eq!(process_windows(s.child.id()).len(), 2, "cancel must keep window open");
+    assert_eq!(
+        process_windows(s.child.id()).len(),
+        2,
+        "cancel must keep window open"
+    );
     std::fs::write(artifact.join("check-5.txt"), s.screen()).unwrap();
     drop(s);
 }
@@ -2280,7 +2314,9 @@ fn main_window_close_checks_a_running_non_active_tab() {
         "code": "1",
         "modifiers": ["CTRL"]
     }));
-    s.until("idle first tab is selected", |s| s.focused_tab() == "New chat");
+    s.until("idle first tab is selected", |s| {
+        s.focused_tab() == "New chat"
+    });
     s.request(serde_json::json!({
         "op": "key",
         "code": "F12",
@@ -2292,15 +2328,18 @@ fn main_window_close_checks_a_running_non_active_tab() {
         "main close exited while a non-active tab was running"
     );
     let screen = s.screen();
-    assert!(screen.contains("running turn"), "close guard screen:\n{screen}");
+    assert!(
+        screen.contains("running turn"),
+        "close guard screen:\n{screen}"
+    );
     std::fs::write(artifact.join("check-5.txt"), screen).unwrap();
     s.release();
     s.until("gated turn completes", |s| {
         s.journal().iter().any(|event| {
             event["kind"] == "done"
-                && event["prompt"]
-                    .as_str()
-                    .is_some_and(|prompt| prompt.contains("keep running while another tab is selected"))
+                && event["prompt"].as_str().is_some_and(|prompt| {
+                    prompt.contains("keep running while another tab is selected")
+                })
         })
     });
     s.exit();
@@ -2433,7 +2472,9 @@ fn agents_reference_layout_supports_columns_selection_and_long_lists() {
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("check-1.txt"), s.screen()).unwrap();
     let first = s.screen();
-    assert!(first.lines().any(|line| line.chars().filter(|c| matches!(c, '▮' | '▯')).count() >= 6));
+    assert!(first
+        .lines()
+        .any(|line| line.chars().filter(|c| matches!(c, '▮' | '▯')).count() >= 6));
     std::fs::write(out.join("check-2.txt"), &first).unwrap();
     assert!(first.contains("#0 Orchestrator") && first.contains("Inactive"));
     assert!(first.contains("#1 · From Orchestrator") && first.contains("Completed"));
@@ -2620,8 +2661,8 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
-    let evidence = PathBuf::from(option_env!("CARGO_TARGET_DIR").unwrap_or("target"))
-        .join("preview/X3");
+    let evidence =
+        PathBuf::from(option_env!("CARGO_TARGET_DIR").unwrap_or("target")).join("preview/X3");
     std::fs::create_dir_all(&evidence).unwrap();
     s.paste("/model");
     s.enter();
@@ -2639,7 +2680,9 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.submit("/usage");
     s.until("wide usage cards", |s| {
         let screen = s.screen();
-        screen.lines().any(|line| line.contains("Plan:") && line.contains("Workspace:"))
+        screen
+            .lines()
+            .any(|line| line.contains("Plan:") && line.contains("Workspace:"))
             && screen.contains("bucket-0")
             && screen.matches("Email:").count() > 1
     });
@@ -2691,7 +2734,11 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
         ("hooks", "/hooks", "Project vs user scope"),
         ("mcp", "/mcp", "/mcp · This panel"),
         ("open", "/open", "Open"),
-        ("resume", "/resume", "continue an explicit recorded conversation"),
+        (
+            "resume",
+            "/resume",
+            "continue an explicit recorded conversation",
+        ),
         ("queue", "/queue", "/queue · This panel"),
         ("close", "/close", "/close · This panel"),
     ] {
@@ -2699,7 +2746,9 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
         s.until(name, |s| s.screen().contains(marker));
         s.save_y2_panel(name);
         s.send("\x1b");
-        s.until("guided panel cancelled", |s| s.screen().contains("Message Concordia"));
+        s.until("guided panel cancelled", |s| {
+            s.screen().contains("Message Concordia")
+        });
     }
     assert!(s.prompts().is_empty());
     s.exit();
@@ -2711,21 +2760,39 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    std::fs::write(dir.path().join("profile/.claude/mcp.json"), r#"{"mcpServers":{"imported":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
-    std::fs::write(dir.path().join("profile/.claude.json"), r#"{"mcpServers":{"claude-native":{"command":"synthetic-mcp","args":["--stdio"]}}}"#).unwrap();
+    std::fs::write(
+        dir.path().join("profile/.claude/mcp.json"),
+        r#"{"mcpServers":{"imported":{"command":"synthetic-mcp","args":["--stdio"]}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profile/.claude.json"),
+        r#"{"mcpServers":{"claude-native":{"command":"synthetic-mcp","args":["--stdio"]}}}"#,
+    )
+    .unwrap();
     std::fs::write(dir.path().join("profile/.codex/config.toml"), "[mcp_servers.codex-remote]\nurl=\"https://example.invalid/mcp\"\nbearer_token_env_var=\"Y5_MISSING\"\n").unwrap();
     std::fs::create_dir_all(dir.path().join("profile/.opencode")).unwrap();
-    std::fs::write(dir.path().join("profile/.opencode/opencode.json"), r#"{"mcp":{"open-native":{"type":"local","command":["synthetic-mcp","--stdio"]}}}"#).unwrap();
+    std::fs::write(
+        dir.path().join("profile/.opencode/opencode.json"),
+        r#"{"mcp":{"open-native":{"type":"local","command":["synthetic-mcp","--stdio"]}}}"#,
+    )
+    .unwrap();
     std::fs::write(dir.path().join("mcp.toml"), "[servers.synthetic]\nenabled=true\n[servers.synthetic.transport]\ntype=\"stdio\"\ncommand=\"synthetic-mcp\"\n[servers.needs-login]\nenabled=true\n[servers.needs-login.transport]\ntype=\"remote\"\nurl=\"https://example.invalid/mcp\"\n[servers.needs-login.transport.headers]\nAuthorization={env=\"Y5_MISSING\"}\n").unwrap();
     let mut s = Session::launch(dir.path());
     s.submit("/mcp import");
-    s.until("guided MCP import panel", |s| s.screen().contains("/mcp import") && s.screen().contains("Add imported from claude"));
-    let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from("target"));
+    s.until("guided MCP import panel", |s| {
+        s.screen().contains("/mcp import") && s.screen().contains("Add imported from claude")
+    });
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("target"));
     let out = target.join("preview/y5-mcp");
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("check-2.txt"), s.screen()).unwrap();
     s.send("\x1b");
-    s.until("import panel closed", |s| s.screen().contains("Message Concordia"));
+    s.until("import panel closed", |s| {
+        s.screen().contains("Message Concordia")
+    });
     s.submit("/mcp");
     s.until("per-provider MCP status", |s| {
         s.screen().contains("Claude Code")
@@ -2739,7 +2806,9 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
     s.send("\x1b");
     s.submit("/doctor");
-    s.until("doctor MCP status", |s| s.screen().contains("mcp") && s.screen().contains("Claude Code"));
+    s.until("doctor MCP status", |s| {
+        s.screen().contains("mcp") && s.screen().contains("Claude Code")
+    });
     std::fs::write(out.join("check-5.txt"), s.screen()).unwrap();
     assert!(!s.screen().contains("SECRET_CANARY"));
     std::fs::write(out.join("check-4.txt"), "Synthetic stdio and HTTP proxy coverage is exercised by the MCP unit journey; live OAuth and provider delivery remain pending.").unwrap();
@@ -2885,7 +2954,10 @@ fn quota_handoff_supplies_native_source_pointers_with_concordia_recording_off() 
         .unwrap()["prompt"]
         .as_str()
         .unwrap();
-    assert!(sent.contains("[native source pointers]"), "{sent}");
+    assert!(
+        sent.contains("src=") && sent.contains("read_native="),
+        "{sent}"
+    );
     assert!(
         sent.contains("chat excerpt")
             && sent.contains("Original request:\nFinish important task [quota]")
@@ -2990,10 +3062,13 @@ fn reported_context_capacity_starts_one_new_native_session_with_original_source_
         .collect();
     assert_eq!(starts.len(), 2);
     assert!(starts.iter().all(|event| event["provider"] == "codex"));
-    assert!(starts[1]["prompt"]
-        .as_str()
-        .unwrap()
-        .contains("[native source pointers]"));
+    assert!(
+        starts[1]["prompt"].as_str().unwrap().contains("src=")
+            && starts[1]["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("read_native=")
+    );
     assert!(starts[1]["prompt"]
         .as_str()
         .unwrap()
@@ -3294,8 +3369,7 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
-    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/preview/X4");
+    let evidence = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/preview/X4");
     std::fs::create_dir_all(&evidence).unwrap();
     let mut s = Session::launch(dir.path());
     s.request(serde_json::json!({"op":"resize","columns":140,"rows":45}));
@@ -3310,7 +3384,9 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     });
     std::fs::write(evidence.join("check-1.txt"), s.screen()).unwrap();
     s.request(serde_json::json!({"op":"key","code":"o","modifiers":["CTRL","SHIFT"]}));
-    s.until("all activity items expanded", |s| s.screen().contains("tool-output-end"));
+    s.until("all activity items expanded", |s| {
+        s.screen().contains("tool-output-end")
+    });
     std::fs::write(evidence.join("check-5.txt"), s.screen()).unwrap();
 
     for _ in 0..2 {
@@ -3318,7 +3394,10 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
         std::thread::sleep(Duration::from_millis(120));
     }
     let tabs = s.screen();
-    assert!(tabs.lines().next().unwrap_or_default().contains("1"), "{tabs}");
+    assert!(
+        tabs.lines().next().unwrap_or_default().contains("1"),
+        "{tabs}"
+    );
     s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL"]}));
     s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL","SHIFT"]}));
     s.request(serde_json::json!({"op":"key","code":"2","modifiers":["CTRL"]}));
@@ -3333,14 +3412,21 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
         s.screen().lines().next().unwrap_or_default().contains('|')
     });
     let feedback = s.screen();
-    assert!(feedback.lines().next().unwrap_or_default().contains('|'), "{feedback}");
+    assert!(
+        feedback.lines().next().unwrap_or_default().contains('|'),
+        "{feedback}"
+    );
     std::fs::write(evidence.join("check-3.txt"), &feedback).unwrap();
     std::fs::write(evidence.join("check-3-final.txt"), feedback).unwrap();
     s.request(serde_json::json!({"op":"mouse","kind":"up","x":100,"y":0}));
     s.request(serde_json::json!({"op":"mouse","kind":"down","x":20,"y":0}));
     s.request(serde_json::json!({"op":"mouse","kind":"drag","x":1,"y":0}));
     s.until("first tab drop marker", |s| {
-        s.screen().lines().next().unwrap_or_default().starts_with('|')
+        s.screen()
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .starts_with('|')
     });
     std::fs::write(evidence.join("check-3-before-first.txt"), s.screen()).unwrap();
     s.request(serde_json::json!({"op":"mouse","kind":"up","x":1,"y":0}));
@@ -3359,11 +3445,17 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     });
     std::fs::write(evidence.join("check-6.txt"), s.screen()).unwrap();
     std::fs::write(dir.path().join("gate"), "release").unwrap();
-    s.until("waiting tool released", |s| s.screen().contains("FAKE REPLY: [wait]"));
+    s.until("waiting tool released", |s| {
+        s.screen().contains("FAKE REPLY: [wait]")
+    });
 
     s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL"]}));
     s.request(serde_json::json!({"op":"key","code":"Tab","modifiers":["CTRL","SHIFT"]}));
-    assert!(s.screen().contains("Renamed tab"), "renamed tab did not persist after switching: {}", s.screen());
+    assert!(
+        s.screen().contains("Renamed tab"),
+        "renamed tab did not persist after switching: {}",
+        s.screen()
+    );
 
     s.request(serde_json::json!({"op":"resize","columns":80,"rows":30}));
     s.request(serde_json::json!({"op":"key","code":"F1","modifiers":[]}));
@@ -3379,12 +3471,15 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     }
     s.until("scrolled icon legend", |s| {
         let screen = s.screen();
-        screen.contains("failed while you were in another tab")
-            && screen.contains("image")
+        screen.contains("failed while you were in another tab") && screen.contains("image")
     });
     let legend_bottom = s.screen();
     std::fs::write(evidence.join("check-4.txt"), &legend_top).unwrap();
-    std::fs::write(evidence.join("check-7.txt"), format!("TOP\n{legend_top}\nBOTTOM\n{legend_bottom}")).unwrap();
+    std::fs::write(
+        evidence.join("check-7.txt"),
+        format!("TOP\n{legend_top}\nBOTTOM\n{legend_bottom}"),
+    )
+    .unwrap();
     s.request(serde_json::json!({"op":"key","code":"F1","modifiers":[]}));
     s.request(serde_json::json!({"op":"key","code":"w","modifiers":["CTRL"]}));
     s.exit();
@@ -3470,10 +3565,12 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
         .unwrap();
     s.paste(&format!("\"{}\" \"{}\"", second.display(), third.display()));
     s.until("three attached image banners", |s| {
-        s.screen().contains("Image 2: second.png")
-            && s.screen().contains("Image 3: third.png")
+        s.screen().contains("Image 2: second.png") && s.screen().contains("Image 3: third.png")
     });
-    assert_clean(&s.pixels("three image banners", magenta), "three image banners");
+    assert_clean(
+        &s.pixels("three image banners", magenta),
+        "three image banners",
+    );
 
     s.request(serde_json::json!({"op":"resize","columns":96,"rows":32}));
     assert_clean(&s.pixels("banner resize", magenta), "banner resize");

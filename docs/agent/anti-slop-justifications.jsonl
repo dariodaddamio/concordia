@@ -1,5 +1,14 @@
 ## This slice
 
+### FIX3 compact handoff - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/threads.rs, crates/concordia/src/context.rs | ok: 1, 4, 5, 6, 10 | Keep deterministic handoff serialization in the existing thread/context owners; replace prose and duplicate pointer rows with compact fields and grouped exact commands. |
+| crates/concordia/src/provider/standing_context.rs | ok: 1, 4, 5, 6, 10 | Keep identity/tool ownership in standing context, but remove the duplicated handoff body and enforce the requested 60-word ceiling. |
+| crates/concordia/src/tui/run.rs, crates/concordia/src/tui/app/turn.rs | ok: 1, 4, 5, 6, 9 | Reuse the existing progress/card and expandable activity path for the final injected handoff; no second transcript or preview model. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible handoff presentation change under the required build identity. |
+
 ### X5 review fixes - anti-slop gate
 
 | path | tendency_check | justification |
