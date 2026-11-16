@@ -15,6 +15,8 @@ type Work = Box<dyn FnOnce() + Send + 'static>;
 struct Completion {
     saved: bool,
     durable: bool,
+    /// The provider or session gives no native record to point at (not a failure).
+    no_source: bool,
     verified: Option<native::Reference>,
     generation: u64,
 }
@@ -283,7 +285,9 @@ impl State {
                 if self.latest_run.as_deref() == Some(run.as_str()) && result.generation == self.generation {
                     self.verified = result.verified.filter(|_| result.saved && result.durable);
                 }
-                if !result.saved || !result.durable { notice = Some("Some history references are unavailable; native originals and recovery were kept."); }
+                // A turn whose provider keeps no native record to point at is normal; only a failed
+                // save or a failed capture of an existing record is worth a notice.
+                if !result.saved || (!result.durable && !result.no_source) { notice = Some("Some history references are unavailable; native originals and recovery were kept."); }
                 false
             }
             Err(channel::TryRecvError::Disconnected) => {
@@ -439,6 +443,10 @@ impl State {
                 }
             }
             let durable = original_ref.is_ok();
+            let no_source = matches!(&original_ref, Err(reason) if reason == "unbound" || reason == "unsupported");
+            if let Err(reason) = &original_ref {
+                crate::logging::info(&format!("history reference unavailable: {reason}"));
+            }
             let verified = original_ref.as_ref().ok().cloned();
             let generation = active.as_ref().map_or(0, |active| active.generation);
             if let Some(active) = active.filter(|active| active.history) {
@@ -465,6 +473,7 @@ impl State {
             let _ = tx.send(Completion {
                 saved,
                 durable,
+                no_source,
                 verified,
                 generation,
             });
