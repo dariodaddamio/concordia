@@ -97,7 +97,11 @@ $watch.EnableRaisingEvents = $true
 while ($true) {
     $change = $watch.WaitForChanged([System.IO.WatcherChangeTypes]::All, 2000)
     if ($change.TimedOut) {
-        if (-not (Running)) { Note 'window closed; dev loop ends'; break }
+        # A restart into a new build leaves a moment with no window; look again before ending.
+        if (-not (Running)) {
+            Start-Sleep -Seconds 5
+            if (-not (Running)) { Note 'window closed; dev loop ends'; break }
+        }
         continue
     }
     if ($change.Name -notmatch '\.(rs|toml|ico|manifest)$') { continue }

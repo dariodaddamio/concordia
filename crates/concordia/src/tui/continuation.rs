@@ -286,7 +286,8 @@ impl App {
                 self.continuation.retry_draft = self.last_sent.clone();
                 self.continuation.retry = Retry::RequiresReview;
                 self.continuation.recovered = true; // Explicit continuation must start a fresh session.
-                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Inspect partial edits, then use the inline continue action for {} to start a fresh native session with source pointers. No automatic replay was attempted.", self.account));
+                self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Check any partial edits, then choose where to continue on {}; nothing was sent again.", self.account));
+                self.open_continuation_picker();
                 return None;
             }
             self.continuation.pending = None;

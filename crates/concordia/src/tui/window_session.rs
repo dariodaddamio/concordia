@@ -244,7 +244,32 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 if saved.omitted && same_conversation {
                     app.push_system(OMITTED_NOTICE);
                 }
-                app.messages.extend(notices);
+                if same_conversation {
+                    // The saved transcript usually holds the recovered request as it was sent and
+                    // the notices of earlier restarts; add only lines it does not have yet (the
+                    // checkpoint can be newer than the snapshot).
+                    let last_request = app
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|line| line.role == MsgRole::User)
+                        .map(|line| line.text.clone());
+                    let fresh: Vec<_> = notices
+                        .into_iter()
+                        .filter(|notice| {
+                            if notice.role == MsgRole::User {
+                                last_request.as_deref() != Some(notice.text.as_str())
+                            } else {
+                                !app.messages.iter().any(|line| {
+                                    line.role == notice.role && line.text == notice.text
+                                })
+                            }
+                        })
+                        .collect();
+                    app.messages.extend(fresh);
+                } else {
+                    app.messages.extend(notices);
+                }
                 if !same_conversation {
                     app.push_system(
                         "Recovered a newer unfinished request; its conversation remains paused.",

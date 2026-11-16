@@ -79,9 +79,8 @@ pub async fn spawn_listener(
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = listener.local_addr()?.to_string();
     // Keyed by the questions' JSON so a repeat call for the same questions reattaches.
-    let open: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<String, OpenQuestion>>,
-    > = Default::default();
+    let open: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, OpenQuestion>>> =
+        Default::default();
     let task = tokio::spawn(async move {
         let mut connections = tokio::task::JoinSet::new();
         loop {

@@ -587,14 +587,7 @@ impl App {
         let rows = accounts
             .into_iter()
             .flat_map(|a| {
-                let observation = a.home_path.as_ref().and_then(|home| {
-                    crate::usage::peek_cached_usage(&self.state_root, a.provider, &a.account, home)
-                });
-                let remaining = observation.as_ref().and_then(|o| o.remaining_pct);
-                let available = observation.as_ref().is_some_and(|o| {
-                    !o.exhausted && o.remaining_pct.is_some_and(|remaining| remaining > 0.0)
-                });
-                let reset = observation.and_then(|o| o.reset);
+                let state_root = self.state_root.clone();
                 let models = a
                     .home_path
                     .as_ref()
@@ -612,36 +605,53 @@ impl App {
                             || *model != current_model
                             || same_account_allowed
                     })
-                    .map(move |model| PickerRow {
-                        id: format!(
-                            "{}{} {model}",
-                            if available {
-                                "continue:"
-                            } else {
-                                "continue-disabled:"
-                            },
-                            a.account
-                        ),
-                        label: format!("{} → {model}", a.label),
-                        detail: if !available && reset.is_some() {
-                            format!(
-                                "at limit · {}",
-                                reset.as_deref().unwrap_or("reset time unavailable")
+                    .map(move |model| {
+                        // Availability is per model: a provider can limit one model's pool only.
+                        let observation = a.home_path.as_ref().and_then(|home| {
+                            crate::usage::peek_cached_usage_for_model(
+                                &state_root,
+                                a.provider,
+                                &a.account,
+                                home,
+                                Some(&model),
                             )
-                        } else if !available {
-                            "usage unavailable · capacity must be confirmed before continuing"
-                                .into()
-                        } else {
-                            remaining.map_or_else(
-                                || "usage unavailable · continue the paused request".into(),
-                                |p| {
-                                    format!(
-                                        "{}% left · continue the paused request",
-                                        p.round() as i64
-                                    )
+                        });
+                        let remaining = observation.as_ref().and_then(|o| o.remaining_pct);
+                        let available = observation.as_ref().is_some_and(|o| {
+                            !o.exhausted && o.remaining_pct.is_some_and(|remaining| remaining > 0.0)
+                        });
+                        let reset = observation.and_then(|o| o.reset);
+                        PickerRow {
+                            id: format!(
+                                "{}{} {model}",
+                                if available {
+                                    "continue:"
+                                } else {
+                                    "continue-disabled:"
                                 },
-                            )
-                        },
+                                a.account
+                            ),
+                            label: format!("{} → {model}", a.label),
+                            detail: if !available && reset.is_some() {
+                                format!(
+                                    "at limit · {}",
+                                    reset.as_deref().unwrap_or("reset time unavailable")
+                                )
+                            } else if !available {
+                                "usage unavailable · capacity must be confirmed before continuing"
+                                    .into()
+                            } else {
+                                remaining.map_or_else(
+                                    || "usage unavailable · continue the paused request".into(),
+                                    |p| {
+                                        format!(
+                                            "{}% left · continue the paused request",
+                                            p.round() as i64
+                                        )
+                                    },
+                                )
+                            },
+                        }
                     })
                     .collect::<Vec<_>>()
             })
@@ -1488,8 +1498,7 @@ impl App {
             rows,
             false,
         );
-        self.footer_left =
-            "↑↓ choose · Enter add server · Esc cancel".into();
+        self.footer_left = "↑↓ choose · Enter add server · Esc cancel".into();
     }
 
     fn apply_mcp_import(&mut self, index: usize) {

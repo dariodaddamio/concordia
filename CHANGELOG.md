@@ -5,6 +5,9 @@
 - An answer to a Cursor or Codex question that takes longer than a minute now reaches the agent. Before, the agent's tool call timed out after 60 seconds while the popup stayed open, and the late answer was lost.
 - The question popup lists its keys in the footer, and Cursor's question card shows the question instead of the tool's raw input.
 - Turning on Cursor's native text input says plainly which turns and workers use it.
+- Restarting no longer adds another copy of a recovered request to the chat each time; before, every restart appended the same prompt again.
+- A recovered unfinished request opens the choice of where to continue it, as its notice says, and the notice says plainly that nothing was sent again.
+- The continue choice treats Cursor's pools separately: Auto and Composer models stay available when only the API pool is used up.
 - A Cursor question card is titled "Question for you", and replies are labelled with the model's display name.
 - Pickers use the same short key words (`Enter apply · Esc cancel`), the message box no longer repeats the slash-command hint from the footer, and F1 calls renaming a tab renaming the chat.
 - A restored Cursor chat whose earlier messages Concordia cannot read says that they stay in Cursor's own chat, instead of reporting a failed request and pointing at login diagnostics.

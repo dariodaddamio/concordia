@@ -647,9 +647,17 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     h.relaunch();
     assert_eq!(h.items(), vec!["two", "three\nlines"]);
     assert!(h.app.queue.paused);
+    // The in-flight request was recovered too, so its notice covers the draft and queue.
     assert!(h.app.messages.iter().any(|m| m
         .text
-        .contains("Your unsent draft and queued messages were restored.")));
+        .contains("Your draft and queued messages are kept.")));
+    // The recovered request offers where to continue first; Esc leaves it paused.
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Continuation));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);

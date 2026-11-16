@@ -1142,23 +1142,46 @@ pub fn peek_cached_usage(
     account: &str,
     home: &Path,
 ) -> Option<CachedObservation> {
+    peek_cached_usage_for_model(root, provider, account, home, None)
+}
+
+/// [`peek_cached_usage`] for one model. Cursor reports separate pools: Auto and Composer models
+/// draw on `Auto`, every other model on `API`, so the other pool running out does not limit this
+/// model.
+pub fn peek_cached_usage_for_model(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+    model: Option<&str>,
+) -> Option<CachedObservation> {
     let identity = UsageIdentity::new(provider, account, home);
     let cached = load_cache(root, &identity)?;
     let now = unix_now();
+    let other_pool = match model {
+        Some(model) if provider == crate::store::ProviderKind::Cursor => {
+            let auto_pool = model.eq_ignore_ascii_case("auto")
+                || model.to_ascii_lowercase().starts_with("composer");
+            Some(if auto_pool { "API" } else { "Auto" })
+        }
+        _ => None,
+    };
+    let windows: Vec<&UsageWindow> = cached
+        .windows
+        .iter()
+        .filter(|window| other_pool != Some(window.label.as_str()))
+        .collect();
     Some(CachedObservation {
         observed_at: cached.fetched_at,
         fresh: now.saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
-        exhausted: cached
-            .windows
+        exhausted: windows
             .iter()
             .any(|window| !window.expired() && window.used_pct >= 100.0),
-        remaining_pct: cached
-            .windows
+        remaining_pct: windows
             .iter()
             .find(|window| !window.expired())
-            .map(UsageWindow::left_pct),
-        reset: cached
-            .windows
+            .map(|window| window.left_pct()),
+        reset: windows
             .iter()
             .find(|window| !window.expired())
             .and_then(|window| window.resets.clone()),
