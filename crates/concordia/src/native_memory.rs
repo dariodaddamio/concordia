@@ -216,6 +216,7 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 
 #[path = "cursor_history.rs"]
 mod cursor_history;
+pub(crate) use cursor_history::PRINT_MODE_HISTORY;
 #[path = "memory_files.rs"]
 pub mod files;
 #[path = "native_references.rs"]

@@ -757,7 +757,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Event::Key(key) = &event {
                             tab_click = None;
                             let action = tabs::action_for(*key);
-                            // A focused file pane keeps Ctrl+W for closing itself.
+                            // Tab shortcuts always apply when the chat has focus, even with
+                            // panes open. Only a focused pane reserves Ctrl+W for itself.
                             let pane_close =
                                 action == tabs::TabAction::Close && app.workspace.focused.is_some();
                             if action != tabs::TabAction::Unhandled && !pane_close {

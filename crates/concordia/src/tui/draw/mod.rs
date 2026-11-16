@@ -2557,7 +2557,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
             if updating.is_some() {
                 " message (paused) "
             } else if app.workspace.focused.is_some() {
-                " message · Esc returns from file "
+                " message "
             } else if app.busy
                 && app.busy_send_confirmation.as_ref().is_some_and(|armed| {
                     armed.turn_started == app.turn_started
@@ -2621,7 +2621,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
                     if updating.is_some() {
                         "Messages are paused until Concordia restarts on the new build"
                     } else if app.workspace.focused.is_some() {
-                        "File pane has focus. Esc returns to chat."
+                        "The file pane has focus."
                     } else {
                         "Message Concordia...  (/ for commands)"
                     },
@@ -2863,7 +2863,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         )
     };
     let left = if app.workspace.focused.is_some() && app.picker.is_none() {
-        "File pane · Esc chat · F6 change focus · Ctrl+S save"
+        "File pane · Esc chat · F6 change focus · Ctrl+S save · Ctrl+F find"
     } else {
         left
     };

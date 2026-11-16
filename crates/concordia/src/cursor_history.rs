@@ -8,6 +8,11 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 const WIRE_LIMIT: usize = 16 * 1024 * 1024;
 const FRAME_LIMIT: usize = 1024 * 1024;
 
+/// Print-mode Cursor chats (`create-chat` / `--resume`) are not ACP sessions. `session/load`
+/// rejects those ids with JSON-RPC −32602 (invalid params). Concordia cannot replay that
+/// transcript over ACP; earlier turns remain in Cursor's own chat.
+pub(crate) const PRINT_MODE_HISTORY: &str = "Earlier messages stay in Cursor's own chat.";
+
 struct Replay {
     child: Child,
     input: Option<ChildStdin>,
@@ -96,7 +101,14 @@ impl Replay {
                 return Err("Cursor history response identity mismatch".into());
             }
             if value.get("error").is_some() {
-                return Err(format!("Cursor native history request failed (code {}); use the provider's own login/diagnostics", value["error"]["code"].as_i64().unwrap_or(-1)));
+                let code = value["error"]["code"].as_i64().unwrap_or(-1);
+                // −32602 on session/load: print-mode chat id is not a valid ACP session.
+                if code == -32602 {
+                    return Err(PRINT_MODE_HISTORY.into());
+                }
+                return Err(format!(
+                    "Cursor native history request failed (code {code})"
+                ));
             }
             return value
                 .get("result")

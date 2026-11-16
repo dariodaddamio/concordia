@@ -708,6 +708,16 @@ pub(super) fn handle_key(
         app.workspace.focused = None;
         return false;
     }
+    // Tab chords must win whenever the chat has focus, even with a file pane open.
+    if app.workspace.focused.is_none() {
+        match tabs::action_for(key) {
+            tabs::TabAction::Unhandled => {}
+            action => {
+                app.tab_request = Some(action);
+                return false;
+            }
+        }
+    }
     if app.workspace.focused.is_some()
         && !app.queue.focused
         && app.queue.edit.is_none()
@@ -1447,6 +1457,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                 }
             } else if contains(app.areas.input, x, y) {
                 app.questions.focused = false;
+                app.workspace.focused = None;
                 app.view.clear_selection();
                 app.drag = Drag::Input;
                 let idx = input_index_at(app, x, y);

@@ -259,8 +259,9 @@ pub(crate) fn action_for(key: KeyEvent) -> TabAction {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Char('t' | 'T') if shift => TabAction::Reopen,
-        KeyCode::Char('t') => TabAction::New,
-        KeyCode::Char('w') if !shift => TabAction::Close,
+        // Native hosts may report Ctrl+T as uppercase without Shift.
+        KeyCode::Char('t' | 'T') => TabAction::New,
+        KeyCode::Char('w' | 'W') if !shift => TabAction::Close,
         KeyCode::BackTab => TabAction::Previous,
         KeyCode::Tab if shift => TabAction::Previous,
         KeyCode::PageUp if shift => TabAction::MoveLeft,
@@ -308,6 +309,7 @@ mod tests {
     #[test]
     fn ctrl_t_opens_home_tab() {
         assert_eq!(action_for(key('t', KeyModifiers::CONTROL)), TabAction::New);
+        assert_eq!(action_for(key('T', KeyModifiers::CONTROL)), TabAction::New);
     }
     #[test]
     fn ctrl_w_closes_and_asks_only_when_needed() {

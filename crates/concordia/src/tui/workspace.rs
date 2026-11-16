@@ -1082,27 +1082,12 @@ fn draw_pane(
             } else if pane.searching {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
             } else if pane.raw() || pane.csv_formatted() {
-                if pane.detached {
-                    "Ctrl+Shift+D dock · Ctrl+S save · Ctrl+F find".into()
-                } else if standalone {
-                    "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
-                } else {
-                    "Esc chat · Ctrl+S save · Ctrl+F find".into()
-                }
+                // Key names belong in the footer only (design-system).
+                String::new()
             } else if pane.query.is_empty() {
-                if pane.detached {
-                    "Ctrl+Shift+D dock · Alt+V edit · / find · r reload".into()
-                } else if standalone {
-                    "Ctrl+Q close · Alt+V edit · / find · r reload".into()
-                } else {
-                    "Esc chat · Alt+V edit · / find · r reload".into()
-                }
+                String::new()
             } else {
-                format!(
-                    "/{}  {} matches \u{b7} n/N next/prev",
-                    pane.query,
-                    pane.matches.len()
-                )
+                format!("/{}  {} matches", pane.query, pane.matches.len())
             })
             .style(style),
             Rect {
@@ -1129,6 +1114,17 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 app.flash(error);
             }
             return true;
+        }
+    }
+    // Browser-tab chords belong to the window. Never swallow them here — including when
+    // panes are open but the chat has focus (focused == None). Ctrl+W is the only chord
+    // run.rs defers to a focused pane; docked panes still do not own it.
+    match tabs::action_for(*key) {
+        tabs::TabAction::Unhandled => {}
+        tabs::TabAction::Close if app.workspace.focused.is_some() => {}
+        action => {
+            app.tab_request = Some(action);
+            return false;
         }
     }
     if edit::handle_key(app, key) {

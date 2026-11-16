@@ -639,9 +639,14 @@ impl App {
                 .flatten();
             if job.restoring {
                 if let Err(error) = &result {
-                    self.push_system(format!(
-                        "Saved conversation kept; native history unavailable: {error}"
-                    ));
+                    // Print-mode Cursor chats are not ACP sessions; do not suggest login/diagnostics.
+                    if error == crate::native_memory::PRINT_MODE_HISTORY {
+                        self.push_system(error.clone());
+                    } else {
+                        self.push_system(format!(
+                            "Saved conversation kept; native history unavailable: {error}"
+                        ));
+                    }
                     continue;
                 }
                 if result
