@@ -18,7 +18,12 @@ Each account has an explicit provider and home identity. Account display names d
 `/config` lists the saved agent roles. Each role can name a provider, account, model and reasoning
 effort. The starting roles are `orchestrator`, `implementer`, `reviewer`, `re-reviewer` and
 `general`. The `agents` tool accepts `role`; an explicit provider or model overrides that role's
-default. Role records are stored with Concordia's local orchestrator settings.
+default. Select a role in Settings to open the model picker for the current provider account;
+choosing a model then saves its provider-reported effort with the role. Role records are stored
+with Concordia's local orchestrator settings.
+
+General settings also control whether worker results return automatically. This preference is
+stored directly in the orchestrator settings; no removed worker-return command is used.
 
 ## Continuation
 

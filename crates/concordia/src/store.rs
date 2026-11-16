@@ -672,6 +672,40 @@ pub fn set_continuation_automatic(root: &Path, automatic: bool) -> Result<()> {
     })
 }
 
+pub fn set_delegate_auto_return(root: &Path, automatic: bool) -> Result<()> {
+    modify_store(root, |store| {
+        store.settings.delegate_auto_return = automatic;
+        Ok(())
+    })
+}
+
+pub fn set_role_selection(
+    root: &Path,
+    role: &str,
+    provider: &str,
+    account: &str,
+    model: &str,
+    effort: Option<&str>,
+) -> Result<()> {
+    modify_store(root, |store| {
+        let role = store
+            .settings
+            .roles
+            .entry(role.to_owned())
+            .or_insert_with(|| RoleConfig {
+                provider: None,
+                account: None,
+                model: None,
+                effort: None,
+            });
+        role.provider = Some(provider.to_owned());
+        role.account = Some(account.to_owned());
+        role.model = Some(model.to_owned());
+        role.effort = effort.map(str::to_owned);
+        Ok(())
+    })
+}
+
 pub fn set_update_install_on_launch(root: &Path, install_on_launch: bool) -> Result<()> {
     modify_store(root, |store| {
         store.settings.update_install_on_launch = Some(install_on_launch);

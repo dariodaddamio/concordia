@@ -555,6 +555,15 @@ pub(super) fn handle_key(
                     picker.usage_scroll = usize::MAX;
                 }
             }
+            KeyCode::Home => {
+                if !picker.filtered().is_empty() && picker.kind != PickerKind::Usage {
+                    picker.state.select(Some(0));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.state.select(Some(0));
+                    picker.usage_scroll = 0;
+                }
+            }
             KeyCode::Backspace => {
                 picker.filter.pop();
                 picker.select_clamp();

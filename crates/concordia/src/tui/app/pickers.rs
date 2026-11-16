@@ -868,7 +868,21 @@ impl App {
         }
     }
     pub(in crate::tui) fn open_model_picker(&mut self) {
-        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        let chosen = Some(self.model.clone()).filter(|model| !model.is_empty() && model != "?");
+        self.open_model_picker_for(chosen.as_deref(), "model");
+    }
+
+    pub(in crate::tui) fn open_role_model_picker(&mut self, role: String) {
+        let chosen = crate::store::get_settings(&self.state_root)
+            .roles
+            .get(&role)
+            .and_then(|role| role.model.clone())
+            .or_else(|| Some(self.model.clone()).filter(|model| !model.is_empty() && model != "?"));
+        self.role_editing = Some(role);
+        self.open_model_picker_for(chosen.as_deref(), "role model");
+    }
+
+    fn open_model_picker_for(&mut self, chosen: Option<&str>, title: &str) {
         let rows = model_picker_rows(
             crate::models::available_at(&self.state_root, self.provider, &self.account),
             chosen,
@@ -877,7 +891,7 @@ impl App {
             .iter()
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
-        self.show_picker_at(PickerKind::Model, "model".into(), rows, true, selected);
+        self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
         self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
@@ -943,11 +957,18 @@ impl App {
             ));
             return;
         }
+        let role_effort = self.role_editing.as_ref().and_then(|role| {
+            crate::store::get_settings(&self.state_root)
+                .roles
+                .get(role)
+                .and_then(|role| role.effort.clone())
+        });
         let preferred = model
             .efforts
             .iter()
             .find(|effort| effort.model_id.as_deref() == Some(model_id))
             .map(|effort| effort.name.as_str())
+            .or(role_effort.as_deref())
             .or(self
                 .effort
                 .as_deref()
@@ -964,7 +985,15 @@ impl App {
             .map(|effort| PickerRow {
                 id: format!("effort:{}", effort.name),
                 label: effort.name.clone(),
-                detail: if self.model == model_id && self.effort.as_deref() == Some(&effort.name) {
+                detail: if self.role_editing.as_ref().is_some_and(|role| {
+                    crate::store::get_settings(&self.state_root)
+                        .roles
+                        .get(role)
+                        .and_then(|role| role.effort.as_deref())
+                        == Some(&effort.name)
+                }) || self.model == model_id
+                    && self.effort.as_deref() == Some(&effort.name)
+                {
                     "Current effort".into()
                 } else if model.default_effort.as_deref() == Some(&effort.name) {
                     "Provider default".into()
@@ -1044,6 +1073,48 @@ impl App {
                 .map(|effort| format!(" \u{b7} effort {effort}"))
                 .unwrap_or_default()
         ));
+        Ok(())
+    }
+
+    fn commit_role_effort(
+        &mut self,
+        role: &str,
+        model: &crate::models::ModelEntry,
+        effort: Option<&str>,
+    ) -> Result<(), String> {
+        if effort.is_some_and(|selected| {
+            !model
+                .efforts
+                .iter()
+                .any(|candidate| candidate.name == selected)
+        }) {
+            return Err(format!(
+                "Unsupported effort for {}. Available: {}",
+                model.display_name,
+                model.effort_names().join(", ")
+            ));
+        }
+        let selected_model = effort.map_or_else(
+            || model.id.clone(),
+            |selected| model.id_for_effort(Some(selected)).to_owned(),
+        );
+        crate::store::set_role_selection(
+            &self.state_root,
+            role,
+            self.provider.as_str(),
+            &self.account,
+            &selected_model,
+            effort,
+        )
+        .map_err(|error| format!("Role configuration was not changed: {error}"))?;
+        self.role_editing = None;
+        self.push_system(format!(
+            "role {role} → {selected_model}{}",
+            effort
+                .map(|effort| format!(" · effort {effort}"))
+                .unwrap_or_default()
+        ));
+        crate::tui::settings::open(self);
         Ok(())
     }
 
@@ -1286,6 +1357,13 @@ impl App {
                 job.cancel();
             }
         }
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| matches!(picker.kind, PickerKind::Model | PickerKind::Effort))
+        {
+            self.role_editing = None;
+        }
         self.effort_model = None;
         self.picker = None;
         self.update_preview = None;
@@ -1520,7 +1598,11 @@ impl App {
             return;
         }
         let effort_model = self.effort_model.take();
+        let role_editing = self.role_editing.clone();
         self.dismiss_picker();
+        if matches!(kind, PickerKind::Model | PickerKind::Effort) {
+            self.role_editing = role_editing;
+        }
         if self.busy
             && matches!(
                 kind,
@@ -1774,6 +1856,10 @@ impl App {
                         "full" => TrustMode::Full,
                         _ => TrustMode::Edit,
                     };
+                    if trust == TrustMode::Full {
+                        self.request_full_mode();
+                        return;
+                    }
                     if let Err(e) = set_trust_mode(&self.state_root, trust) {
                         self.push_system(format!("trust save failed — {e}"));
                         return;
@@ -1930,7 +2016,17 @@ impl App {
                         self.push_system("Model is no longer in this account's catalog. Refresh /model and choose again.");
                         return;
                     };
-                    if model.efforts.len() > 1 {
+                    if let Some(role) = self.role_editing.clone() {
+                        if model.efforts.len() > 1 {
+                            self.open_model_efforts(model_id);
+                        } else if let Err(error) = self.commit_role_effort(
+                            &role,
+                            &model,
+                            model.efforts.first().map(|effort| effort.name.as_str()),
+                        ) {
+                            self.push_system(error);
+                        }
+                    } else if model.efforts.len() > 1 {
                         self.open_model_efforts(model_id);
                     } else {
                         let effort = model.efforts.first().map(|effort| effort.name.as_str());
@@ -1942,7 +2038,13 @@ impl App {
                 if let Some(effort) = id.strip_prefix("effort:") {
                     let model_id = effort_model.as_deref().unwrap_or(&self.model);
                     if let Some(model) = crate::models::find_at(&self.state_root, self.provider, &self.account, model_id) {
-                        if let Err(error) = self.commit_model_effort(&model, Some(effort)) { self.push_system(error); }
+                        if let Some(role) = self.role_editing.clone() {
+                            if let Err(error) = self.commit_role_effort(&role, &model, Some(effort)) {
+                                self.push_system(error);
+                            }
+                        } else if let Err(error) = self.commit_model_effort(&model, Some(effort)) {
+                            self.push_system(error);
+                        }
                     } else {
                         self.push_system("Model choices changed. Open /model again; the previous selection was kept.");
                     }

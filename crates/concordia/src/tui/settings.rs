@@ -426,10 +426,10 @@ pub(super) fn mouse(app: &mut App, event: MouseEvent) {
         }
         MouseEventKind::Down(MouseButton::Left) => {
             let at = Position::new(event.column, event.row);
-            if let Some(tab) = view.tab_areas.iter().position(|area| area.contains(at)) {
+            if let Some((_, tab)) = view.tab_areas.iter().find(|(area, _)| area.contains(at)) {
                 view.filter.clear();
                 view.filter_selected = 0;
-                view.active = tab;
+                view.active = *tab;
             } else if let Some(&(_, position)) =
                 view.row_areas.iter().find(|(area, _)| area.contains(at))
             {
@@ -601,11 +601,14 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
         "session-handoff" => app.open_handoff_settings(),
         "returns" => {
             let automatic = crate::store::get_settings(&app.state_root).delegate_auto_return;
-            app.handle_slash(if automatic {
-                "/delegate returns manual"
-            } else {
-                "/delegate returns auto"
-            });
+            match crate::store::set_delegate_auto_return(&app.state_root, !automatic) {
+                Ok(()) => app.flash(if automatic {
+                    "Worker results return manually"
+                } else {
+                    "Worker results return automatically"
+                }),
+                Err(error) => app.flash(format!("Not saved: {error}")),
+            }
             open(app);
         }
         "files" => app.show_picker(
@@ -645,6 +648,13 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 rows,
                 true,
             );
+        }
+        id if id.starts_with("role:") => {
+            if app.busy {
+                app.flash("Finish or cancel the current turn before changing role model");
+            } else {
+                app.open_role_model_picker(id.trim_start_matches("role:").to_owned());
+            }
         }
         _ => {}
     }

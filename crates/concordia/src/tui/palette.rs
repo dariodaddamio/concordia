@@ -265,7 +265,6 @@ pub fn is_branch(input: &str) -> bool {
             | "/delegate"
             | "/delegate protocol"
             | "/delegate model"
-            | "/delegate returns"
             | "/harness"
             | "/skills"
             | "/hooks"

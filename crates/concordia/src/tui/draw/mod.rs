@@ -234,7 +234,8 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let width = inner.width as usize;
 
-    // Tab strip. When the names do not fit, the active tab stays whole and the rest shorten.
+    // Tab strip. When the names do not fit, keep a contiguous visible window around the active
+    // tab and mark hidden tabs at the corresponding edge.
     let filtering = !view.filter.is_empty();
     let full: usize = view
         .tabs
@@ -242,32 +243,53 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|tab| tab.name.chars().count() + 2)
         .sum();
     let short = |tab: &SettingsTab| tab.name.split_whitespace().next().unwrap_or("").to_string();
-    // Narrower still: drop the leading pad so every tab stays on screen.
-    let tight = full > width
-        && view
-            .tabs
-            .iter()
-            .map(|tab| short(tab).chars().count() + 2)
-            .sum::<usize>()
-            > width;
+    let labels: Vec<String> = if full <= width {
+        view.tabs.iter().map(|tab| tab.name.clone()).collect()
+    } else {
+        view.tabs.iter().map(short).collect()
+    };
+    let widths: Vec<usize> = labels.iter().map(|name| name.chars().count() + 2).collect();
+    let total: usize = widths.iter().sum();
+    let marker_width = 2;
+    let active = view.active.min(view.tabs.len().saturating_sub(1));
+    let (first, last) = if total <= width {
+        (0, view.tabs.len().saturating_sub(1))
+    } else {
+        let mut best = None;
+        for candidate_first in 0..=active {
+            for candidate_last in active..view.tabs.len() {
+                let used = widths[candidate_first..=candidate_last]
+                    .iter()
+                    .sum::<usize>()
+                    + if candidate_first > 0 { marker_width } else { 0 }
+                    + if candidate_last + 1 < view.tabs.len() {
+                        marker_width
+                    } else {
+                        0
+                    };
+                if used <= width {
+                    let count = candidate_last - candidate_first + 1;
+                    let replace = best.is_none_or(|(best_count, best_used, _, _)| {
+                        count > best_count || count == best_count && used < best_used
+                    });
+                    if replace {
+                        best = Some((count, used, candidate_first, candidate_last));
+                    }
+                }
+            }
+        }
+        best.map_or((active, active), |(_, _, first, last)| (first, last))
+    };
     let mut spans = Vec::new();
     let mut x = inner.x;
-    for (index, tab) in view.tabs.iter().enumerate() {
+    if first > 0 {
+        spans.push(Span::styled("… ", muted));
+        x += marker_width as u16;
+    }
+    for index in first..=last {
         let active = index == view.active && !filtering;
-        let name = if full <= width || (active && !tight) {
-            tab.name.clone()
-        } else {
-            short(tab)
-        };
-        let text = if tight {
-            format!("{name} ")
-        } else {
-            format!(" {name} ")
-        };
+        let text = format!(" {} ", labels[index]);
         let cells = text.chars().count() as u16;
-        if x + cells > inner.x + inner.width {
-            break;
-        }
         let style = if active {
             Style::default()
                 .fg(theme::accent())
@@ -275,9 +297,13 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             muted
         };
-        view.tab_areas.push(Rect::new(x, inner.y, cells, 1));
+        view.tab_areas
+            .push((Rect::new(x, inner.y, cells, 1), index));
         spans.push(Span::styled(text, style));
         x += cells;
+    }
+    if last + 1 < view.tabs.len() {
+        spans.push(Span::styled(" …", muted));
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)),

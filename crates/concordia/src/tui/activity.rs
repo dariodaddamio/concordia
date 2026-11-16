@@ -503,7 +503,7 @@ impl Activity {
             (false, None) => (items.last().copied().into_iter().collect(), false),
         };
         let targets = if !every && expand {
-            handoff.into_iter().collect()
+            handoff.map_or(targets, |target| vec![target])
         } else {
             targets
         };

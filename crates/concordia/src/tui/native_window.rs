@@ -1635,20 +1635,34 @@ unsafe fn handle_test_control(window: &mut Window) {
                 window.mouse(kind, x, y);
             }
             Some("resize") => {
-                let width = request
+                let client_width = request
                     .request
                     .get("columns")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(120) as i32
                     * window.cell_width;
-                let height = request
+                let client_height = request
                     .request
                     .get("rows")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(40) as i32
                     * window.cell_height;
+                let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+                let mut rect = RECT {
+                    left: 0,
+                    top: 0,
+                    right: client_width,
+                    bottom: client_height,
+                };
+                let (width, height) = if AdjustWindowRectEx(&mut rect, style, 0, ex_style) != 0 {
+                    (rect.right - rect.left, rect.bottom - rect.top)
+                } else {
+                    (client_width, client_height)
+                };
                 SetWindowPos(
-                    window.shared.hwnd.load(Ordering::Acquire) as HWND,
+                    hwnd,
                     null_mut(),
                     0,
                     0,

@@ -58,6 +58,11 @@ Codex sends the standard `model_reasoning_effort` setting and app-server `effort
 uses native cached `--effort` capability (with the provider's supported-value cap), while Cursor and Grok retain the
 provider's model-variant IDs. This is a projection of provider catalogs, not a universal effort API.
 
+In `/config` under Models and roles, choose a role to set its model and reported effort for the
+current provider account. Worker result delivery is saved directly from its General setting;
+no removed worker-return command is advertised. Ctrl+O expands the last collapsed
+item in the latest message, while Ctrl+Shift+O expands every item there.
+
 During `/update`, the progress page shows the actual Prepare, Build/Download, Verify, Install and
 Restart stages. Warnings stay separate from progress; press D for compiler details and Esc to cancel.
 

@@ -1,5 +1,14 @@
 # Changelog
 
+### Fixed (2026-11-15e)
+
+- Ctrl+O expands the last collapsed item in the latest reply again; it expanded nothing unless a handoff card was present. Ctrl+Shift+O still expands every item.
+- Choosing a role in `/config` → Models and roles → Roles opens the model and effort picker for the current account and saves the choice; before, the popup closed and nothing changed.
+- Worker result delivery in `/config` → General is saved when you change it; it used to call a removed command and stay on Manual.
+- Choosing Full access in Settings asks for confirmation, the same as `/mode full`.
+- On a narrow window the Settings tab strip keeps the active tab visible and marks hidden tabs with an ellipsis.
+- Home moves to the first row in pickers, matching End.
+
 ### Changed (2026-11-15d)
 
 - `/config` is now a settings screen with tabs. Left and Right (or Tab and Shift+Tab) move between General, Appearance, Models and roles, Accounts, Updates and Advanced; Up and Down move between rows; Enter or Space changes the selected row in place, and every row shows its current value. Typing filters across all tabs, and Esc clears the filter, then closes the screen with your draft untouched. Rows that need a list, such as the model or the theme, open their popup over the screen and return to the same row.

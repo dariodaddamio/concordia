@@ -237,7 +237,7 @@ pub(in crate::tui) struct SettingsView {
     /// A popup opened from a row may have changed a value; rebuild once it closes.
     pub(in crate::tui) stale: bool,
     /// Click targets recorded by the last draw: tabs, then visible rows by their position.
-    pub(in crate::tui) tab_areas: Vec<Rect>,
+    pub(in crate::tui) tab_areas: Vec<(Rect, usize)>,
     pub(in crate::tui) row_areas: Vec<(Rect, usize)>,
 }
 
@@ -481,6 +481,7 @@ pub(crate) struct App {
     pub(in crate::tui) needs_you: crate::needs_you::Queue,
     pub(in crate::tui) grok_bot_form: Option<GrokBotForm>,
     pub(in crate::tui) fallback_role: Option<String>,
+    pub(in crate::tui) role_editing: Option<String>,
     pub(in crate::tui) shared_command: Option<String>,
     pub(in crate::tui) provider_command: Option<String>,
 }
@@ -1338,7 +1339,15 @@ impl App {
         };
         let filter = picker.filter.clone();
         let selected = picker.state.selected().unwrap_or(0);
-        let chosen = Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?");
+        let role_chosen = self.role_editing.as_ref().and_then(|role| {
+            crate::store::get_settings(&self.state_root)
+                .roles
+                .get(role)
+                .and_then(|role| role.model.clone())
+        });
+        let chosen = role_chosen
+            .as_deref()
+            .or_else(|| Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?"));
         picker.rows = model_picker_rows(models, chosen);
         picker.title = if provider == ProviderKind::Codex {
             "model - native cache read"
@@ -2062,6 +2071,7 @@ impl App {
             needs_you: crate::needs_you::Queue::default(),
             grok_bot_form: None,
             fallback_role: None,
+            role_editing: None,
             shared_command: None,
             provider_command: None,
         }
