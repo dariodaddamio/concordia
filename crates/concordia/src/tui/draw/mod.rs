@@ -673,6 +673,8 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
             ),
             ("Ctrl+E", "open full activity detail"),
             ("F5", "toggle full activity"),
+            ("Ctrl+G", "open the agents view"),
+            ("Ctrl+K", "choose what to do when a running turn goes quiet"),
             ("F1 / ?", "open this shortcut sheet"),
         ]),
     ));
