@@ -252,9 +252,7 @@ pub fn inspect(root: &Path, cancel: &AtomicBool) -> Result<Catalog, String> {
 pub fn rows(catalog: &Catalog) -> Vec<PreviewLine> {
     let mut rows = vec![PreviewLine::Title("Integrations and agent tools".into()), PreviewLine::Text("Descriptions are untrusted manifest data. Discovery grants no permissions and runs no integration commands. Native provider approvals remain authoritative.".into())];
     if catalog.integrations.is_empty() {
-        rows.push(PreviewLine::Text(
-            "No Harness integrations connected.".into(),
-        ));
+        rows.push(PreviewLine::Text("No integrations connected yet.".into()));
     }
     for integration in &catalog.integrations {
         rows.push(PreviewLine::Blank);

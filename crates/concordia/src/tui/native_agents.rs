@@ -1232,9 +1232,12 @@ impl App {
         }
         let empty = rows.iter().all(|row| row.id == "agents-empty");
         self.show_picker(PickerKind::Agents, "Agents".into(), rows, true);
-        self.footer_left =
+        self.footer_left = if empty {
+            "Esc close".into()
+        } else {
             "\u{2190}/\u{2192} collapse \u{b7} \u{2191}\u{2193} Enter inspect \u{b7} type to filter \u{b7} Esc close"
-                .into();
+                .into()
+        };
         if empty {
             if let Some(picker) = self.picker.as_mut() {
                 picker.state.select(None);

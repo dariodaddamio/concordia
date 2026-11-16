@@ -198,9 +198,7 @@ fn poll_command(app: &mut App) -> bool {
 fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
     let mut lines = vec![PreviewLine::Title("Integrations and agent tools".into())];
     if catalog.integrations.is_empty() {
-        lines.push(PreviewLine::Text(
-            "No Harness integrations connected. Press N for a new local manifest.".into(),
-        ));
+        lines.push(PreviewLine::Text("No integrations connected yet.".into()));
     } else {
         let index = selected.min(catalog.integrations.len() - 1);
         let integration = &catalog.integrations[index];

@@ -353,17 +353,28 @@ impl App {
         self.refresh_store_warning();
         let ready = accounts_with_auth(&self.state_root);
         let duplicates = crate::accounts::duplicate_groups(&self.state_root);
+        // Same UsageFetcher snapshot path and background refresh as `/usage`.
+        let accounts: Vec<_> = ready
+            .iter()
+            .filter_map(|a| {
+                a.home_path
+                    .as_ref()
+                    .map(|home| (a.account.clone(), a.provider, home.clone()))
+            })
+            .collect();
+        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
         let mut rows = Vec::new();
-        for a in &ready {
-            let Some(home) = a.home_path.as_ref() else {
+        for urow in rows_data {
+            let Some(a) = ready.iter().find(|a| a.account == urow.id) else {
                 continue;
             };
-            let idn = inspect_provider(a.provider, home);
-            let usage = self.usage_fetcher.snapshot(a.provider, &a.account, home);
-            let mut urow = crate::usage::profiled_picker_row(&a.account, a.provider, &usage, &idn);
-            urow.label =
-                urow.label
-                    .replacen(&display_account_name(a.provider, &a.account), &a.label, 1);
+            let heading = crate::accounts::format_account_heading(
+                a.provider,
+                &a.account,
+                self.account_names.get(&a.account).map(|name| name.as_str()),
+            );
+            let default_name = display_account_name(a.provider, &a.account);
+            let label = urow.label.replacen(&default_name, &heading, 1);
             self.picker_tones
                 .insert(format!("use:{}", a.account), urow.tone);
             let mut detail = urow.detail;
@@ -376,9 +387,8 @@ impl App {
             }
             rows.push(PickerRow {
                 id: format!("use:{}", a.account),
-                // The account's own name ("Codex 3"), so several accounts of one provider are
-                // told apart at a glance.
-                label: urow.label,
+                // Same cached snapshot `/usage` shows; heading matches the header chip.
+                label,
                 detail,
             });
         }

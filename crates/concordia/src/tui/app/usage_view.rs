@@ -136,6 +136,16 @@ impl App {
     pub(in crate::tui) fn account_label(&self) -> String {
         self.named_account(self.provider, &self.account)
     }
+    /// Header, settings Accounts row, and `/use` share this chip (no lowercase provider id).
+    pub(in crate::tui) fn account_heading(&self) -> String {
+        crate::accounts::format_account_heading(
+            self.provider,
+            &self.account,
+            self.account_names
+                .get(&self.account)
+                .map(|name| name.as_str()),
+        )
+    }
     pub(in crate::tui) fn named_account(&self, provider: ProviderKind, account: &str) -> String {
         let default = display_account_name(provider, account);
         self.account_names

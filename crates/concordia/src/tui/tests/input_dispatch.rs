@@ -1927,7 +1927,7 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         h.draw();
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
-        assert!(header.contains("Work (Codex)"), "{header}");
+        assert!(header.contains("Codex · Work"), "{header}");
         // Top bar keeps nickname + model controls; email reveal was removed from the header.
         assert!(!header.contains("member@example.invalid"), "{header}");
         assert!(!header.contains("view email"), "{header}");

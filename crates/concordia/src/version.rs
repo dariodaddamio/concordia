@@ -2,7 +2,7 @@
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Names the changelog section this build belongs to; shown in header + `--version`.
-pub const BUILD_STAMP: &str = "2026-11-15e";
+pub const BUILD_STAMP: &str = "2026-11-15f";
 /// Commit the binary was built from, with `+HHMM` (UTC build time) when the tree had
 /// uncommitted changes. Empty when the build had no git checkout. Written by `build.rs`.
 pub const BUILD_REV: &str = env!("CONCORDIA_BUILD_REV");

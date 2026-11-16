@@ -32,14 +32,19 @@ pub fn normalize_account_id(id: &str) -> String {
     }
 }
 
-pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
-    let cap = match provider {
+/// Provider name shown next to accounts (`Codex`, `Claude`, `Grok Build`).
+pub fn display_provider_name(provider: ProviderKind) -> &'static str {
+    match provider {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
         ProviderKind::Grok => "Grok Build",
         ProviderKind::Opencode => "opencode",
-    };
+    }
+}
+
+pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
+    let cap = display_provider_name(provider);
     let id = normalize_account_id(account);
     if id == provider.as_str() {
         return cap.to_string();
@@ -50,6 +55,26 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
         }
     }
     id
+}
+
+/// Header, settings Accounts row, and `/use` share this label: account alone when it already
+/// names the provider (`Codex 2`), otherwise `Claude · Work`.
+pub fn format_account_heading(
+    provider: ProviderKind,
+    account: &str,
+    nickname: Option<&str>,
+) -> String {
+    let provider_name = display_provider_name(provider);
+    let account_name = nickname
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| display_account_name(provider, account));
+    if account_name.starts_with(provider_name) {
+        account_name
+    } else {
+        format!("{provider_name} · {account_name}")
+    }
 }
 
 /// A nickname changes display only, never account ids, credential homes or removal ownership.

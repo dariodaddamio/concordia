@@ -158,7 +158,7 @@ fn settings_rows(app: &App) -> Vec<(usize, SettingsRow)> {
             3,
             "accounts",
             "Account",
-            format!("{} · {} ›", app.provider.as_str(), app.account_label()),
+            format!("{} ›", app.account_heading()),
             "Provider and account for this chat; native sign-ins stay separate",
         ),
         setting(

@@ -2430,10 +2430,11 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
     s.send("\x07");
     s.until("empty Agents view from Home", |s| {
         let screen = s.screen();
-        // Title is footer-only for keys; empty copy is "No agents yet." (1ec7bbf).
+        // Empty Agents: body says so; footer only lists Esc (collapse/inspect need an agent).
         screen.contains("Agents")
             && screen.contains("No agents yet.")
-            && screen.contains("Enter inspect")
+            && screen.contains("Esc close")
+            && !screen.contains("Enter inspect")
     });
     s.send("\x1b");
     s.submit("[wait] [agents] inspect children");

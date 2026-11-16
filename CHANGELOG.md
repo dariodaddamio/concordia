@@ -1,5 +1,21 @@
 # Changelog
 
+### Fixed (2026-11-15f)
+
+- `/resume` and `/doctor` open at once and fill in within about two seconds instead of freezing the window for about twenty; keys typed meanwhile are no longer lost.
+- Cursor can ask you questions through Concordia's popup again: the ask tool it starts (`concordia ask-mcp`) was rejected as an unknown command. Codex turns get the same ask tool.
+- Cursor edits show their line diff in the edit card.
+- After the window is made smaller, no row keeps old pixels.
+- Text in pickers and panel titles is shortened at a word with an ellipsis instead of being cut mid-word, and titles no longer run under the close control.
+- The header shows the model that belongs to the account's provider, and an effort only when the model has efforts.
+- `/usage` shows its account cards without a second frame around them and leaves out fields the provider does not report. An error on a card names that card's provider.
+- The F1 shortcut sheet covers the window cleanly, `/skills` shows multi-line skill descriptions, `/doctor` and Settings use account display names, and paths drop the `\\?\` prefix.
+- Key hints appear only in the footer; panels such as `/update`, the Agents view and `/harness` take only the rows they need.
+- A failed automatic update check no longer adds a line to Home; `/update` still shows it.
+- Ctrl+C quits from the Settings screen, and `q` closes a file preview you have not edited.
+- Home's compact layout shows its chat list under the introduction again, and clicks on it select the right row.
+- Installing a new build no longer fails its version check because of the build revision added in 2026-11-15d.
+
 ### Fixed (2026-11-15e)
 
 - Ctrl+O expands the last collapsed item in the latest reply again; it expanded nothing unless a handoff card was present. Ctrl+Shift+O still expands every item.

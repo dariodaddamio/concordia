@@ -919,7 +919,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = app.model_label();
     let model_unset = model == "choose model";
-    let account = app.account_label();
+    let account = app.account_heading();
     let right = String::new();
     let available = area.width as usize;
     // Effort only when the active catalog model reports adjustable efforts.
@@ -948,7 +948,20 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(brand, bar.fg(Color::Indexed(75))),
     ];
     let provider_x = left.iter().map(Span::width).sum::<usize>();
-    let provider_text = format!(" {} · {} ", app.provider.as_str(), account);
+    // Fit the account chip before the model so narrow widths keep a clickable target.
+    let effort_text = app
+        .effort
+        .as_deref()
+        .filter(|_| effort_allowed)
+        .map(|effort| format!("  Effort {effort} \u{25be}"));
+    let effort_width = effort_text
+        .as_deref()
+        .map_or(0, |text| Line::from(text).width());
+    let account_budget = available
+        .saturating_sub(left.iter().map(Span::width).sum::<usize>() + effort_width + 8)
+        .max(4);
+    let fitted_account = ellipsis(&account, account_budget);
+    let provider_text = format!(" {fitted_account} ");
     left.push(Span::styled(
         provider_text.clone(),
         bar.bg(provider_color(app.provider))
@@ -961,14 +974,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(provider_text.clone()).width() as u16,
         1,
     ));
-    let effort_text = app
-        .effort
-        .as_deref()
-        .filter(|_| effort_allowed)
-        .map(|effort| format!("  Effort {effort} \u{25be}"));
-    let effort_width = effort_text
-        .as_deref()
-        .map_or(0, |text| Line::from(text).width());
     let model_budget =
         available.saturating_sub(left.iter().map(Span::width).sum::<usize>() + effort_width);
     if model_budget >= 5 {
