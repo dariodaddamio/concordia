@@ -19,6 +19,13 @@
    `powershell -NoProfile -File .\scripts\smoke-e2e-everyday.ps1`. Smoke checks the installed
    build stamp and runs the full suite; it does not install the candidate.
 
+For UI and logic work, run `powershell -NoProfile -File .\scripts\dev-loop.ps1`. It opens one
+debug window with its own state (a copy of your account registry) and rebuilds on every save,
+about 8 seconds incrementally; the window restarts into the new build when idle and keeps its
+tabs and drafts. `scripts\dev-ctl.ps1` reads that window's screen, saves screenshots and sends
+keys, so a change can be checked without a release build. The loop never touches the installed
+Concordia.
+
 `scripts\install-dev.ps1` builds and runs `concordia install`, which makes your build the `concordia` on your
 PATH. Open a new terminal afterwards; panes already running keep their old image.
 
