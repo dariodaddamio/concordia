@@ -415,7 +415,12 @@ impl App {
             .collect();
         if rows.is_empty() {
             rows.push(PickerRow {
-                id: "none".into(),
+                id: if self.related_files.loading() {
+                    "none".into()
+                } else {
+                    // Empty filter / no files: muted non-selectable hint, not a selected row.
+                    "files:hint".into()
+                },
                 label: if self.related_files.loading() {
                     "Finding files mentioned in this chat..."
                 } else {
@@ -431,7 +436,8 @@ impl App {
             detail: "Structured native output records · inspect source and current-file actions"
                 .into(),
         });
-        self.show_picker(
+        let select = rows.iter().position(|row| !row.disabled()).unwrap_or(0);
+        self.show_picker_at(
             PickerKind::Files,
             format!(
                 "Open · {} · files in this chat + recent + workspace",
@@ -443,6 +449,7 @@ impl App {
             ),
             rows,
             true,
+            select,
         );
     }
 

@@ -3,7 +3,7 @@
 //! Every probe is injected through [`Env`] so each branch is unit tested. Nothing here reads
 //! credential contents; account status uses the same existence/shape check as `/use`.
 
-use crate::accounts::{is_logged_in, list_all_accounts};
+use crate::accounts::{display_account_name, is_logged_in, list_all_accounts};
 use crate::provider::compat;
 use crate::provider::launch::is_batch_shim;
 use crate::store::{store_path, ProviderKind};
@@ -507,7 +507,7 @@ fn check_unopenable_chats(root: &Path) -> Vec<Check> {
                     "{} ({}/{}) is unopenable: {}; repair: concordia chat repair --dry-run (draft kept)",
                     chat.title,
                     chat.provider.as_str(),
-                    chat.account,
+                    display_account_name(chat.provider, &chat.account),
                     chat.failure_detail()
                 ),
             )
@@ -585,14 +585,21 @@ fn check_pointer(env: &Env<'_>) -> Check {
         Some(raw) => {
             let target = PathBuf::from(raw.trim());
             if target.is_file() {
-                check(Level::Ok, "install", format!("pointer -> {}", target.display()))
+                check(
+                    Level::Ok,
+                    "install",
+                    format!(
+                        "pointer -> {}",
+                        crate::workspace_paths::display_path(&target).display()
+                    ),
+                )
             } else {
                 check(
                     Level::Fail,
                     "install",
                     format!(
                         "pointer -> {} but that file is missing; re-run scripts\\install-dev.ps1",
-                        target.display()
+                        crate::workspace_paths::display_path(&target).display()
                     ),
                 )
             }

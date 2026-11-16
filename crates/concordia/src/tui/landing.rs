@@ -41,13 +41,13 @@ pub(crate) struct LandingMeter {
 /// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
 /// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
-    let current = display_path(&project_root(cwd));
+    let current = crate::workspace_paths::display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
-            Some(path) => display_path(&project_root(path)),
+            Some(path) => crate::workspace_paths::display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
         groups.entry(folder).or_default().push(session);
@@ -100,18 +100,9 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
     groups
 }
 
-fn display_path(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else {
-        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
-    }
-}
-
 fn hidden_workspace(path: &Path, temp_root: Option<&Path>) -> bool {
     let norm = |p: &Path| {
-        display_path(p)
+        crate::workspace_paths::display_path(p)
             .to_string_lossy()
             .replace('/', "\\")
             .to_ascii_lowercase()
@@ -149,8 +140,8 @@ fn hidden_session(session: &SessionSummary, cwd: &Path, temp_root: Option<&Path>
     session.cwd.as_deref().is_some_and(|session_cwd| {
         let path = Path::new(session_cwd);
         hidden_workspace(path, temp_root) || {
-            let folder = display_path(&project_root(path));
-            folder != display_path(&project_root(cwd)) && !folder.exists()
+            let folder = crate::workspace_paths::display_path(&project_root(path));
+            folder != crate::workspace_paths::display_path(&project_root(cwd)) && !folder.exists()
         }
     })
 }

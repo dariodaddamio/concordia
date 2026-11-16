@@ -91,7 +91,6 @@ pub(super) fn failed(snapshot: &JobSnapshot, error: &str) -> UpdatePreview {
     ));
     lines.push(P::Blank);
     diagnostics(&mut lines, snapshot);
-    lines.push(P::Hint("Esc returns to your chat".into()));
     page(lines)
 }
 

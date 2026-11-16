@@ -158,6 +158,8 @@ impl PickerRow {
         self.id.starts_with("continue-disabled:")
             || self.id == "resume:loading"
             || self.id == "doctor:loading"
+            || self.id == "files:hint"
+            || self.id == "agents-empty"
     }
 }
 

@@ -158,7 +158,7 @@ fn settings_rows(app: &App) -> Vec<(usize, SettingsRow)> {
             3,
             "accounts",
             "Account",
-            format!("{} · {} ›", app.provider.as_str(), app.account),
+            format!("{} · {} ›", app.provider.as_str(), app.account_label()),
             "Provider and account for this chat; native sign-ins stay separate",
         ),
         setting(
@@ -692,6 +692,66 @@ fn source_row(path: &Path, scope: &str, name: &str, detail: &str) -> PickerRow {
     )
 }
 
+/// Read a skill front-matter `description`, including YAML folded (`>`) and literal (`|`) blocks.
+fn skill_description(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().take(80).collect();
+    let Some((index, rest)) = lines.iter().enumerate().find_map(|(index, line)| {
+        line.strip_prefix("description:")
+            .map(|rest| (index, rest.trim()))
+    }) else {
+        return "Local skill definition".into();
+    };
+    let inline = rest.trim_matches(['\'', '"']).trim();
+    let block = match inline {
+        ">" | ">-" | ">+" => Some(false),
+        "|" | "|-" | "|+" => Some(true),
+        _ if inline.is_empty() => {
+            // Bare `description:` then an indented block on the next lines.
+            let next = lines.get(index + 1).copied().unwrap_or("");
+            if next.starts_with(' ') || next.starts_with('\t') {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    let Some(literal) = block else {
+        return if inline.is_empty() {
+            "Local skill definition".into()
+        } else {
+            inline.to_string()
+        };
+    };
+    let mut body = Vec::new();
+    for line in lines.iter().skip(index + 1) {
+        if line.is_empty() {
+            if body.is_empty() {
+                continue;
+            }
+            body.push(String::new());
+            continue;
+        }
+        if !(line.starts_with(' ') || line.starts_with('\t')) {
+            break;
+        }
+        body.push(line.trim().to_string());
+    }
+    let joined = if literal {
+        body.join("\n")
+    } else {
+        body.into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    if joined.is_empty() {
+        "Local skill definition".into()
+    } else {
+        joined
+    }
+}
+
 fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited: &mut usize) {
     if std::fs::symlink_metadata(directory).is_ok_and(|m| m.file_type().is_symlink()) {
         return;
@@ -717,18 +777,12 @@ fn skill_rows(directory: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited:
             .unwrap_or_else(|_| path.clone());
         match bounded_text(&native_source) {
             Ok(text) => {
-                let description = text
-                    .lines()
-                    .take(60)
-                    .find_map(|line| line.strip_prefix("description:"))
-                    .unwrap_or("Local skill definition")
-                    .trim()
-                    .trim_matches(['\'', '"']);
+                let description = skill_description(&text);
                 rows.push(source_row(
                     &native_source,
                     scope,
                     &folder,
-                    &crate::sessions::clean_preview(Some(description), 120),
+                    &crate::sessions::clean_preview(Some(&description), 120),
                 ));
             }
             Err(error) => rows.push(row("notice", format!("{scope} · {folder}"), error)),

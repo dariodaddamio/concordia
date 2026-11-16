@@ -985,10 +985,19 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
     let selected_row = rows.get(selected).cloned();
+    // Size to content (or the room above the composer); no dead bordered rows.
+    let list_rows = rows.len().max(1) as u16;
+    let height = (list_rows + 2).min(area.height).max(3);
+    let panel = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(height),
+        width: area.width,
+        height,
+    };
     let columns =
-        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).split(area);
+        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).split(panel);
     app.areas.agents_list = Some(columns[1]);
-    f.render_widget(Clear, area);
+    f.render_widget(Clear, panel);
 
     let mut detail_lines = Vec::new();
     let mut add_detail = |id: &str, row_number: usize| {
@@ -1143,6 +1152,12 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(index, row)| {
+            if row.id == "agents-empty" {
+                return ListItem::new(Line::styled(
+                    row.label.clone(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             let selected = index == selected;
             let style = if selected {
                 Style::default()
@@ -1181,11 +1196,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let mut state = picker.state;
     f.render_stateful_widget(
         List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Agents · ←/→ collapse · Enter inspect · Esc close "),
-            )
+            .block(Block::default().borders(Borders::ALL).title(" Agents "))
             .highlight_style(Style::default().bg(Color::Indexed(235)).fg(Color::Cyan))
             .highlight_symbol("\u{279c} "),
         columns[1],
@@ -1215,16 +1226,20 @@ impl App {
         if rows.is_empty() {
             rows.push(PickerRow {
                 id: "agents-empty".into(),
-                label: "No agents reported".into(),
-                detail: "No agent runs are available for this conversation.".into(),
+                label: "No agents yet.".into(),
+                detail: String::new(),
             });
         }
-        self.show_picker(
-            PickerKind::Agents,
-            "Agents · ←/→ collapse · Enter inspect · Esc close".into(),
-            rows,
-            true,
-        );
+        let empty = rows.iter().all(|row| row.id == "agents-empty");
+        self.show_picker(PickerKind::Agents, "Agents".into(), rows, true);
+        self.footer_left =
+            "\u{2190}/\u{2192} collapse \u{b7} \u{2191}\u{2193} Enter inspect \u{b7} type to filter \u{b7} Esc close"
+                .into();
+        if empty {
+            if let Some(picker) = self.picker.as_mut() {
+                picker.state.select(None);
+            }
+        }
     }
     pub(super) fn toggle_agents_row(&mut self, id: &str) {
         if id == GROUP_ID {

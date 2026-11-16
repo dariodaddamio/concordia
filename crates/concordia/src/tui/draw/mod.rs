@@ -139,7 +139,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             draw_picker(f, area, app);
         }
         if app.key_sheet {
-            draw_key_sheet(f, app);
+            draw_key_sheet(f, page[1], app);
         }
         theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
         return;
@@ -161,7 +161,13 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         raster::draw(f, app);
     }
     if app.key_sheet {
-        draw_key_sheet(f, app);
+        let sheet = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(screen);
+        draw_key_sheet(f, sheet[1], app);
         // Native image blits are submitted after the ratatui frame. Do not let an
         // inline image repaint over the shortcut sheet.
         raster::begin_frame(app);
@@ -609,7 +615,9 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     )
 }
 
-fn draw_key_sheet(f: &mut Frame, app: &mut App) {
+fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
+    // Large surface: full width between header and footer, like Settings. Scroll/close live in
+    // the footer only.
     // Sections of (key, description). The key column is as wide as the longest key, so long
     // keys such as Ctrl+Shift+PgUp never run into their description.
     let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
@@ -710,20 +718,6 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
             lines.push(Line::from(format!("    {glyph}  {meaning}")));
         }
     }
-    lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled("? / F1 / Esc", key_style),
-        Span::raw("  close"),
-    ]));
-    let width = lines.iter().map(|l| l.width()).max().unwrap_or(20) as u16 + 4;
-    let height = lines.len() as u16 + 2;
-    let area = Rect::new(
-        f.area().x + f.area().width.saturating_sub(width) / 2,
-        f.area().y + f.area().height.saturating_sub(height) / 2,
-        width.min(f.area().width),
-        height.min(f.area().height),
-    );
     let inner_height = usize::from(area.height.saturating_sub(2));
     let max_scroll = lines.len().saturating_sub(inner_height);
     app.key_sheet_scroll = app.key_sheet_scroll.min(max_scroll);
@@ -731,12 +725,7 @@ fn draw_key_sheet(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(lines)
             .scroll((app.key_sheet_scroll as u16, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" shortcuts ")
-                    .title_bottom(" Up/Down or PgUp/PgDn scroll "),
-            ),
+            .block(Block::default().borders(Borders::ALL).title(" shortcuts ")),
         area,
     );
 }
@@ -2002,17 +1991,22 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Vec::new()
         };
-        // As tall as its content, up to 24 rows or the space there is.
-        let height = if is_page {
-            area.height
-        } else {
-            ((rows.len() + actions.len()) as u16 + 2)
-                .min(area.height.min(24))
-                .max(3)
-        };
+        // Content height only: no dead bordered rows. Command panels sit above the composer;
+        // the update page still owns the middle band but shrinks to its lines.
+        let height = ((rows.len() + actions.len()) as u16 + 2)
+            .min(if is_page {
+                area.height
+            } else {
+                area.height.min(24)
+            })
+            .max(3);
         let popup = Rect {
             x: if is_page { area.x } else { area.x + 2 },
-            y: area.y,
+            y: if is_page {
+                area.y
+            } else {
+                area.y + area.height.saturating_sub(height)
+            },
             width,
             height,
         };
@@ -2306,7 +2300,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         )
         .min(24) as u16)
         .saturating_add(2)
-        .max(5);
+        .max(3);
     let mut popup = Rect {
         x: area.x + 2,
         y: if agents_panel {
@@ -2714,151 +2708,155 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         "{} saved drafts/requests retained",
         app.keep.recovery_choices.len()
     );
-    let (left, left_style) =
-        if app.settings_view.is_some() && app.picker.is_none() && flash.is_none() {
-            (settings::FOOTER, Style::default().fg(theme::muted()))
-        } else if app.ready_update_path.is_some() {
+    let (left, left_style) = if app.key_sheet && flash.is_none() {
+        (
+            "Up/Down or PgUp/PgDn scroll \u{b7} Esc / ? / F1 close",
+            Style::default().fg(theme::muted()),
+        )
+    } else if app.settings_view.is_some() && app.picker.is_none() && flash.is_none() {
+        (settings::FOOTER, Style::default().fg(theme::muted()))
+    } else if app.ready_update_path.is_some() {
+        (
+            "Update installed · loads when current work finishes",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if app.recovery_warning().is_some() {
+        (
+            "draft not saved locally · retrying persistence",
+            Style::default().fg(Color::Red),
+        )
+    } else if let Some(warning) = app.store_warning.as_deref() {
+        (warning, Style::default().fg(Color::Red))
+    } else if let Some(m) = flash {
+        (m, Style::default().fg(Color::Indexed(179)))
+    } else if app.activity.detail.is_some() {
+        (
+            "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
+            Style::default().fg(theme::muted()),
+        )
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Effort)
+    {
+        (
+            if w < 75 {
+                "Enter apply \u{b7} Esc cancel"
+            } else {
+                app.footer_left.as_str()
+            },
+            Style::default().fg(Color::DarkGray),
+        )
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_some()
+    {
+        (
+            if app
+                .job
+                .as_ref()
+                .is_some_and(|job| job.kind == JobKind::Update)
+            {
+                if w < 75 {
+                    if app.update_details {
+                        "D back \u{b7} Esc cancel \u{b7} \u{2193} more"
+                    } else {
+                        "D details \u{b7} Esc cancel \u{b7} \u{2193} more"
+                    }
+                } else if app.update_details {
+                    "D progress \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                } else {
+                    "D details \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
+                }
+            } else {
+                "\u{2191}\u{2193} scroll \u{b7} Esc cancels"
+            },
+            Style::default().fg(Color::DarkGray),
+        )
+    } else if let Some(job) = &app.job {
+        let what = match job.kind {
+            JobKind::Update => "updating",
+            JobKind::Check => "checking",
+        };
+        let line = job.status();
+        let shown: String = line.chars().take(60).collect();
+        job_line = format!(
+            "{} {what} \u{b7} {}{}{} \u{b7} Esc cancels",
+            spinner(app.tick_count),
+            crate::delegate::fmt_elapsed(job.started.elapsed()),
+            if shown.is_empty() { "" } else { " \u{b7} " },
+            shown
+        );
+        (job_line.as_str(), Style::default().fg(Color::Cyan))
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app
+            .update_preview
+            .as_ref()
+            .is_some_and(|p| p.install_available)
+    {
+        if app.update_blocked_by_work() {
             (
-                "Update installed · loads when current work finishes",
+                "Update blocked: task running · Esc returns to task",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )
-        } else if app.recovery_warning().is_some() {
-            (
-                "draft not saved locally · retrying persistence",
-                Style::default().fg(Color::Red),
-            )
-        } else if let Some(warning) = app.store_warning.as_deref() {
-            (warning, Style::default().fg(Color::Red))
-        } else if let Some(m) = flash {
-            (m, Style::default().fg(Color::Indexed(179)))
-        } else if app.activity.detail.is_some() {
-            (
-                "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
-                Style::default().fg(theme::muted()),
-            )
-        } else if app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Effort)
-        {
-            (
-                if w < 75 {
-                    "Enter apply \u{b7} Esc cancel"
-                } else {
-                    app.footer_left.as_str()
-                },
-                Style::default().fg(Color::DarkGray),
-            )
-        } else if app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update)
-            && app.job.is_some()
-        {
-            (
-                if app
-                    .job
-                    .as_ref()
-                    .is_some_and(|job| job.kind == JobKind::Update)
-                {
-                    if w < 75 {
-                        if app.update_details {
-                            "D back \u{b7} Esc cancel \u{b7} \u{2193} more"
-                        } else {
-                            "D details \u{b7} Esc cancel \u{b7} \u{2193} more"
-                        }
-                    } else if app.update_details {
-                        "D progress \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
-                    } else {
-                        "D details \u{b7} Esc cancel \u{b7} \u{2191}\u{2193} scroll"
-                    }
-                } else {
-                    "\u{2191}\u{2193} scroll \u{b7} Esc cancels"
-                },
-                Style::default().fg(Color::DarkGray),
-            )
-        } else if let Some(job) = &app.job {
-            let what = match job.kind {
-                JobKind::Update => "updating",
-                JobKind::Check => "checking",
-            };
-            let line = job.status();
-            let shown: String = line.chars().take(60).collect();
-            job_line = format!(
-                "{} {what} \u{b7} {}{}{} \u{b7} Esc cancels",
-                spinner(app.tick_count),
-                crate::delegate::fmt_elapsed(job.started.elapsed()),
-                if shown.is_empty() { "" } else { " \u{b7} " },
-                shown
-            );
-            (job_line.as_str(), Style::default().fg(Color::Cyan))
-        } else if app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update)
-            && app
-                .update_preview
-                .as_ref()
-                .is_some_and(|p| p.install_available)
-        {
-            if app.update_blocked_by_work() {
-                (
-                    "Update blocked: task running · Esc returns to task",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                )
+        }
+    } else if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::Update)
+        && app.job.is_none()
+        && app.update_preview.is_some()
+    {
+        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
+    } else if !app.palette_entries().is_empty() {
+        (
+            "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
+            Style::default().fg(Color::DarkGray),
+        )
+    } else if app.has_selection() {
+        (
+            "right-click or Ctrl+C to copy \u{b7} click to clear",
+            Style::default().fg(Color::Indexed(179)),
+        )
+    } else if app.view.scroll > 0 {
+        (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
+    } else if app.busy {
+        (
+            if app.idle_notice.is_some() {
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
             } else {
-                (
-                    "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )
-            }
-        } else if app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Update)
-            && app.job.is_none()
-            && app.update_preview.is_some()
-        {
-            ("Enter / Esc close", Style::default().fg(Color::DarkGray))
-        } else if !app.palette_entries().is_empty() {
-            (
-                "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
-                Style::default().fg(Color::DarkGray),
-            )
-        } else if app.has_selection() {
-            (
-                "right-click or Ctrl+C to copy \u{b7} click to clear",
-                Style::default().fg(Color::Indexed(179)),
-            )
-        } else if app.view.scroll > 0 {
-            (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
-        } else if app.busy {
-            (
-                if app.idle_notice.is_some() {
-                    "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
-                } else {
-                    "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
-                },
-                Style::default().fg(Color::DarkGray),
-            )
-        } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
-            (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
-        } else {
-            (
-                if app.idle_notice.is_some() && app.picker.is_none() {
-                    idle_footer_hint.as_str()
-                } else {
-                    app.footer_left.as_str()
-                },
-                Style::default().fg(Color::DarkGray),
-            )
-        };
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
+            },
+            Style::default().fg(Color::DarkGray),
+        )
+    } else if !app.keep.recovery_choices.is_empty() && app.picker.is_none() {
+        (recovery_hint.as_str(), Style::default().fg(Color::DarkGray))
+    } else {
+        (
+            if app.idle_notice.is_some() && app.picker.is_none() {
+                idle_footer_hint.as_str()
+            } else {
+                app.footer_left.as_str()
+            },
+            Style::default().fg(Color::DarkGray),
+        )
+    };
     let left = if app.workspace.focused.is_some() && app.picker.is_none() {
         "File pane · Esc chat · F6 change focus · Ctrl+S save"
     } else {

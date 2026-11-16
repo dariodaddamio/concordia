@@ -228,10 +228,6 @@ fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) ->
             )));
         }
     }
-    lines.push(PreviewLine::Hint(
-        "↑/↓ or Tab select · C reconnect · V verify · D disconnect · N new · R refresh · Esc close"
-            .into(),
-    ));
     lines
 }
 pub(super) fn open(app: &mut App) {
@@ -341,8 +337,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
     }
     if key.code == KeyCode::Esc {
         if app.integrations.new_path.take().is_some() {
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
+            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
             if let Some(catalog) = app.integrations.catalog.as_ref() {
                 app.update_preview = Some(UpdatePreview {
                     history: Vec::new(),
@@ -364,8 +359,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                     release_url: None,
                 });
             }
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
+            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
             return true;
         }
         return false;
@@ -830,7 +824,6 @@ pub(super) fn poll(app: &mut App) -> bool {
                 vec![
                     PreviewLine::Title("Integration catalog unavailable".into()),
                     PreviewLine::Text(error),
-                    PreviewLine::Hint("R retry · Esc close".into()),
                 ]
             });
         if let Some(preview) = app.update_preview.as_mut() {
@@ -847,8 +840,9 @@ pub(super) fn poll(app: &mut App) -> bool {
                 })
                 .collect();
             app.show_picker(PickerKind::Integrations, "integrations".into(), rows, false);
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
+            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
+        } else {
+            app.footer_left = "R refresh \u{b7} Esc close".into();
         }
     }
     changed || valid

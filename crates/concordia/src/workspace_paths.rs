@@ -1,6 +1,16 @@
 //! Shared exclusions for automatic workspace discovery and content search.
 use std::path::{Path, PathBuf};
 
+/// Strip Windows verbatim prefixes (`\\?\`, `\\?\UNC\`) for paths shown to the user.
+pub fn display_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else {
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    }
+}
+
 /// Classify by path alone: never open credentials to decide whether they are sensitive.
 pub fn sensitive(path: &Path) -> bool {
     let normalized = path

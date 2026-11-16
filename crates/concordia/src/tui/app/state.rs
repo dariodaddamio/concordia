@@ -1572,24 +1572,20 @@ impl App {
             }
             JobResult::Check(Err(e)) => {
                 let message = format!("update check failed - {e:#}");
+                crate::logging::error(&format!("update-check-failed {e:#}"));
+                self.update_preview = Some(UpdatePreview {
+                    history: Vec::new(),
+                    history_expanded: false,
+                    lines: vec![crate::update::PreviewLine::Text(message)],
+                    install_available: false,
+                    release_url: None,
+                });
                 if self
                     .picker
                     .as_ref()
                     .is_some_and(|p| p.kind == PickerKind::Update)
                 {
-                    self.update_preview = Some(UpdatePreview {
-                        history: Vec::new(),
-                        history_expanded: false,
-                        lines: vec![
-                            crate::update::PreviewLine::Text(message),
-                            crate::update::PreviewLine::Hint("Esc returns to your chat".into()),
-                        ],
-                        install_available: false,
-                        release_url: None,
-                    });
                     self.footer_left = "Esc close".into();
-                } else {
-                    self.push_system(message);
                 }
             }
         }

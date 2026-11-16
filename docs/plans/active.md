@@ -34,3 +34,13 @@
 | `crates/concordia/src/tui/palette.rs` | ok: 1, 5, 10 | Remove the stale worker-return branch from command completion so the removed command is not advertised. |
 | `README.md`, `site/src/content/docs/configuration.md` | ok: 5, 10 | Describe the shipped role picker, worker result preference and expansion controls in the existing canonical user-facing docs. |
 
+### Sweep UI repair (F1/skills/doctor/harness/surfaces) - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/workspace_paths.rs`, `tui/landing.rs`, `doctor.rs` | ok: 1, 4, 6 | One `display_path` owner; landing and doctor call it; no second strip helper. |
+| `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 5, 7 | Key sheet, picker height, update/integrations popup geometry stay in the draw owner. |
+| `crates/concordia/src/tui/settings.rs` | ok: 1, 5, 7 | Parse YAML block scalars at the existing skill description reader; Accounts value uses `account_label`. |
+| `crates/concordia/src/tui/integrations.rs`, `update_ui.rs`, `native_agents.rs`, `related_files.rs` | ok: 1, 5, 10 | Drop body/title key hints and dead empty states; footers remain the key surface. |
+| `crates/concordia/src/tui/app/state.rs`, `sessions.rs` | ok: 1, 10 | Auto check failure logs and keeps preview without a chat line; disabled row ids cover open/agents hints. |
+
