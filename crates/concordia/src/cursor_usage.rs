@@ -84,15 +84,61 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     }
     let cwd = probe_dir();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("temp dir: {e}"))?;
-    run_usage_in_pty(
+    let started = std::time::SystemTime::now();
+    let text = run_usage_in_pty(
         &PtySpec {
             program,
             args,
             env,
-            cwd,
+            cwd: cwd.clone(),
         },
         PTY_TIMEOUT,
-    )
+    );
+    if let Some(chats) = dirs::home_dir().map(|home| home.join(".cursor").join("chats")) {
+        remove_probe_chats(&chats, &cwd, started);
+    }
+    text
+}
+
+/// Cursor records every interactive start as a chat, so each usage check would leave an empty
+/// chat behind. Remove only the ones this check made: started in the probe folder, holding no
+/// conversation, and created since the check began.
+fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) {
+    let since_ms = since
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let probe = probe.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let Ok(projects) = std::fs::read_dir(chats) else {
+        return;
+    };
+    for project in projects.flatten() {
+        let Ok(entries) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for chat in entries.flatten() {
+            let dir = chat.path();
+            let recent = chat
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= since);
+            if !recent || dir.join("store.db").exists() {
+                continue;
+            }
+            let Some(meta) = std::fs::read_to_string(dir.join("meta.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            else {
+                continue;
+            };
+            let made_here = meta["cwd"].as_str().is_some_and(|cwd| {
+                cwd.trim_end_matches('\\').to_lowercase() == probe
+            });
+            let created = meta["createdAtMs"].as_u64().map_or(0, u128::from);
+            if made_here && meta["hasConversation"] == false && created >= since_ms {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
 }
 
 struct Shared {
