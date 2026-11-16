@@ -26,7 +26,7 @@ impl App {
             picker.title = format!("{command} · This panel lets you {does}.");
             // /harness owns its footer from the live catalog (empty → N new · Esc only).
             if command != "/harness" {
-                self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
+                self.footer_left = format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}");
             }
         }
         if command == "/model" {
@@ -1467,7 +1467,7 @@ impl App {
         editor.select_all();
         self.mcp_add_editor = true;
         self.rename_editor = Some(editor);
-        self.footer_left = "type NAME COMMAND [ARGS...] · Enter previews and validates · Esc cancels with nothing changed".into();
+        self.footer_left = "type NAME COMMAND [ARGS...] · Enter preview · Esc cancel".into();
     }
 
     pub(in crate::tui) fn begin_mcp_import(&mut self) {
@@ -1489,7 +1489,7 @@ impl App {
             false,
         );
         self.footer_left =
-            "↑↓ choose · Enter adds the selected server · Esc cancels with nothing changed".into();
+            "↑↓ choose · Enter add server · Esc cancel".into();
     }
 
     fn apply_mcp_import(&mut self, index: usize) {
@@ -1548,7 +1548,7 @@ impl App {
             detail: format!("Adds an enabled local stdio server with arguments [{}]. Undo with /mcp remove {name}.", args.join(" ")),
         }], false);
         self.mcp_add_preview = Some((name, command, args));
-        self.footer_left = "Enter confirms the preview · Esc cancels with nothing changed".into();
+        self.footer_left = "Enter confirm · Esc cancel".into();
     }
 
     pub(in crate::tui) fn apply_mcp_add(&mut self) {
@@ -1747,7 +1747,7 @@ impl App {
                         editor.set_text(self.session_ui.title.as_deref().unwrap_or_default());
                         editor.select_all();
                         self.rename_editor = Some(editor);
-                        self.footer_left = "type a title · Enter validates and saves · Esc cancels with nothing changed".into();
+                        self.footer_left = "type a title · Enter save · Esc cancel".into();
                     }
                     "rename:clear" => {
                         if self.rename_session("") {

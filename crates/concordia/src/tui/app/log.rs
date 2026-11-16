@@ -173,7 +173,15 @@ impl App {
     pub(in crate::tui) fn reply_meta(&self) -> (ProviderKind, String) {
         let mut label = self.account_label();
         if !self.model.is_empty() && self.model != "?" {
-            label.push_str(&format!(" \u{b7} {}", self.model));
+            // The model's display name when the catalog knows it, as in the header.
+            let model = crate::models::find_at(
+                &self.state_root,
+                self.provider,
+                &self.account,
+                &self.model,
+            )
+            .map_or_else(|| self.model.clone(), |entry| entry.display_name);
+            label.push_str(&format!(" \u{b7} {model}"));
         }
         (self.provider, label)
     }

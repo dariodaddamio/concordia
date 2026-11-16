@@ -2159,32 +2159,40 @@ mod tests {
         let ctl = JobControl::default();
         let c2 = ctl.clone();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        // PowerShell can take many seconds to start under a loaded test run, so the request gets
+        // a generous window to arrive and promptness is measured from the cancellation.
         let peer = std::thread::spawn(move || {
             let start = Instant::now();
-            while start.elapsed() < Duration::from_secs(10) {
+            while start.elapsed() < Duration::from_secs(40) {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
                     let mut byte = [0];
                     let received = stream.read(&mut byte).unwrap_or(0) > 0;
+                    let cancelled_at = Instant::now();
                     c2.cancel.store(true, Ordering::SeqCst);
                     let _ = finished_rx.recv_timeout(Duration::from_secs(5));
-                    return received;
+                    return (received, Some(cancelled_at));
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
             c2.cancel.store(true, Ordering::SeqCst);
-            false
+            (false, None)
         });
-        let start = Instant::now();
         let error = crate::release::PowerShellFetcher::controlled(&ctl)
             .get_text(&url)
             .unwrap_err();
+        let returned_at = Instant::now();
         let _ = finished_tx.send(());
-        assert!(peer.join().unwrap(), "local HTTP request never started");
+        let (received, cancelled_at) = peer.join().unwrap();
+        assert!(received, "local HTTP request never started");
         assert!(format!("{error:#}").contains("cancelled"), "{error:#}");
-        assert!(start.elapsed() < Duration::from_secs(15));
+        let cancelled_at = cancelled_at.expect("request was cancelled");
+        assert!(
+            returned_at.saturating_duration_since(cancelled_at) < Duration::from_secs(5),
+            "the fetch kept running after cancellation"
+        );
     }
 
     #[test]

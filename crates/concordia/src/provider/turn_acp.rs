@@ -284,11 +284,18 @@ impl Connection {
                     .unwrap_or("unknown")
                     .to_owned();
                 let prior = self.out.cards.iter().find(|c| c.id == id);
-                let title = update["title"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| prior.map(|c| c.title.clone()))
-                    .unwrap_or_else(|| "tool".into());
+                let asks_user = update.get("rawInput").is_some_and(|raw| {
+                    raw["providerIdentifier"] == "concordia-ask" && raw["toolName"] == "ask_user"
+                });
+                let title = if asks_user {
+                    "Question for you".to_owned()
+                } else {
+                    update["title"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| prior.map(|c| c.title.clone()))
+                        .unwrap_or_else(|| "tool".into())
+                };
                 let detail = update
                     .get("rawInput")
                     .filter(|v| !v.is_null())

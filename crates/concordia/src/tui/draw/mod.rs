@@ -656,8 +656,8 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
             ("Ctrl+Shift+PgUp", "move the current tab left"),
             ("Ctrl+Shift+PgDn", "move the current tab right"),
             ("Ctrl+W", "close the current tab"),
-            ("F2", "rename the current tab"),
-            ("double-click", "rename a tab title"),
+            ("F2", "rename the current chat"),
+            ("double-click", "rename a chat from its tab"),
         ]),
     ));
     sections.push((
@@ -2627,7 +2627,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
                     } else if app.workspace.focused.is_some() {
                         "The file pane has focus."
                     } else {
-                        "Message Concordia...  (/ for commands)"
+                        "Message Concordia..."
                     },
                     Style::default()
                         .fg(Color::DarkGray)
