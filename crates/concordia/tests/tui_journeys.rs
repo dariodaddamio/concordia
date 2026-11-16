@@ -2754,9 +2754,10 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.until("provider model list", |s| {
         s.screen().contains("fixture-model") && s.screen().contains("efforts: low, high")
     });
-    assert!(s
-        .screen()
-        .contains("fixture-model · fixture-model  efforts: low, high"));
+    // A model whose display name is its id is shown once.
+    assert!(s.screen().lines().any(|line| line.contains("fixture-model")
+        && line.contains("efforts: low, high")
+        && !line.contains("fixture-model · fixture-model")));
     std::fs::write(evidence.join("check-1.txt"), s.screen()).unwrap();
     s.enter();
     s.until("effort picker opens for the grouped model", |s| {

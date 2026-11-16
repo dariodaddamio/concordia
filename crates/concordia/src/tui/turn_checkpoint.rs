@@ -154,8 +154,7 @@ impl App {
                 self.continuation.restore_checkpoint(checkpoint);
                 self.queue.paused = true;
                 self.queue.dispatch.clear_automatic();
-                self.push_system("The unfinished request above was recovered and paused; nothing was sent again. Check any tool actions it started, then choose where to continue it, or type a new message. Your draft and queued messages are kept.");
-                self.open_continuation_picker();
+                self.push_system("The unfinished request above was recovered and paused; nothing was sent again. Check any tool actions it started before you send it again or type a new message. Your draft and queued messages are kept.");
             }
             Some(Err(error)) => self.push_system(format!(
                 "unfinished-request recovery unavailable: {error}; existing record kept"

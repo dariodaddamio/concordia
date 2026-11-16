@@ -6,7 +6,8 @@
 - The question popup lists its keys in the footer, and Cursor's question card shows the question instead of the tool's raw input.
 - Turning on Cursor's native text input says plainly which turns and workers use it.
 - Restarting no longer adds another copy of a recovered request to the chat each time; before, every restart appended the same prompt again.
-- A recovered unfinished request opens the choice of where to continue it, as its notice says, and the notice says plainly that nothing was sent again.
+- The notice for a recovered unfinished request says plainly that nothing was sent again and no longer points at a continue action that restart recovery does not show. When Codex cannot record its thread, the choice of where to continue opens, as its message says.
+- The header's subscription line ends at a word with an ellipsis when a file pane narrows the chat.
 - The continue choice treats Cursor's pools separately: Auto and Composer models stay available when only the API pool is used up.
 - A Cursor question card is titled "Question for you", and replies are labelled with the model's display name.
 - Pickers use the same short key words (`Enter apply · Esc cancel`), the message box no longer repeats the slash-command hint from the footer, and F1 calls renaming a tab renaming the chat.
