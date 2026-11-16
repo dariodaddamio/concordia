@@ -15,10 +15,15 @@ const MAX_OPTIONS: usize = 8;
 const MAX_TEXT: usize = 2_000;
 const ENDPOINT_ENV: &str = "CONCORDIA_ASK_ENDPOINT";
 const TOKEN_ENV: &str = "CONCORDIA_ASK_TOKEN";
-/// Cursor's MCP client keeps the tool call open while the user thinks; the turn's own cancellation
-/// ends the wait earlier.
+/// How long one open question waits for the user in total; the turn's own cancellation ends the
+/// wait earlier.
 const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// How long one `ask_user` call waits before it reports that the question is still open. MCP
+/// clients abandon a tool call after 60 seconds (`-32001 Request timed out`), so each call returns
+/// before that and the agent calls again; the popup stays up and a repeat call reattaches to it.
+const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 pub const DISMISSED: &str = "The user dismissed the question without answering.";
+pub const STILL_OPEN: &str = "The question is still open in Concordia and the user has not answered yet. Call ask_user again with exactly the same questions to keep waiting for the answer. Do not answer for the user.";
 
 /// Turns a native question answer (selected option ids) back into the labels the agent offered.
 pub fn answer_text(questions: &[Value], answer: &Value) -> String {
@@ -61,12 +66,22 @@ pub struct BridgeRequest {
     pub answer: oneshot::Sender<Value>,
 }
 
+/// A question shown to the user whose answer no call is waiting for right now.
+struct OpenQuestion {
+    answer: oneshot::Receiver<Value>,
+    since: std::time::Instant,
+}
+
 pub async fn spawn_listener(
     token: String,
     tx: tokio::sync::mpsc::UnboundedSender<BridgeRequest>,
 ) -> std::io::Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = listener.local_addr()?.to_string();
+    // Keyed by the questions' JSON so a repeat call for the same questions reattaches.
+    let open: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, OpenQuestion>>,
+    > = Default::default();
     let task = tokio::spawn(async move {
         let mut connections = tokio::task::JoinSet::new();
         loop {
@@ -79,6 +94,7 @@ pub async fn spawn_listener(
             };
             let token = token.clone();
             let tx = tx.clone();
+            let open = open.clone();
             connections.spawn(async move {
                 let (reader, mut writer) = stream.into_split();
                 let mut reader = AsyncBufReader::new(reader.take(MAX_REQUEST_BYTES as u64 + 1));
@@ -104,21 +120,38 @@ pub async fn spawn_listener(
                 if validate(&json!({"questions": questions.clone()})).is_err() {
                     return;
                 }
-                let (answer_tx, answer_rx) = oneshot::channel();
-                if tx
-                    .send(BridgeRequest {
-                        questions,
-                        answer: answer_tx,
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                let value = tokio::time::timeout(ANSWER_WAIT, answer_rx)
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_else(|| json!(DISMISSED));
+                let key = questions.to_string();
+                let reopened = open.lock().ok().and_then(|mut map| map.remove(&key));
+                let mut question = match reopened {
+                    Some(question) => question,
+                    None => {
+                        let (answer_tx, answer_rx) = oneshot::channel();
+                        if tx
+                            .send(BridgeRequest {
+                                questions,
+                                answer: answer_tx,
+                            })
+                            .is_err()
+                        {
+                            return;
+                        }
+                        OpenQuestion {
+                            answer: answer_rx,
+                            since: std::time::Instant::now(),
+                        }
+                    }
+                };
+                let value = match tokio::time::timeout(CALL_WAIT, &mut question.answer).await {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(_)) => json!(DISMISSED),
+                    Err(_) if question.since.elapsed() >= ANSWER_WAIT => json!(DISMISSED),
+                    Err(_) => {
+                        if let Ok(mut map) = open.lock() {
+                            map.insert(key, question);
+                        }
+                        json!(STILL_OPEN)
+                    }
+                };
                 let _ = writer.write_all(value.to_string().as_bytes()).await;
                 let _ = writer.write_all(b"\n").await;
             });
@@ -135,7 +168,7 @@ fn error(id: Value, code: i64, message: &str) -> String {
 }
 
 fn tool() -> Value {
-    json!({"name":"ask_user","description":"Use this whenever you need a decision or clarification from the user. Concordia will show the questions in its question popup and return the selected answers.","inputSchema":{"type":"object","properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","maxLength":2000},"options":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"string","maxLength":2000}},"multiple":{"type":"boolean"}},"required":["question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}})
+    json!({"name":"ask_user","description":"Use this whenever you need a decision or clarification from the user. Concordia will show the questions in its question popup and return the selected answers. If it reports that the question is still open, call it again with the same questions.","inputSchema":{"type":"object","properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","maxLength":2000},"options":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"string","maxLength":2000}},"multiple":{"type":"boolean"}},"required":["question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}})
 }
 
 fn validate(args: &Value) -> Result<(), &'static str> {
@@ -184,7 +217,9 @@ fn forward(args: &Value) -> Result<String, String> {
         .map_err(|_| "Concordia question bridge token is unavailable".to_owned())?;
     let mut stream = TcpStream::connect(endpoint)
         .map_err(|_| "Concordia turn is no longer running".to_owned())?;
-    stream.set_read_timeout(Some(ANSWER_WAIT)).ok();
+    stream
+        .set_read_timeout(Some(CALL_WAIT + std::time::Duration::from_secs(10)))
+        .ok();
     let body = json!({"token":token,"questions":args["questions"]}).to_string();
     stream
         .write_all(body.as_bytes())
@@ -214,8 +249,9 @@ pub fn handle_line(line: &str) -> Option<String> {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         return Some(error(Value::Null, -32700, "parse error"));
     };
-    let id = value.get("id").cloned().unwrap_or(Value::Null);
     let method = value.get("method").and_then(Value::as_str)?;
+    // Notifications (such as notifications/cancelled) carry no id and get no response.
+    let id = value.get("id").cloned()?;
     Some(match method {
         "initialize" => reply(
             id,
