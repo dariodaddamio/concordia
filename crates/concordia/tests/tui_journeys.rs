@@ -622,7 +622,7 @@ impl Drop for Session {
 fn visible_prompt(prompt: &str) -> String {
     let (_, prompt) = concordia::provider::standing_context::extract(Some(prompt));
     let prompt = prompt
-        .strip_prefix("You are running inside Concordia, ")
+        .strip_prefix("You run inside Concordia, ")
         .and_then(|rest| rest.find("\n[").map(|index| &rest[index + 1..]))
         .unwrap_or(&prompt);
     concordia::prompt_time::strip_header(prompt).to_owned()
@@ -776,7 +776,7 @@ fn notifications_can_be_disabled_from_config_without_changing_idle_status() {
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch(dir.path());
     s.submit("/config");
-    for _ in 0..5 {
+    for _ in 0..4 {
         s.request(serde_json::json!({"op":"key","code":"Down"}));
     }
     s.request(serde_json::json!({"op":"key","code":"Enter"}));
@@ -844,7 +844,7 @@ fn shared_setup_commands_are_discoverable_and_work_through_the_terminal_ui() {
     session.send("\x1b");
     session.submit("/skills");
     session.until("shared source status", |session| {
-        session.screen().contains("Skills ·")
+        session.screen().contains("Skills · codex · local sources")
     });
     session.send("\x1b");
     session.submit("/hooks list extra");
@@ -1047,10 +1047,7 @@ fn cli_standing_context_is_sent_again_after_compaction() {
                 prompt.contains("inside Concordia") || args.contains("inside Concordia"),
                 "{provider:?} launch did not carry standing context: {start}"
             );
-            assert!(
-                prompt.contains("Registered Concordia tools:")
-                    || args.contains("Registered Concordia tools:")
-            );
+            assert!(prompt.contains("Tools:") || args.contains("Tools:"));
             assert!(
                 prompt.contains("agents") || args.contains("agents"),
                 "{provider:?} launch did not carry the registered agents tool: {start}"
@@ -1129,12 +1126,12 @@ fn mermaid_and_all_provider_image_inputs_work_in_the_installed_ui() {
             y + 1
         ));
         s.until("inline raster snapshot", |s| {
-            s.screen().contains("cell preview") && s.screen().contains("12 × 8")
+            s.screen().contains("File preview") && s.screen().contains("12 × 8")
         });
         s.paste("preview must preserve draft");
         s.send("\x1b");
         s.until("raster close preserves composer", |s| {
-            !s.screen().contains("cell preview") && s.draft() == preview_draft
+            !s.screen().contains("File preview") && s.draft() == preview_draft
         });
         s.send("\x01\x7f");
         s.paste("Inspect image pixels");
@@ -1355,8 +1352,7 @@ fn workspace_files_complete_without_mentions_and_send_now_interrupts_then_sends_
         s.screen().contains("WORKSPACE_CODE_MARKER")
     });
     assert!(s.prompts().is_empty());
-    escape_window(detached_window(s.child.id()));
-    s.submit("/close 1");
+    s.send("q");
     s.until("file closed", |s| {
         !s.screen().contains("WORKSPACE_CODE_MARKER")
     });
@@ -2488,7 +2484,11 @@ fn agents_reference_layout_supports_columns_selection_and_long_lists() {
     std::fs::write(out.join("check-5.txt"), &first).unwrap();
     assert!(s.screen().lines().any(|line| line.contains("▮▮▮▮▮▮")));
     s.send("\x1b[<0;70;8M\x1b[<0;70;8m");
-    s.until("mouse selects a row", |s| s.screen().contains("#1 Impl"));
+    s.until("mouse selects a row", |s| {
+        s.screen()
+            .lines()
+            .any(|line| line.contains(" 1 ") && line.contains("Impl"))
+    });
     std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
     std::fs::write(out.join("check-7.txt"), s.screen()).unwrap();
     s.send("\x1b");
@@ -2734,11 +2734,19 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.until("provider model list", |s| {
         s.screen().contains("fixture-model") && s.screen().contains("efforts: low, high")
     });
-    assert!(s.screen().contains("fixture-model · efforts: low, high"));
+    assert!(s
+        .screen()
+        .contains("fixture-model · fixture-model  efforts: low, high"));
     std::fs::write(evidence.join("check-1.txt"), s.screen()).unwrap();
     s.enter();
+    s.until("effort picker opens for the grouped model", |s| {
+        s.screen().contains("fixture-model · Choose effort") && s.screen().contains("low")
+    });
+    s.enter();
     s.until("variant selection uses a reported model id", |s| {
-        s.screen().contains("model → fixture-model-low")
+        s.screen().contains("using ")
+            && s.screen().contains("fixture-model-low")
+            && s.screen().contains("effort low")
     });
     s.send("\x1b");
     s.request(serde_json::json!({"op":"resize","columns":160,"rows":45}));
@@ -2795,9 +2803,9 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
         ("usage", "/usage", "usage"),
         ("help", "/help", "/help · This panel"),
         ("harness", "/harness", "integrations"),
-        ("skills", "/skills", "Project vs user scope"),
-        ("hooks", "/hooks", "Project vs user scope"),
-        ("mcp", "/mcp", "/mcp · This panel"),
+        ("skills", "/skills", "Skills · codex · local sources"),
+        ("hooks", "/hooks", "Hooks · codex · local sources"),
+        ("mcp", "/mcp", "/mcp · choose who runs it"),
         ("open", "/open", "Open"),
         (
             "resume",
@@ -2845,6 +2853,10 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     std::fs::write(dir.path().join("mcp.toml"), "[servers.synthetic]\nenabled=true\n[servers.synthetic.transport]\ntype=\"stdio\"\ncommand=\"synthetic-mcp\"\n[servers.needs-login]\nenabled=true\n[servers.needs-login.transport]\ntype=\"remote\"\nurl=\"https://example.invalid/mcp\"\n[servers.needs-login.transport.headers]\nAuthorization={env=\"Y5_MISSING\"}\n").unwrap();
     let mut s = Session::launch(dir.path());
     s.submit("/mcp import");
+    s.until("shared MCP command chooser", |s| {
+        s.screen().contains("/mcp · choose who runs it") && s.screen().contains("Concordia")
+    });
+    s.enter();
     s.until("guided MCP import panel", |s| {
         s.screen().contains("/mcp import") && s.screen().contains("Add imported from claude")
     });
@@ -2859,6 +2871,10 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
         s.screen().contains("Message Concordia")
     });
     s.submit("/mcp");
+    s.until("shared MCP status chooser", |s| {
+        s.screen().contains("/mcp · choose who runs it") && s.screen().contains("Concordia")
+    });
+    s.enter();
     s.until("per-provider MCP status", |s| {
         s.screen().contains("Claude Code")
             && s.screen().contains("Codex")
@@ -2871,6 +2887,10 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
     s.send("\x1b");
     s.submit("/doctor");
+    s.until("shared doctor chooser", |s| {
+        s.screen().contains("/doctor · choose who runs it") && s.screen().contains("Concordia")
+    });
+    s.enter();
     s.until("doctor MCP status", |s| {
         s.screen().contains("mcp") && s.screen().contains("Claude Code")
     });
@@ -3645,12 +3665,12 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     assert_clean(&s.pixels("banner move", magenta), "banner move");
 
     s.click_text("Image 1: wide.png", 0);
-    s.until("image modal", |s| s.screen().contains("Image preview"));
+    s.until("image modal", |s| s.screen().contains("File preview"));
     assert_clean(&s.pixels("modal", magenta), "modal");
     s.request(serde_json::json!({"op":"resize","columns":120,"rows":40}));
     assert_clean(&s.pixels("modal resize", magenta), "modal resize");
     s.send("\x1b");
-    s.until("modal closed", |s| !s.screen().contains("Image preview"));
+    s.until("modal closed", |s| !s.screen().contains("File preview"));
     assert_clean(&s.pixels("modal close", magenta), "modal close");
 
     let screen = s.screen();
@@ -3710,9 +3730,15 @@ fn update_mode_is_visible_in_config_and_does_not_open_a_modal_notice() {
     setup(dir.path(), ProviderKind::Codex);
     let mut s = Session::launch(dir.path());
     s.submit("/config");
-    s.enter();
+    for _ in 0..4 {
+        s.request(serde_json::json!({"op":"key","code":"Right"}));
+    }
     s.until("update mode setting", |s| {
-        s.screen().contains("Updates") && s.screen().contains("prepare in background")
+        let screen = s.screen();
+        screen.contains("Updates")
+            && screen.contains("New versions")
+            && (screen.contains("Install in the background")
+                || screen.contains("Install at next launch"))
     });
     assert!(!s.screen().contains("Restart now"));
     s.exit();

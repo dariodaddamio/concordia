@@ -839,7 +839,8 @@ fn shift_tab_never_reaches_full() {
     assert!(close.y < mode.y);
     let popup = h.app.areas.permissions_popup;
     assert!(popup.width <= 54 && popup.x >= 40);
-    assert_eq!(popup.bottom(), mode.y);
+    // The permissions popup ends above the composer instead of drawing over it.
+    assert_eq!(popup.bottom(), h.app.areas.input.y - 1);
     assert!(h.app.areas.input.width > 0);
     assert!(!h.screen().contains("message · paused"));
     let input = h.app.areas.input;

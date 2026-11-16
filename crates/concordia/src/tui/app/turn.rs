@@ -669,6 +669,7 @@ impl App {
         }
         visible_change |= self.poll_pending_login();
         visible_change |= self.poll_model_refresh();
+        visible_change |= self.poll_resume_load();
         visible_change |= self.poll_job();
         visible_change |= landing::poll(self);
         visible_change |= tokens::poll(self);

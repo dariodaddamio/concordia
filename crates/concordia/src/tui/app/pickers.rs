@@ -4,7 +4,6 @@ impl App {
     pub(in crate::tui) fn open_guided_command(&mut self, command: &str, choices: Vec<PickerRow>) {
         let purpose = match command {
             "/terminal" => "This panel opens, hides, or closes a terminal.",
-            "/delegate" => "This panel reviews and manages delegated work.",
             "/rename" => "This panel changes the current chat title.",
             "/native" => "This panel changes native provider transport for an account.",
             "/mcp" => "This panel manages the local MCP server registry.",
@@ -35,66 +34,62 @@ impl App {
 
     pub(in crate::tui) fn open_resume_picker(&mut self) {
         self.refresh_store_warning();
-        let sessions = list_recent_sessions(&self.state_root, 40);
-        let tasks = crate::store::list_tasks(&self.state_root);
-        let persisted_ids: std::collections::HashSet<_> = tasks
-            .iter()
-            .flat_map(|task| {
-                task.sessions.iter().map(|session| {
-                    (
-                        session.provider,
-                        session.account.clone(),
-                        session.native_session_id.clone(),
-                    )
-                })
-            })
-            .collect();
-        let native: Vec<_> = sessions
-            .iter()
-            .filter(|session| {
-                !persisted_ids.contains(&(
-                    session.provider,
-                    session.account.clone(),
-                    session.session_id.clone(),
-                ))
-            })
-            .cloned()
-            .collect();
-        let mut rows = tasks_to_picker_rows(&tasks);
-        for row in &mut rows {
-            let Some(task_id) = row.id.strip_prefix("task:") else {
-                continue;
-            };
-            if let Some(task) = tasks.iter().find(|task| task.id == task_id) {
-                let diagnostic = crate::sessions::diagnose_task(&self.state_root, task);
-                if let Some(cause) = diagnostic.cause() {
-                    row.detail = format!(
-                        "unopenable · {} · Enter to repair (or run chat repair; draft kept)",
-                        cause.label()
-                    );
-                }
-            }
-        }
-        rows.extend(native_session_picker_rows(&native));
-        let here = count_sessions_here(&sessions, Some(&self.cwd));
-        let folder = self
-            .cwd
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "cwd".into());
-        let title = if here > 0 {
-            format!("chats · {folder} ({here})")
-        } else {
-            format!("chats · {}", sessions.len())
-        };
-        if rows.is_empty() {
-            rows.push(PickerRow {
-                id: "none".into(),
-                label: "no chats yet".into(),
-                detail: "send a message first — then switch here".into(),
+        // Open immediately with a muted loading row; the session scan runs off the UI thread.
+        self.show_picker(
+            PickerKind::Resume,
+            "chats".into(),
+            vec![PickerRow {
+                id: "resume:loading".into(),
+                label: "Loading chats…".into(),
+                detail: String::new(),
+            }],
+            true,
+        );
+        self.footer_left = "↑↓ Enter · type to filter · Esc".into();
+        let state_root = self.state_root.clone();
+        let cwd = self.cwd.clone();
+        let (tx, rx) = std_mpsc::channel();
+        self.resume_load_generation = self.resume_load_generation.wrapping_add(1);
+        let generation = self.resume_load_generation;
+        let _ = std::thread::Builder::new()
+            .name("concordia-resume-list".into())
+            .spawn(move || {
+                let _ = tx.send(build_resume_picker_payload(&state_root, &cwd));
             });
+        self.resume_load = Some(ResumeLoad { generation, rx });
+    }
+
+    pub(in crate::tui) fn poll_resume_load(&mut self) -> bool {
+        let Some(load) = self.resume_load.as_ref() else {
+            return false;
+        };
+        let generation = load.generation;
+        let result = match load.rx.try_recv() {
+            Ok(payload) => payload,
+            Err(std_mpsc::TryRecvError::Empty) => return false,
+            Err(std_mpsc::TryRecvError::Disconnected) => {
+                self.resume_load = None;
+                return false;
+            }
+        };
+        self.resume_load = None;
+        // Esc while loading closes the picker and discards this late result.
+        if generation != self.resume_load_generation {
+            return false;
         }
-        self.show_picker(PickerKind::Resume, title, rows, true);
+        let Some(picker) = self.picker.as_mut() else {
+            return false;
+        };
+        if picker.kind != PickerKind::Resume {
+            return false;
+        }
+        let (title, rows) = result;
+        let filter = picker.filter.clone();
+        picker.title = title;
+        picker.rows = rows;
+        picker.filter = filter;
+        picker.select_clamp();
+        true
     }
     pub(in crate::tui) fn resume_explicit_session(&mut self, id: &str) {
         match crate::sessions::find_native_record(
@@ -1364,6 +1359,15 @@ impl App {
         {
             self.role_editing = None;
         }
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Resume)
+        {
+            // Invalidate so a late worker result cannot reopen or refill after Esc.
+            self.resume_load_generation = self.resume_load_generation.wrapping_add(1);
+            self.resume_load = None;
+        }
         self.effort_model = None;
         self.picker = None;
         self.update_preview = None;
@@ -1581,7 +1585,7 @@ impl App {
         let label = row.label.clone();
         let kind = picker.kind;
         let shared_command = self.shared_command.clone();
-        if row.disabled() {
+        if row.disabled() || id == "resume:loading" {
             return;
         }
         if kind == PickerKind::Doctor {
@@ -2111,4 +2115,67 @@ impl App {
         }
         let _ = label;
     }
+}
+
+/// Build `/resume` title and rows off the UI thread (session scan + diagnostics).
+fn build_resume_picker_payload(state_root: &Path, cwd: &Path) -> (String, Vec<PickerRow>) {
+    let sessions = list_recent_sessions(state_root, 40);
+    let tasks = crate::store::list_tasks(state_root);
+    let persisted_ids: std::collections::HashSet<_> = tasks
+        .iter()
+        .flat_map(|task| {
+            task.sessions.iter().map(|session| {
+                (
+                    session.provider,
+                    session.account.clone(),
+                    session.native_session_id.clone(),
+                )
+            })
+        })
+        .collect();
+    let native: Vec<_> = sessions
+        .iter()
+        .filter(|session| {
+            !persisted_ids.contains(&(
+                session.provider,
+                session.account.clone(),
+                session.session_id.clone(),
+            ))
+        })
+        .cloned()
+        .collect();
+    let mut rows = tasks_to_picker_rows(&tasks);
+    for row in &mut rows {
+        let Some(task_id) = row.id.strip_prefix("task:") else {
+            continue;
+        };
+        if let Some(task) = tasks.iter().find(|task| task.id == task_id) {
+            let diagnostic = crate::sessions::diagnose_task(state_root, task);
+            if let Some(cause) = diagnostic.cause() {
+                row.detail = format!(
+                    "unopenable · {} · Enter to repair (or run chat repair; draft kept)",
+                    cause.label()
+                );
+            }
+        }
+    }
+    rows.extend(native_session_picker_rows(&native));
+    let here = count_sessions_here(&sessions, Some(cwd));
+    let folder = cwd
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "cwd".into());
+    let title = if here > 0 {
+        format!("chats · {folder} ({here})")
+    } else {
+        format!("chats · {}", sessions.len())
+    };
+    if rows.is_empty() {
+        rows.push(PickerRow {
+            id: "none".into(),
+            label: "no chats yet".into(),
+            detail: "send a message first — then switch here".into(),
+        });
+    }
+    (title, rows)
 }

@@ -213,66 +213,6 @@ impl App {
             self.push_system(result.unwrap_or_else(|error| format!("native input: {error}")));
             return true;
         }
-        if line.trim() == "/delegate" {
-            let mut rows = vec![
-                PickerRow {
-                    id: "delegate:fallback:on".into(),
-                    label: "Enable automatic worker returns".into(),
-                    detail: "validated against the current recovery policy; enables automatic returns; undo: choose Disable automatic worker returns".into(),
-                },
-                PickerRow {
-                    id: "delegate:fallback:off".into(),
-                    label: "Disable automatic worker returns".into(),
-                    detail: "validated against the current recovery policy; pauses automatic returns; undo: choose Enable automatic worker returns".into(),
-                },
-            ];
-            for job in &self.deleg.d.jobs {
-                let state = format!("{:?}", job.state);
-                if !job.native_inputs().is_empty() {
-                    rows.push(PickerRow {
-                        id: format!("delegate:input:{}", job.id),
-                        label: format!("Review input for worker #{}", job.id),
-                        detail: format!("validated for worker #{} ({}); opens its pending native request; undo: Esc", job.id, state),
-                    });
-                }
-                rows.push(PickerRow {
-                    id: format!("delegate:recover:{}", job.id),
-                    label: format!("Recover worker #{}", job.id),
-                    detail: format!(
-                        "validated for worker #{} ({}); reads its exact native result; undo: Esc",
-                        job.id, state
-                    ),
-                });
-                rows.push(PickerRow {
-                    id: format!("delegate:retry:{}", job.id),
-                    label: format!("Retry worker #{} after reconciliation", job.id),
-                    detail: format!("validated for worker #{} ({}); starts only the explicitly reconciled retry; undo: stop the new worker", job.id, state),
-                });
-            }
-            self.open_guided_command("/delegate", rows);
-            return true;
-        }
-        if line.trim() == "/delegate input" {
-            self.flash("usage: /delegate input ID");
-            return true;
-        }
-        if let Some(id) = line.trim().strip_prefix("/delegate input ") {
-            match id.parse::<u32>() {
-                Ok(id) => worker_input::open(self, id),
-                Err(_) => self.flash("usage: /delegate input ID"),
-            }
-            return true;
-        }
-        let trimmed = line.trim();
-        if ["/delegate fallback", "/delegate recover", "/delegate retry"]
-            .iter()
-            .any(|p| trimmed == *p || trimmed.starts_with(&format!("{p} ")))
-        {
-            landing::close(self);
-            self.push_command(line);
-            self.worker_recovery_command(trimmed.strip_prefix("/delegate ").unwrap_or_default());
-            return true;
-        }
         if trimmed == "/threads" || trimmed.starts_with("/threads ") {
             self.push_command(line);
             self.push_system("/threads is now /resume");
@@ -374,8 +314,6 @@ impl App {
                 trimmed
             ));
         }
-        // /workers, /queue, /close and /stats remain available until their screens
-        // replace them.
         if line.trim() == "/open" {
             self.open_related_files();
             self.guide_open_picker(

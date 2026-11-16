@@ -73,13 +73,14 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
     {
         return false;
     }
+    // Key names live in the footer only; the paused composer explains input ownership.
     let hint = if let Some(picker) = &app.picker {
         if picker.kind == PickerKind::Update
             && app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
         {
-            "Esc or X cancels the update. Chat input is paused."
+            "Chat input is paused while the update runs."
         } else if picker.kind == PickerKind::Usage {
-            "Esc or X closes usage. r refreshes. Chat input is paused."
+            "Chat input is paused."
         } else if matches!(
             picker.kind,
             PickerKind::Update
@@ -87,12 +88,12 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
                 | PickerKind::Related
                 | PickerKind::CreditDetails
         ) {
-            "Esc or X closes this screen. Chat input is paused."
+            "Chat input is paused."
         } else {
-            "Esc or X closes this list. Typing filters the list, not your chat."
+            "Typing filters the list, not your chat."
         }
     } else if app.activity.detail.is_some() {
-        "Esc or X closes output. Typing searches output, not your chat."
+        "Typing searches output, not your chat."
     } else {
         return false;
     };
@@ -106,7 +107,7 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
         .border_style(Style::default().fg(Color::DarkGray));
     let width = block.inner(area).width as usize;
     let hint = if width < 46 {
-        "Esc / X closes · chat paused"
+        "Chat input is paused."
     } else {
         hint
     };

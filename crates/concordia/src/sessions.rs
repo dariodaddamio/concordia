@@ -127,7 +127,7 @@ pub struct PickerRow {
 
 impl PickerRow {
     pub fn disabled(&self) -> bool {
-        self.id.starts_with("continue-disabled:")
+        self.id.starts_with("continue-disabled:") || self.id == "resume:loading"
     }
 }
 

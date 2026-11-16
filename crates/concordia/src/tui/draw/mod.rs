@@ -190,20 +190,90 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
 }
 
+/// Cell width of `text` (ASCII-wide aware via `text::char_width`).
+fn cell_width(text: &str) -> usize {
+    text.chars().map(text::char_width).sum()
+}
+
 /// Shortens `text` to `width` cells, cutting at a word boundary and ending with an ellipsis.
 fn ellipsis(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if cell_width(text) <= width {
         return text.into();
     }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
+    if width == 0 {
+        return String::new();
     }
-    let mut value = text.chars().take(width - 1).collect::<String>();
-    if let Some(index) = value.rfind(char::is_whitespace).filter(|index| *index > 0) {
-        value.truncate(index);
+    if width <= 1 {
+        return "…".into();
+    }
+    let mut used = 0usize;
+    let mut end = 0usize;
+    let mut last_break = None;
+    for (index, ch) in text.char_indices() {
+        let w = text::char_width(ch);
+        if used + w > width.saturating_sub(1) {
+            break;
+        }
+        used += w;
+        end = index + ch.len_utf8();
+        if ch.is_whitespace() {
+            last_break = Some(end);
+        }
+    }
+    let cut = last_break.filter(|&at| at > 0).unwrap_or(end);
+    let mut value = text[..cut].trim_end().to_owned();
+    if value.is_empty() {
+        // A single overlong token: keep as many cells as fit, then ellipsis.
+        let mut used = 0usize;
+        let mut end = 0usize;
+        for (index, ch) in text.char_indices() {
+            let w = text::char_width(ch);
+            if used + w > width.saturating_sub(1) {
+                break;
+            }
+            used += w;
+            end = index + ch.len_utf8();
+        }
+        value = text[..end].to_owned();
     }
     value.push('…');
     value
+}
+
+/// Fit a one-line picker label and muted detail into `width` cells.
+/// Hide or ellipsize the detail first, then the label, always at a word boundary.
+fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<String>) {
+    if width == 0 {
+        return (String::new(), None);
+    }
+    let label_w = cell_width(label);
+    if detail.is_empty() {
+        return (ellipsis(label, width), None);
+    }
+    let gap = 2; // two spaces between label and detail
+    if label_w + gap >= width {
+        return (ellipsis(label, width), None);
+    }
+    let detail_room = width.saturating_sub(label_w + gap);
+    if cell_width(detail) <= detail_room {
+        return (label.to_owned(), Some(detail.to_owned()));
+    }
+    // Prefer dropping the detail entirely when only a few cells remain.
+    if detail_room < 4 {
+        return (ellipsis(label, width), None);
+    }
+    let fitted = ellipsis(detail, detail_room);
+    if fitted.is_empty() || fitted == "…" {
+        return (ellipsis(label, width), None);
+    }
+    (label.to_owned(), Some(fitted))
+}
+
+/// Fit a bordered panel title so it never runs under the close `X` (3 cells + gap).
+fn fit_panel_title(title: &str, popup_width: u16) -> String {
+    // Corners take 2; close control paints over the last 4 (` X ` at right-4).
+    let room = (popup_width as usize).saturating_sub(6);
+    ellipsis(title, room)
 }
 
 /// The settings screen: a tab strip, rows of `label … current value`, and the selected
@@ -859,10 +929,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.home_documentation = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
     let model = app.model_label();
+    let model_unset = model == "choose model";
     let account = app.account_label();
     let right = String::new();
     let available = area.width as usize;
-    let brand = if app.effort.is_some() && area.width < 75 {
+    // Effort only when the active catalog model reports adjustable efforts.
+    // refresh_binding clears the effort when the model reports none; never read the catalog
+    // from disk while drawing a frame.
+    let effort_allowed = !model_unset && app.effort.is_some();
+    let brand = if effort_allowed && area.width < 75 {
         String::new()
     } else if app.header_email_revealed && area.width < 100 {
         " ".into()
@@ -900,6 +975,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let effort_text = app
         .effort
         .as_deref()
+        .filter(|_| effort_allowed)
         .map(|effort| format!("  Effort {effort} \u{25be}"));
     let effort_width = effort_text
         .as_deref()
@@ -907,26 +983,36 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let model_budget =
         available.saturating_sub(left.iter().map(Span::width).sum::<usize>() + effort_width);
     if model_budget >= 5 {
-        let full_width = Line::from(model.as_str()).width();
-        let mut used = 0;
-        let clipped: String = model
-            .chars()
-            .take_while(|c| {
-                used += text::char_width(*c);
-                used <= model_budget - if full_width + 4 > model_budget { 5 } else { 4 }
-            })
-            .collect();
-        let model = format!(
-            "  {clipped}{} \u{25be}",
-            if full_width + 4 > model_budget {
-                "\u{2026}"
-            } else {
-                ""
-            }
-        );
+        let fitted = if model_unset {
+            ellipsis(&model, model_budget.saturating_sub(4))
+        } else {
+            let full_width = Line::from(model.as_str()).width();
+            let mut used = 0;
+            let clipped: String = model
+                .chars()
+                .take_while(|c| {
+                    used += text::char_width(*c);
+                    used <= model_budget - if full_width + 4 > model_budget { 5 } else { 4 }
+                })
+                .collect();
+            format!(
+                "{clipped}{}",
+                if full_width + 4 > model_budget {
+                    "\u{2026}"
+                } else {
+                    ""
+                }
+            )
+        };
+        let model = format!("  {fitted} \u{25be}");
         let model_x = left.iter().map(Span::width).sum::<usize>();
         let model_width = Line::from(model.clone()).width() as u16;
-        left.push(Span::styled(model, bar.fg(Color::Gray)));
+        let model_style = if model_unset {
+            bar.fg(theme::muted())
+        } else {
+            bar.fg(Color::Gray)
+        };
+        left.push(Span::styled(model, model_style));
         app.areas.header_model = Some(Rect::new(area.x + model_x as u16, area.y, model_width, 1));
     }
     if let Some(text) = effort_text {
@@ -1949,32 +2035,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .into_iter()
             .chain(rows.into_iter().skip(offset).take(view))
             .collect();
+        let title = fit_panel_title(&picker.title, popup.width);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {} ", picker.title))
+            .title(format!(" {title} "))
             .padding(ratatui::widgets::Padding::horizontal(1));
         f.render_widget(Paragraph::new(visible).block(block), popup);
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }
     if picker.kind == PickerKind::Usage {
-        let popup = Rect {
-            x: area.x + 1,
-            y: area.y,
-            width: area.width.saturating_sub(2),
-            height: area.height,
-        };
-        f.render_widget(Clear, popup);
-        let frame = Block::default()
-            .borders(Borders::ALL)
-            .title(if picker.filter.is_empty() {
-                format!(" {} ", picker.title)
-            } else {
-                format!(" {} · filter: {} ", picker.title, picker.filter)
-            });
-        f.render_widget(frame, popup);
-        let inner = Block::default().inner(popup);
-        let cols = (inner.width / 54).max(1) as usize;
+        let width = area.width.saturating_sub(2);
+        let cols = ((width.saturating_sub(2)) / 54).max(1) as usize;
         picker.usage_cols = cols;
         let rows = picker
             .filtered()
@@ -1982,7 +2054,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|row| (row.id.clone(), row.label.clone(), row.detail.clone()))
             .collect::<Vec<_>>();
         let selected = picker.state.selected().unwrap_or(0);
-        let cell_width = (inner.width / cols as u16).max(1);
+        let cell_width = ((width.saturating_sub(2)) / cols as u16).max(1);
         let wrap = |text: &str, width: usize| {
             text.lines()
                 .flat_map(|line| {
@@ -2037,6 +2109,29 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .chunks(cols)
             .map(|chunk| chunk.iter().map(Vec::len).max().unwrap_or(1) as u16 + 2)
             .collect::<Vec<_>>();
+        // Size the outer surface to its cards only — no empty rows under the grid.
+        let content_height = cell_height.iter().sum::<u16>().saturating_add(2).max(3);
+        let height = content_height.min(area.height);
+        let popup = Rect {
+            x: area.x + 1,
+            y: area.y,
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup);
+        let title = if picker.filter.is_empty() {
+            fit_panel_title(&picker.title, popup.width)
+        } else {
+            fit_panel_title(
+                &format!("{} · filter: {}", picker.title, picker.filter),
+                popup.width,
+            )
+        };
+        let frame = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {title} "));
+        f.render_widget(frame, popup);
+        let inner = Block::default().inner(popup);
         let selected_row = selected / cols;
         let mut first_row = 0usize;
         while first_row < selected_row {
@@ -2109,12 +2204,13 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let row_width = width.saturating_sub(6).max(1) as usize;
     let permission_lines = (picker.kind == PickerKind::Trust).then(|| {
-        let available = app
-            .areas
-            .permissions
-            .y
-            .saturating_sub(area.y)
-            .saturating_sub(2);
+        // `areas.input` is the composer's inner text area; its border is the row above.
+        let bottom = if app.areas.input.height > 0 {
+            app.areas.input.y.saturating_sub(1)
+        } else {
+            app.areas.permissions.y
+        };
+        let available = bottom.saturating_sub(area.y).saturating_sub(2);
         let rows = picker.filtered();
         let expanded_height = rows
             .iter()
@@ -2229,14 +2325,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         },
     };
     if picker.kind == PickerKind::Trust {
-        // The footer owns this control; keep its existing picker next to the clicked mode.
+        // Anchor beside the permissions chip, but end above the composer when one is drawn.
         let right = app.areas.permissions.right().min(area.right());
+        // `areas.input` is the composer's inner text area; its border is the row above.
+        let bottom = if app.areas.input.height > 0 {
+            app.areas.input.y.saturating_sub(1)
+        } else {
+            app.areas.permissions.y
+        };
         popup.width = popup.width.min(right.saturating_sub(area.x));
-        popup.height = popup
-            .height
-            .min(app.areas.permissions.y.saturating_sub(area.y));
+        popup.height = popup.height.min(bottom.saturating_sub(area.y));
         popup.x = right.saturating_sub(popup.width);
-        popup.y = app.areas.permissions.y.saturating_sub(popup.height);
+        popup.y = bottom.saturating_sub(popup.height);
         app.areas.permissions_popup = popup;
     }
     f.render_widget(Clear, popup);
@@ -2245,12 +2345,13 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .iter()
             .map(|lines| lines.len() as u16)
             .collect::<Vec<_>>();
+        let title = fit_panel_title(&picker.title, popup.width);
         let list = List::new(rows.into_iter().map(ListItem::new).collect::<Vec<_>>())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .padding(ratatui::widgets::Padding::horizontal(1))
-                    .title(picker.title.clone()),
+                    .title(title),
             )
             .highlight_style(Style::default().bg(Color::Indexed(235)))
             .highlight_symbol("> ");
@@ -2290,11 +2391,14 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         picker.title.clone()
     };
-    let title = if picker.filter.is_empty() {
-        heading
-    } else {
-        format!("{} · filter: {}", heading, picker.filter)
-    };
+    let title = fit_panel_title(
+        &if picker.filter.is_empty() {
+            heading
+        } else {
+            format!("{} · filter: {}", heading, picker.filter)
+        },
+        width,
+    );
     let tones = &app.picker_tones;
     let items: Vec<ListItem> = picker
         .filtered()
@@ -2331,7 +2435,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 if !r.detail.is_empty() {
                     lines.push(Line::styled(
-                        r.detail.clone(),
+                        ellipsis(&r.detail, row_width),
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
@@ -2341,19 +2445,23 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some((h, _)) => (h.to_string(), true),
                 None => (r.label.clone(), false),
             };
-            let mut spans = match usage_style::picker_spans(&head) {
+            let current_suffix = if current { " \u{b7} current" } else { "" };
+            let current_w = cell_width(current_suffix);
+            let fit_width = row_width.saturating_sub(current_w);
+            let (fitted_label, fitted_detail) = fit_label_detail(&head, &r.detail, fit_width);
+            let mut spans = match usage_style::picker_spans(&fitted_label) {
                 Some(s) => s,
-                None => vec![Span::styled(head, label_style)],
+                None => vec![Span::styled(fitted_label, label_style)],
             };
             if current {
                 spans.push(Span::styled(
-                    " \u{b7} current",
+                    current_suffix.to_owned(),
                     Style::default().fg(Color::Green),
                 ));
             }
-            if !r.detail.is_empty() {
+            if let Some(detail) = fitted_detail {
                 spans.extend([Span::styled(
-                    format!("  {}", r.detail),
+                    format!("  {detail}"),
                     Style::default().fg(Color::DarkGray),
                 )]);
             }

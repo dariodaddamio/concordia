@@ -634,7 +634,7 @@ pub fn format_config_help() -> String {
         "Cursor  agent login   (extra accounts: an concordia-api-key file in the account home)".into(),
         "Grok    grok login    (uses the selected GROK_HOME)".into(),
         String::new(),
-        "in concordia  /use · /model · /config · /mode · /usage · /new · /resume · /delegate · /harness · /open · /copy · /doctor · /update".into(),
+        "in concordia  /use · /model · /config · /mode · /usage · /new · /resume · /harness · /open · /copy · /doctor · /update".into(),
     ]
     .join("\n")
 }

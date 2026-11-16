@@ -19,6 +19,8 @@ function Snap($name) {
 }
 function Reset {
     foreach ($i in 1..3) { C key Esc; Start-Sleep -Milliseconds 150 }
+    # A command that leaves its text in the composer would turn the next one into completion.
+    foreach ($i in 1..24) { C key Backspace }
 }
 
 C resize $Columns $Rows | Out-Null

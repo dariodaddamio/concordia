@@ -1190,7 +1190,22 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         }
         h.draw();
         let screen = h.screen();
-        assert!(screen.contains("Esc or X"), "{kind:?}: {screen}");
+        let ownership = if matches!(
+            kind,
+            PickerKind::Usage | PickerKind::Tokens | PickerKind::Related | PickerKind::Update
+        ) {
+            "Chat input is paused"
+        } else {
+            "Typing filters the list, not your chat"
+        };
+        assert!(
+            screen.contains(ownership),
+            "{kind:?}: expected ownership hint, got {screen}"
+        );
+        assert!(
+            !screen.contains("Esc or X"),
+            "{kind:?}: key names belong in the footer, not the paused composer: {screen}"
+        );
         assert!(
             !screen.contains("keep this draft"),
             "a modal must show input ownership: {screen}"

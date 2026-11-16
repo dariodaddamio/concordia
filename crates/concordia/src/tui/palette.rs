@@ -259,12 +259,6 @@ pub fn is_branch(input: &str) -> bool {
             | "/model"
             | "/mode"
             | "/update"
-            | "/workers"
-            | "/workers add"
-            | "/workers remove"
-            | "/delegate"
-            | "/delegate protocol"
-            | "/delegate model"
             | "/harness"
             | "/skills"
             | "/hooks"
@@ -279,16 +273,7 @@ pub fn has_argument_menu(input: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         root.as_str(),
-        "/use"
-            | "/model"
-            | "/mode"
-            | "/update"
-            | "/workers"
-            | "/delegate"
-            | "/harness"
-            | "/skills"
-            | "/hooks"
-            | "/usage"
+        "/use" | "/model" | "/mode" | "/update" | "/harness" | "/skills" | "/hooks" | "/usage"
     )
 }
 
@@ -397,74 +382,6 @@ pub fn matching_arguments(
         }
         "/update" => {
             add("/update".into(), "Enter opens the update preview".into());
-        }
-        "/workers" => {
-            add(
-                "/workers".into(),
-                "list | add ACCOUNT | remove ACCOUNT".into(),
-            );
-            add(
-                "/workers add".into(),
-                "choose an account to use as a worker".into(),
-            );
-            add(
-                "/workers remove".into(),
-                "choose a worker account to remove".into(),
-            );
-            for (id, label) in accounts {
-                if typed.starts_with("/workers add") {
-                    add(
-                        format!("/workers add {id}"),
-                        format!("add {label} as a worker"),
-                    );
-                }
-                if typed.starts_with("/workers remove") {
-                    add(
-                        format!("/workers remove {id}"),
-                        format!("remove {label} from workers"),
-                    );
-                }
-            }
-        }
-        "/delegate" => {
-            add(
-                "/delegate".into(),
-                "ACCOUNT TASK | auto TASK | use | stop | protocol".into(),
-            );
-            for (suffix, help) in [
-                ("use", "include a completed worker result"),
-                ("returns", "view automatic result handback settings"),
-                (
-                    "returns auto",
-                    "return finished worker batches when the main agent is idle",
-                ),
-                ("returns manual", "send results only on request"),
-                (
-                    "collect",
-                    "send up to three new results to the main agent together",
-                ),
-                (
-                    "model",
-                    "ACCOUNT [MODEL|default] - configure a worker model",
-                ),
-                ("stop", "stop worker tasks"),
-                ("help", "show delegation syntax and limits"),
-                ("protocol", "view proposal confirmation settings"),
-                ("protocol on", "allow proposals that require confirmation"),
-                ("protocol off", "disable delegation proposals"),
-            ] {
-                if !suffix.starts_with("protocol ") || typed.starts_with("/delegate protocol") {
-                    add(format!("/delegate {suffix}"), help.into());
-                }
-            }
-            if typed.starts_with("/delegate model") {
-                for (id, label) in accounts {
-                    add(
-                        format!("/delegate model {id}"),
-                        format!("show models for {label}; register it as a worker first"),
-                    );
-                }
-            }
         }
         cmd @ ("/skills" | "/hooks") => {
             add(

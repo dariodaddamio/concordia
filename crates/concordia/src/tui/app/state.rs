@@ -253,6 +253,12 @@ pub(in crate::tui) struct ModelRefresh {
     pub(in crate::tui) rx: std_mpsc::Receiver<Result<crate::models::RefreshedModels, String>>,
 }
 
+/// Background build of `/resume` rows so the UI thread stays responsive.
+pub(in crate::tui) struct ResumeLoad {
+    pub(in crate::tui) generation: u64,
+    pub(in crate::tui) rx: std_mpsc::Receiver<(String, Vec<PickerRow>)>,
+}
+
 impl Picker {
     pub(in crate::tui) fn filtered(&self) -> Vec<&PickerRow> {
         let q = self.filter.to_ascii_lowercase();
@@ -401,6 +407,8 @@ pub(crate) struct App {
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
+    pub(in crate::tui) resume_load: Option<ResumeLoad>,
+    pub(in crate::tui) resume_load_generation: u64,
     pub(in crate::tui) effort_model: Option<String>,
     pub(in crate::tui) token_reads: tokens::State,
     pub(in crate::tui) integrations: integrations::State,
@@ -524,29 +532,62 @@ impl App {
                 self.header_email_pressed = false;
             }
             self.provider = sel.provider;
-            self.account = sel.account;
-            self.home_path = sel.home_path.map(PathBuf::from);
-            self.model = sel
+            self.account = sel.account.clone();
+            self.home_path = sel.home_path.as_ref().map(PathBuf::from);
+            let stored = sel
                 .model
+                .as_deref()
                 .filter(|m| !m.trim().is_empty())
-                .or_else(|| {
-                    self.home_path
-                        .as_ref()
-                        .and_then(|h| inspect_provider(self.provider, h).model)
-                })
-                .unwrap_or_else(|| "?".into());
-            if let Some(canonical) = crate::models::canonical_id_at(
-                &self.state_root,
-                self.provider,
-                &self.account,
-                &self.model,
-            ) {
-                self.model = canonical;
+                .map(str::to_owned);
+            let inspected = self
+                .home_path
+                .as_ref()
+                .and_then(|h| inspect_provider(self.provider, h).model)
+                .filter(|m| !m.trim().is_empty());
+            // With a known catalog, keep only a model this provider account offers. Without
+            // one (offline, not yet fetched) the stored choice stands untouched; it is never
+            // rewritten on a guess.
+            let catalog =
+                crate::models::available_at(&self.state_root, self.provider, &self.account);
+            if catalog.is_empty() {
+                self.model = stored.or(inspected).unwrap_or_else(|| "?".into());
+                self.effort = sel.effort.clone();
+            } else {
+                let offered = |candidate: &str| {
+                    catalog
+                        .iter()
+                        .find(|entry| {
+                            entry.id.eq_ignore_ascii_case(candidate)
+                                || entry.display_name.eq_ignore_ascii_case(candidate)
+                        })
+                        .map(|entry| entry.id.clone())
+                };
+                self.model = [stored, inspected]
+                    .into_iter()
+                    .flatten()
+                    .find_map(|candidate| offered(&candidate))
+                    .unwrap_or_else(|| "?".into());
+                let entry = catalog.iter().find(|entry| entry.id == self.model);
+                self.effort = match entry {
+                    Some(model) if !model.efforts.is_empty() => sel
+                        .effort
+                        .as_deref()
+                        .filter(|effort| model.efforts.iter().any(|item| item.name == *effort))
+                        .map(str::to_owned)
+                        .or_else(|| model.default_effort.clone()),
+                    _ => None,
+                };
+                // Drop a foreign or stale model id from the stored selection so the header
+                // cannot keep advertising another provider's model after an account switch.
+                let want_model = (self.model != "?").then(|| self.model.clone());
+                if sel.model != want_model || sel.effort != self.effort {
+                    let mut fixed = sel;
+                    fixed.model = want_model;
+                    fixed.effort = self.effort.clone();
+                    fixed.updated_at = now_stamp();
+                    let _ = set_use_selection(&self.state_root, fixed);
+                }
             }
-            self.effort = sel.effort.or_else(|| {
-                crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
-                    .and_then(|model| model.default_effort)
-            });
         }
         self.refresh_account_email();
         self.trust = get_settings(&self.state_root).trust;
@@ -555,7 +596,7 @@ impl App {
 
     pub(in crate::tui) fn model_label(&self) -> String {
         if self.model == "?" {
-            return "model ?".into();
+            return "choose model".into();
         }
         let mut cache = self
             .model_label_cache
@@ -573,6 +614,8 @@ impl App {
         let label =
             crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
                 .map(|entry| format!("{} · {}", entry.display_name, self.model))
+                // refresh_binding already dropped ids a known catalog does not offer, so an id
+                // missing here means no catalog is available yet; show it as stored.
                 .unwrap_or_else(|| self.model.clone());
         *cache = Some((
             self.provider,
@@ -749,7 +792,7 @@ impl App {
         let input = self.editor.text();
         let lower = input.to_ascii_lowercase();
         if palette::has_argument_menu(&input) {
-            let accounts = if lower.starts_with("/use") || lower.starts_with("/workers") {
+            let accounts = if lower.starts_with("/use") {
                 accounts_with_auth(&self.state_root)
                     .into_iter()
                     .map(|a| (a.account.clone(), a.label))
@@ -1992,6 +2035,8 @@ impl App {
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
+            resume_load: None,
+            resume_load_generation: 0,
             effort_model: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),
@@ -2081,11 +2126,9 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
     let Some(acct) = get_account(state_root, account_id) else {
         anyhow::bail!("unknown account {account_id}");
     };
-    let model = get_use_selection(state_root)
-        .filter(|selection| {
-            selection.account == acct.account && selection.provider == acct.provider
-        })
-        .and_then(|selection| selection.model);
+    let prior = get_use_selection(state_root).filter(|selection| {
+        selection.account == acct.account && selection.provider == acct.provider
+    });
     set_use_selection(
         state_root,
         UseSelection {
@@ -2095,8 +2138,9 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
                 .home_path
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
-            model,
-            effort: get_use_selection(state_root).and_then(|selection| selection.effort),
+            model: prior.as_ref().and_then(|selection| selection.model.clone()),
+            // Effort belongs to the same account's model selection; never carry it across accounts.
+            effort: prior.and_then(|selection| selection.effort),
             updated_at: now_stamp(),
         },
     )

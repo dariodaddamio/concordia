@@ -5,7 +5,6 @@ pub const TIPS: &[&str] = &[
     "Shift+Tab cycles plan, ask and edit; use /mode full with confirmation.",
     "/usage all shows the limits of every account at a glance.",
     "/use switches account or provider; the conversation carries over.",
-    "/delegate hands a task to a background worker; the main chat stays free.",
     "Esc interrupts the running turn without leaving Concordia.",
     "Drag with the mouse to select text; Ctrl+C copies it (or the last reply).",
     "/resume picks up an earlier conversation in this folder.",
