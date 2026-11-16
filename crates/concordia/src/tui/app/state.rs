@@ -1415,7 +1415,7 @@ impl App {
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
-        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
+        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         true
     }
 

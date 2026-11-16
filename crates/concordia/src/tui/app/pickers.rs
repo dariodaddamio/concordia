@@ -26,11 +26,16 @@ impl App {
             picker.title = format!("{command} · This panel lets you {does}.");
             // /harness owns its footer from the live catalog (empty → N new · Esc only).
             if command != "/harness" {
-                self.footer_left = format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}");
+                self.footer_left = if undo.starts_with("Esc") {
+                    // An undo that is only Esc would repeat the cancel key.
+                    "↑↓ choose · Enter apply · Esc cancel".into()
+                } else {
+                    format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}")
+                };
             }
         }
         if command == "/model" {
-            self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
+            self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         }
     }
 
@@ -47,7 +52,7 @@ impl App {
             }],
             true,
         );
-        self.footer_left = "↑↓ Enter · type to filter · Esc".into();
+        self.footer_left = "↑↓ choose · Enter select · type to filter · Esc close".into();
         let state_root = self.state_root.clone();
         let cwd = self.cwd.clone();
         self.start_picker_load(PickerKind::Resume, "concordia-resume-list", move || {
@@ -942,7 +947,7 @@ impl App {
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
-        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
+        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
         {
@@ -997,11 +1002,11 @@ impl App {
         let Some(model) =
             crate::models::find_at(&self.state_root, self.provider, &self.account, model_id)
         else {
-            self.push_system("No provider-reported effort options for this model. Refresh /model to check its catalog.");
+            self.flash("No provider-reported effort options for this model. Refresh /model to check its catalog.");
             return;
         };
         if model.efforts.is_empty() {
-            self.push_system(format!(
+            self.flash(format!(
                 "{} does not report adjustable effort.",
                 model.display_name
             ));
@@ -1346,15 +1351,15 @@ impl App {
         });
         self.footer_left = if filterable {
             if kind == PickerKind::Files {
-                "↑↓ Enter · F4 actions · type to filter · Esc".into()
+                "↑↓ choose · Enter open · F4 actions · type to filter · Esc close".into()
             } else {
-                "↑↓ Enter · type to filter · Esc".into()
+                "↑↓ choose · Enter select · type to filter · Esc close".into()
             }
         } else {
             if kind == PickerKind::Usage {
-                "↑↓ Enter · r refresh · Esc".into()
+                "↑↓ choose · Enter select · r refresh · Esc close".into()
             } else {
-                "↑↓ Enter · Esc".into()
+                "↑↓ choose · Enter select · Esc close".into()
             }
         };
     }

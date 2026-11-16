@@ -16,6 +16,7 @@
 - Text that was already shortened, such as a long chat title in `/doctor`, ends with one ellipsis instead of two, and a cut no longer leaves a dangling `·` or `;` before it.
 - The continue choice treats Cursor's pools separately: Auto and Composer models stay available when only the API pool is used up.
 - A Cursor question card is titled "Question for you", and replies are labelled with the model's display name.
+- Every picker footer names its keys the same way (`↑↓ choose · Enter … · Esc cancel` or `Esc close`), `/effort` on a model without efforts answers in the footer instead of adding a chat line, and `/skills` and `/hooks` no longer repeat a key hint inside the panel.
 - Pickers use the same short key words (`Enter apply · Esc cancel`), the message box no longer repeats the slash-command hint from the footer, and F1 calls renaming a tab renaming the chat.
 - A restored Cursor chat whose earlier messages Concordia cannot read says that they stay in Cursor's own chat, instead of reporting a failed request and pointing at login diagnostics.
 - With a file pane open, Ctrl+T and the other tab shortcuts work whenever the chat has focus, and the pane's keys are listed in the footer instead of in the pane border and the message box.

@@ -940,7 +940,7 @@ pub(super) fn catalog(app: &mut App, hooks: bool) {
             );
         }
     }
-    rows.push(row("notice", "Local source inventory", "Enter opens a source; nothing is executed. Configured does not prove enabled in a running turn. Plugin/managed/remote sources are not fully enumerated. Reopen to refresh; no provider call."));
+    rows.push(row("notice", "Local source inventory", "Opening a source runs nothing. Configured does not prove enabled in a running turn. Plugin/managed/remote sources are not fully enumerated. Reopen to refresh; no provider call."));
     app.show_picker(
         PickerKind::Customization,
         format!(
