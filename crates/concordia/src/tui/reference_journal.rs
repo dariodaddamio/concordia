@@ -281,7 +281,12 @@ impl State {
         }
         self.writes.retain(|(run, rx)| match rx.try_recv() {
             Ok(result) => {
-                self.durable.insert(run.clone(), result.saved && result.durable);
+                // A saved turn with no native record to point at has nothing left to wait for,
+                // so its request recovery can close; otherwise it would survive every restart.
+                self.durable.insert(
+                    run.clone(),
+                    result.saved && (result.durable || result.no_source),
+                );
                 if self.latest_run.as_deref() == Some(run.as_str()) && result.generation == self.generation {
                     self.verified = result.verified.filter(|_| result.saved && result.durable);
                 }
