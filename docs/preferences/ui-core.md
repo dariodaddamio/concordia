@@ -44,6 +44,6 @@ Follow these steps in order. Each reads one layer of the system, from the most s
 
 1. **Load the UI Core.** Every interface task starts with the [UI Core](./ui-core.md), which holds the principles, the method, and this sequence.
 2. **Search the preference index.** Match your task to a topic in [ui-index.json](./ui-index.json) and read only that section of [ui.md](./ui.md). From a shell, `rg -i "focus" ui-index.json` finds the topic and `rg -n "^## Shared component state rules" ui.md` jumps to its section.
-3. **Find the owning component.** Run `pnpm exec opifex search dropdown menu --json --limit 8` to list candidates and `pnpm exec opifex inspect dropdown-menu --json` to read its props, states, and keyboard behavior. When the CLI is unavailable, read the [catalog](./catalog.json) and a contract such as [button.json](./r/button.json).
+3. **Find the owning component.** Run `pnpm exec opifex search dropdown menu --json --limit 8` to list candidates and `pnpm exec opifex inspect dropdown-menu --json` to read its props, states, and keyboard behavior. When the CLI is unavailable, read the design system's `catalog.json` and a component contract such as `r/button.json`.
 4. **Create only what is missing.** Compose existing components first, and when nothing owns the behavior, run `pnpm exec opifex skills add opifex-author-component --agent codex` and write the contract before the code.
 5. **Load project identity separately.** Type, color, composition, and voice belong to the product, so they stay out of the portable rules.
