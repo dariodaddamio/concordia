@@ -123,7 +123,8 @@ async fn turn(
                     }
                 }
                 TurnProgress::Interaction(request) => match request.kind() {
-                    NativeInteraction::Questions(questions) => {
+                    NativeInteraction::Questions(questions)
+                    | NativeInteraction::CodexQuestions(questions) => {
                         seen.questions += 1;
                         let picks = vec![0; questions.len()];
                         request.respond(request.single_choices(&picks).expect("answer"));
@@ -162,6 +163,7 @@ async fn turn(
         mode(provider),
         None,
         Some(tx),
+        Some(Path::new(env!("CARGO_BIN_EXE_concordia"))),
     )
     .await
     .expect("turn");

@@ -1562,6 +1562,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             native_input,
                             Some(started_tx),
                             Some(progress_tx),
+                            None,
                         );
                         tokio::pin!(turn);
                         // Bound only the start: a provider that never launches is an error, but a

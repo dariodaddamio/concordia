@@ -455,6 +455,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 concordia::native_input::Mode::CodexAppServer,
                 None,
                 Some(tx),
+                None,
             ),
         )
         .await
@@ -769,6 +770,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 concordia::native_input::Mode::ClaudeStdio,
                 None,
                 Some(tx),
+                None,
             ),
         )
         .await
@@ -1040,6 +1042,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             concordia::native_input::Mode::ClaudeStdio,
             None,
             Some(tx),
+            None,
         )
         .await
         .unwrap();
@@ -1225,6 +1228,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         concordia::native_input::Mode::ClaudeStdio,
         None,
         Some(tx),
+        None,
     )
     .await
     .unwrap();

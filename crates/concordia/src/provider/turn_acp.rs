@@ -351,14 +351,20 @@ fn first_prompt_content(
     content
 }
 
-fn ask_server_config(endpoint: &str, token: &str, enabled: bool, cwd: &std::path::Path) -> Value {
+fn ask_server_config(
+    endpoint: &str,
+    token: &str,
+    enabled: bool,
+    cwd: &std::path::Path,
+    executable: &std::path::Path,
+) -> Value {
     let mut servers =
         match crate::mcp_registry::acp_servers(&crate::store::default_store_root(), cwd) {
             Value::Array(values) => values,
             _ => Vec::new(),
         };
     if enabled && !endpoint.is_empty() {
-        servers.push(json!({"name":"concordia-ask","command":std::env::current_exe().unwrap_or_default().to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}));
+        servers.push(json!({"name":"concordia-ask","command":executable.to_string_lossy(),"args":["ask-mcp"],"env":[{"name":"CONCORDIA_ASK_ENDPOINT","value":endpoint},{"name":"CONCORDIA_ASK_TOKEN","value":token}]}));
     }
     Value::Array(servers)
 }
@@ -438,6 +444,7 @@ pub(super) async fn run(
     started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     progress: Option<mpsc::Sender<TurnProgress>>,
     handle: Arc<RunningTurn>,
+    ask_server_executable: &std::path::Path,
 ) -> Result<TurnOutcome> {
     anyhow::ensure!(
         req.images.len() <= crate::attachments::MAX_IMAGES,
@@ -535,7 +542,13 @@ pub(super) async fn run(
             }
         }
         anyhow::ensure!(req.images.is_empty() || init.pointer("/agentCapabilities/promptCapabilities/image").and_then(Value::as_bool)==Some(true),"Installed Cursor ACP does not advertise image input. Images are retained; update the native CLI or select a compatible provider.");
-        let mcp_servers = ask_server_config(&endpoint, &bridge_token, !endpoint.is_empty(), req.cwd);
+        let mcp_servers = ask_server_config(
+            &endpoint,
+            &bridge_token,
+            !endpoint.is_empty(),
+            req.cwd,
+            ask_server_executable,
+        );
         let (method,mut params)=if let Some(id)=req.native_session_id{
             anyhow::ensure!(init.pointer("/agentCapabilities/loadSession").and_then(Value::as_bool)==Some(true),"Cursor ACP cannot load this exact session; start a new conversation explicitly");
             ("session/load",json!({"sessionId":id,"cwd":plan.cwd,"mcpServers":mcp_servers}))
@@ -623,13 +636,23 @@ mod tests {
 
     #[test]
     fn question_server_is_registered_only_when_enabled() {
-        assert!(
-            ask_server_config("", "token", false, std::path::Path::new("."))
-                .as_array()
-                .unwrap()
-                .is_empty()
+        assert!(ask_server_config(
+            "",
+            "token",
+            false,
+            std::path::Path::new("."),
+            std::path::Path::new("concordia.exe"),
+        )
+        .as_array()
+        .unwrap()
+        .is_empty());
+        let enabled = ask_server_config(
+            "127.0.0.1:1234",
+            "token",
+            true,
+            std::path::Path::new("."),
+            std::path::Path::new("concordia.exe"),
         );
-        let enabled = ask_server_config("127.0.0.1:1234", "token", true, std::path::Path::new("."));
         assert_eq!(enabled[0]["name"], "concordia-ask");
         assert_eq!(enabled[0]["env"][1]["value"], "token");
     }

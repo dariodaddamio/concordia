@@ -288,31 +288,68 @@ pub(super) fn normalize(card: &mut StreamCard) {
 
 /// Convert ACP's provider-reported diff payload into the common edit-card format.
 pub(crate) fn normalize_acp(card: &mut StreamCard, value: &Value) {
-    let Some(path) = value.get("path").and_then(Value::as_str) else {
-        return;
+    let changes = if let Some(blocks) = value.as_array() {
+        blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("diff"))
+            .filter_map(|block| {
+                let path = block.get("path").and_then(Value::as_str)?;
+                if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+                    return None;
+                }
+                let detail = if let Some(diff) = block.get("diff").and_then(Value::as_str) {
+                    if diff.is_empty() {
+                        return None;
+                    }
+                    diff.to_owned()
+                } else {
+                    let old = match block.get("oldText") {
+                        None | Some(Value::Null) => "",
+                        Some(value) => value.as_str()?,
+                    };
+                    let new = block.get("newText").and_then(Value::as_str)?;
+                    replacement(old, new)
+                };
+                Some((path.to_owned(), detail))
+            })
+            .collect::<Vec<_>>()
+    } else {
+        let Some(path) = value.get("path").and_then(Value::as_str) else {
+            return;
+        };
+        let Some(diff) = value.get("diff").and_then(Value::as_str) else {
+            return;
+        };
+        if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+            return;
+        }
+        let detail = if diff.is_empty() {
+            replacement(
+                value
+                    .get("oldText")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                value
+                    .get("newText")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+        } else {
+            diff.to_owned()
+        };
+        vec![(path.to_owned(), detail)]
     };
-    let Some(diff) = value.get("diff").and_then(Value::as_str) else {
-        return;
-    };
-    if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
+    if changes.is_empty() {
         return;
     }
-    let detail = if diff.is_empty() {
-        replacement(
-            value
-                .get("oldText")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            value
-                .get("newText")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        )
-    } else {
-        diff.to_owned()
-    };
     card.title = "Edit".into();
-    card.detail = Some(format!("File: {path}\n{detail}"));
+    card.detail = Some(
+        changes
+            .into_iter()
+            .map(|(path, detail)| format!("File: {path}\n{detail}"))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    );
 }
 
 fn normalize_completed_wrapper(card: &mut StreamCard) -> bool {
@@ -415,5 +452,29 @@ mod acp_tests {
         assert!(detail.contains("File: src/main.rs"));
         assert!(detail.contains("-old"));
         assert!(detail.contains("+new"));
+    }
+
+    #[test]
+    fn acp_diff_blocks_become_the_common_edit_card_evidence() {
+        let mut card = StreamCard {
+            id: "acp-edit-array".into(),
+            title: "tool_call_update".into(),
+            status: super::super::CardStatus::Done,
+            detail: None,
+        };
+        normalize_acp(
+            &mut card,
+            &serde_json::json!([
+                {"type":"diff","path":"note.txt","oldText":"old","newText":"new"},
+                {"type":"diff","path":"created.txt","oldText":null,"newText":"whole file"}
+            ]),
+        );
+        assert_eq!(card.title, "Edit");
+        let detail = card.detail.unwrap();
+        assert!(detail.contains("File: note.txt"));
+        assert!(detail.contains("-old"));
+        assert!(detail.contains("+new"));
+        assert!(detail.contains("File: created.txt"));
+        assert!(detail.contains("+whole file"));
     }
 }

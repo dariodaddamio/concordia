@@ -63,6 +63,7 @@ async fn native_retransmissions_emit_one_interaction_and_never_replay_an_answer(
             Mode::CodexAppServer,
             None,
             Some(tx),
+            None,
         );
         let collect = async {
             let mut count = 0;

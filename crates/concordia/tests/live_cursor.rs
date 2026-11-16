@@ -112,7 +112,7 @@ async fn turn_with(
         local_time: None,
         compaction: Default::default(),
     };
-    let out = run_provider_turn_with_transport(&req, owner(cwd, home), mode, None, Some(tx))
+    let out = run_provider_turn_with_transport(&req, owner(cwd, home), mode, None, Some(tx), None)
         .await
         .expect("turn");
     (out, seen.await.unwrap())

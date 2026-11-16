@@ -20,7 +20,7 @@ mod claude_native;
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -567,6 +567,7 @@ pub async fn run_provider_turn_with_progress(
         on_started,
         on_progress,
         idle_timeout_from_config(),
+        None,
     )
     .await
 }
@@ -585,6 +586,7 @@ pub async fn run_provider_turn_with_idle_timeout(
         on_started,
         on_progress,
         idle_timeout,
+        None,
     )
     .await
 }
@@ -602,6 +604,7 @@ pub async fn run_provider_turn_with_owner(
         crate::native_input::Mode::Standard,
         on_started,
         on_progress,
+        None,
     )
     .await
 }
@@ -612,6 +615,7 @@ pub async fn run_provider_turn_with_transport(
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::Sender<TurnProgress>>,
+    ask_server_executable: Option<&Path>,
 ) -> Result<TurnOutcome> {
     let owner = owner
         .validate_for(req.provider, req.cwd, req.home_path)
@@ -634,6 +638,9 @@ pub async fn run_provider_turn_with_transport(
         on_started,
         on_progress,
         idle_timeout_from_config(),
+        ask_server_executable
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_exe().ok()),
     )
     .await
 }
@@ -674,6 +681,7 @@ async fn run_provider_turn_inner(
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
     on_progress: Option<mpsc::Sender<TurnProgress>>,
     idle_timeout: Duration,
+    ask_server_executable: Option<PathBuf>,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
     // Idle notices are advisory. Bound even direct API durations before Instant arithmetic.
@@ -831,6 +839,9 @@ async fn run_provider_turn_inner(
             on_started.clone(),
             on_progress.clone(),
             handle.clone(),
+            ask_server_executable
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("Concordia executable path is unavailable"))?,
         )
         .await?;
         if !(out.failed
