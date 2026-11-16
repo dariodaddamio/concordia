@@ -482,9 +482,20 @@ fn parse_list_lines(raw: &str) -> Vec<ModelEntry> {
         .filter_map(|line| {
             let (id, name) = line.trim().split_once(" - ")?;
             let id = id.trim();
+            // `agent models` marks rows with "(default)", "(current)" or "(current, default)";
+            // those describe the listing, not the model, so they never reach a label.
+            let mut name = name.trim();
+            if let Some(stripped) = name.strip_suffix(')') {
+                if let Some((base, marks)) = stripped.rsplit_once(" (") {
+                    if marks
+                        .split(',')
+                        .all(|mark| matches!(mark.trim(), "default" | "current"))
+                    {
+                        name = base;
+                    }
+                }
+            }
             let name = name
-                .trim()
-                .trim_end_matches(" (default)")
                 .chars()
                 .filter(|c| !c.is_control() && !matches!(c, '\u{200b}'..='\u{200f}'))
                 .collect::<String>();

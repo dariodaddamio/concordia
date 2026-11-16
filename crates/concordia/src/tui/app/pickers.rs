@@ -28,7 +28,7 @@ impl App {
             self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
         }
         if command == "/model" {
-            self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+            self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
         }
     }
 
@@ -930,7 +930,7 @@ impl App {
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
-        self.footer_left = "up/down Enter · r refresh · type to filter · Esc".into();
+        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
         {
