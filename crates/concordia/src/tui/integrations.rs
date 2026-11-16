@@ -195,8 +195,17 @@ fn poll_command(app: &mut App) -> bool {
     }
     true
 }
+fn catalog_footer(catalog: &crate::harness::catalog::Catalog) -> String {
+    if catalog.integrations.is_empty() {
+        "N new \u{b7} Esc close".into()
+    } else {
+        "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into()
+    }
+}
+
 fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
-    let mut lines = vec![PreviewLine::Title("Integrations and agent tools".into())];
+    // Border title already names the panel; the body starts with content.
+    let mut lines = Vec::new();
     if catalog.integrations.is_empty() {
         lines.push(PreviewLine::Text("No integrations connected yet.".into()));
     } else {
@@ -279,7 +288,7 @@ pub(super) fn open(app: &mut App) {
         Vec::new(),
         false,
     );
-    app.footer_left = "R refresh · Esc close".into();
+    app.footer_left = "Esc close".into();
 }
 pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
     if app.integrations.new_path.is_some()
@@ -335,8 +344,8 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
     }
     if key.code == KeyCode::Esc {
         if app.integrations.new_path.take().is_some() {
-            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
             if let Some(catalog) = app.integrations.catalog.as_ref() {
+                app.footer_left = catalog_footer(catalog);
                 app.update_preview = Some(UpdatePreview {
                     history: Vec::new(),
                     history_expanded: false,
@@ -344,6 +353,8 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                     install_available: false,
                     release_url: None,
                 });
+            } else {
+                app.footer_left = "N new \u{b7} Esc close".into();
             }
             return true;
         }
@@ -356,8 +367,10 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                     install_available: false,
                     release_url: None,
                 });
+                app.footer_left = catalog_footer(catalog);
+            } else {
+                app.footer_left = "N new \u{b7} Esc close".into();
             }
-            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
             return true;
         }
         return false;
@@ -837,10 +850,11 @@ pub(super) fn poll(app: &mut App) -> bool {
                     detail: integration.status.clone(),
                 })
                 .collect();
+            let footer = catalog_footer(catalog);
             app.show_picker(PickerKind::Integrations, "integrations".into(), rows, false);
-            app.footer_left = "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into();
+            app.footer_left = footer;
         } else {
-            app.footer_left = "R refresh \u{b7} Esc close".into();
+            app.footer_left = "N new \u{b7} Esc close".into();
         }
     }
     changed || valid

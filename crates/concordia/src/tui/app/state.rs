@@ -208,6 +208,7 @@ pub(in crate::tui) struct Picker {
     pub(in crate::tui) title: String,
     pub(in crate::tui) rows: Vec<PickerRow>,
     pub(in crate::tui) filter: String,
+    pub(in crate::tui) filterable: bool,
     pub(in crate::tui) state: ListState,
     pub(in crate::tui) usage_scroll: usize,
     /// Cards per row on the usage page, recorded by the last draw for arrow-key movement.
@@ -626,7 +627,7 @@ impl App {
         }
         let label =
             crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
-                .map(|entry| format!("{} · {}", entry.display_name, self.model))
+                .map(|entry| crate::models::format_model_heading(&entry.display_name, &self.model))
                 // refresh_binding already dropped ids a known catalog does not offer, so an id
                 // missing here means no catalog is available yet; show it as stored.
                 .unwrap_or_else(|| self.model.clone());
@@ -654,7 +655,8 @@ impl App {
         self.account_email = email;
     }
 
-    /// Short title for the tab strip; the status and provider are drawn as icons beside it.
+    /// Title for the tab strip on one line; the strip fits it to the chip width with an ellipsis,
+    /// and the status and provider are drawn as icons beside it.
     pub(in crate::tui) fn tab_label(&self) -> String {
         let title = self
             .session_ui
@@ -668,7 +670,6 @@ impl App {
             .join(" ")
             .chars()
             .filter(|c| !c.is_control())
-            .take(24)
             .collect()
     }
 
@@ -2173,12 +2174,14 @@ pub(in crate::tui) fn model_picker_rows(
             });
             PickerRow {
                 id: format!("model:{}", model.id),
-                label: format!(
-                    "{} · {}{}",
-                    model.display_name,
-                    model.id,
-                    if current { " · current" } else { "" }
-                ),
+                label: {
+                    let heading = model.heading();
+                    if current {
+                        format!("{heading} · current")
+                    } else {
+                        heading
+                    }
+                },
                 detail: if model.efforts.is_empty() {
                     "no provider-reported effort levels".into()
                 } else {

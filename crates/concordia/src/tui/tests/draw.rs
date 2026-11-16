@@ -331,7 +331,7 @@ fn native_chat_cli_keeps_accounts_separate_and_binds_reads_explicitly() {
 #[test]
 fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
     let mut h = Harness::new(120, 30);
-    let mut snap = crate::usage::UsageSnapshot::no_data("cached; refreshing", "last report");
+    let mut snap = crate::usage::UsageSnapshot::no_data("checked 2 min ago", "last report");
     snap.windows.push(crate::usage::UsageWindow {
         label: "5h".into(),
         used_pct: 96.0,

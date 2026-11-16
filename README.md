@@ -39,7 +39,7 @@ Ask your question and press Enter
 | `/usage` | `[all\|refresh]` | limits for every account | everyday |
 | `/new` | `` | start a fresh chat | everyday |
 | `/resume` | `` | continue an earlier chat | everyday |
-| `/harness` | `ACTION` | connect and run harness tools | advanced |
+| `/harness` | `ACTION` | integrations and agent tools | advanced |
 | `/skills` | `[list\|install [PATH]\|remove PATH]` | inspect skills and toggle their availability | advanced |
 | `/hooks` | `[list]` | inspect native hooks | advanced |
 | `/mcp` | `[add\|remove\|on\|off\|import] [NAME]` | manage Concordia-wide MCP servers | advanced |

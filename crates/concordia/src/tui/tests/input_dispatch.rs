@@ -1172,6 +1172,10 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
     ] {
         let mut h = Harness::new(100, 28);
         h.app.editor.set_text("keep this draft");
+        let filterable = matches!(
+            kind,
+            PickerKind::Use | PickerKind::Model | PickerKind::Files
+        );
         h.app.show_picker(
             kind,
             "screen".into(),
@@ -1180,7 +1184,7 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
                 label: "Fixture entry".into(),
                 detail: "".into(),
             }],
-            true,
+            filterable,
         );
         if matches!(
             kind,
@@ -1192,13 +1196,10 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         let screen = h.screen();
         // Update is a full page (no paused composer). Overlay pickers keep ownership copy.
         if kind != PickerKind::Update {
-            let ownership = if matches!(
-                kind,
-                PickerKind::Usage | PickerKind::Tokens | PickerKind::Related
-            ) {
-                "Chat input is paused"
-            } else {
+            let ownership = if filterable {
                 "Typing filters the list, not your chat"
+            } else {
+                "Chat input is paused"
             };
             assert!(
                 screen.contains(ownership),
@@ -1764,6 +1765,7 @@ fn model_picker_filter_matches_names_and_ids() {
         title: "model".into(),
         rows,
         filter: "5.6-sol".into(),
+        filterable: true,
         state: ratatui::widgets::ListState::default(),
         usage_scroll: 0,
         usage_cols: 0,

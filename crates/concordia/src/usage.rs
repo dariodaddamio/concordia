@@ -1377,8 +1377,10 @@ impl UsageFetcher {
             (None, true, _) | (None, false, None) => Err(None),
             (None, false, Some(err)) => Err(Some(err.clone())),
         };
+        // A settled reading keeps its age note while a background refresh runs; do not append
+        // "cached; refreshing". Surface refresh failure only after the refresh actually failed.
         let cache_state = if e.pending {
-            Some("cached; refreshing")
+            None
         } else if e.error.is_some() {
             Some("cached; refresh failed")
         } else {
@@ -1946,7 +1948,10 @@ pub fn low_limit_warning(
     }
     let freshness = if provider == crate::store::ProviderKind::Codex {
         "updates after a Codex response"
-    } else if snapshot.summary.contains("cached") || snapshot.summary.contains(" old") {
+    } else if snapshot.summary.contains("cached")
+        || snapshot.summary.contains(" old")
+        || snapshot.summary.contains(" ago")
+    {
         "saved reading; check /usage for refresh status"
     } else {
         "checked by the provider"
@@ -2234,7 +2239,12 @@ mod tests {
             .contains("credits balance 12.5"));
         let pending = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
         assert_eq!(pending.credits_text(), "Credits: 12.5 balance");
-        assert!(pending.detail.contains("refreshing"));
+        assert!(
+            !pending.summary.contains("cached; refreshing"),
+            "{}",
+            pending.summary
+        );
+        assert!(!pending.detail.contains("cached; refreshing"));
         wait_for(&mut fetcher);
         assert_eq!(
             fetcher
@@ -2624,9 +2634,25 @@ mod tests {
         wait_for(&mut f);
         let refresh = f.snapshot_refresh(ProviderKind::Claude, "claude-test", &home);
         assert!(
-            refresh.summary.contains("cached; refreshing"),
+            refresh.summary.contains("5h 93% left"),
             "{}",
             refresh.summary
+        );
+        assert!(
+            !refresh.summary.contains("cached; refreshing"),
+            "{}",
+            refresh.summary
+        );
+        assert!(
+            !refresh.detail.contains("cached; refreshing"),
+            "{}",
+            refresh.detail
+        );
+        assert!(
+            refresh.detail.contains("checked") || refresh.summary.contains("checked"),
+            "settled reading should keep its age note: {} / {}",
+            refresh.summary,
+            refresh.detail
         );
         wait_for(&mut f);
         let after = f.snapshot(ProviderKind::Claude, "claude-test", &home);

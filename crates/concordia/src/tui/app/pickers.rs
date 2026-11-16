@@ -18,14 +18,16 @@ impl App {
             choices,
             false,
         );
-        self.footer_left =
-            "↑↓ choose · Enter validate choice · Esc cancels with nothing changed".into();
+        self.footer_left = "↑↓ choose · Enter apply · Esc cancel".into();
     }
 
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
         if let Some(picker) = self.picker.as_mut() {
             picker.title = format!("{command} · This panel lets you {does}.");
-            self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
+            // /harness owns its footer from the live catalog (empty → N new · Esc only).
+            if command != "/harness" {
+                self.footer_left = format!("↑↓ choose · Enter validates and applies · Esc cancels with nothing changed · undo: {undo}");
+            }
         }
         if command == "/model" {
             self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc".into();
@@ -1327,12 +1329,17 @@ impl App {
             title,
             rows,
             filter: String::new(),
+            filterable,
             state,
             usage_scroll: 0,
             usage_cols: 1,
         });
         self.footer_left = if filterable {
-            "↑↓ Enter · type to filter · Esc".into()
+            if kind == PickerKind::Files {
+                "↑↓ Enter · F4 actions · type to filter · Esc".into()
+            } else {
+                "↑↓ Enter · type to filter · Esc".into()
+            }
         } else {
             if kind == PickerKind::Usage {
                 "↑↓ Enter · r refresh · Esc".into()

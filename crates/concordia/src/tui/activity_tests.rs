@@ -334,6 +334,7 @@ fn paste_into_picker_edits_its_filter_without_touching_draft_or_queue_edit() {
         title: "picker".into(),
         rows: vec![],
         filter: String::new(),
+        filterable: false,
         state: Default::default(),
         usage_scroll: 0,
         usage_cols: 0,

@@ -79,18 +79,10 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
             && app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
         {
             "Chat input is paused while the update runs."
-        } else if picker.kind == PickerKind::Usage {
-            "Chat input is paused."
-        } else if matches!(
-            picker.kind,
-            PickerKind::Update
-                | PickerKind::Tokens
-                | PickerKind::Related
-                | PickerKind::CreditDetails
-        ) {
-            "Chat input is paused."
-        } else {
+        } else if picker.filterable && picker.rows.iter().any(|row| !row.disabled()) {
             "Typing filters the list, not your chat."
+        } else {
+            "Chat input is paused."
         }
     } else if app.activity.detail.is_some() {
         "Typing searches output, not your chat."

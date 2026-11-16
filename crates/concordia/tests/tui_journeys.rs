@@ -3561,7 +3561,10 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     s.request(serde_json::json!({"op":"mouse","kind":"up","x":second_x,"y":0}));
     s.paste("Renamed tab");
     s.enter();
-    assert!(s.screen().contains("Renamed tab"), "{}", s.screen());
+    s.until("renamed tab saved", |s| {
+        let screen = s.screen();
+        screen.contains("Chat title saved") && screen.contains("Renamed tab")
+    });
     std::fs::write(evidence.join("check-3-renamed.txt"), s.screen()).unwrap();
 
     s.submit("[wait]");

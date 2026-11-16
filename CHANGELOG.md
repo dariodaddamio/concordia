@@ -1,5 +1,16 @@
 # Changelog
 
+### Fixed (2026-11-16a)
+
+- A restored Cursor chat whose earlier messages Concordia cannot read says that they stay in Cursor's own chat, instead of reporting a failed request and pointing at login diagnostics.
+- With a file pane open, Ctrl+T and the other tab shortcuts work whenever the chat has focus, and the pane's keys are listed in the footer instead of in the pane border and the message box.
+- The local terminal pane is titled with its shell, and its footer drops whole hints when the window is narrow instead of cutting them.
+- Chat tab titles end with an ellipsis at a word instead of being cut mid-word.
+- The header, `/model` and Settings show a model once, for example `Auto` instead of `Auto · auto`.
+- A usage reading keeps its age while a background refresh runs, instead of switching to `cached; refreshing`.
+- Pickers say `Enter apply · Esc cancel`; `/open` lists F4 in the footer instead of on every row.
+- `/harness` lists only the keys that act on something, and the message box says that typing filters a list only when the panel has entries to filter.
+
 ### Fixed (2026-11-15f)
 
 - `/resume` and `/doctor` open at once and fill in within about two seconds instead of freezing the window for about twenty; keys typed meanwhile are no longer lost.

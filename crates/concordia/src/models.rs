@@ -51,6 +51,21 @@ impl ModelEntry {
             .and_then(|e| e.model_id.as_deref())
             .unwrap_or(&self.id)
     }
+
+    /// Display name, with the raw id only when it adds information (not a case echo of the label).
+    pub fn heading(&self) -> String {
+        format_model_heading(&self.display_name, &self.id)
+    }
+}
+
+/// `<label> · <second>` for headers and pickers. Drops the second part when it equals the label
+/// ignoring case, or when it is only the raw id of that same label (Auto · auto → Auto).
+pub(crate) fn format_model_heading(label: &str, second: &str) -> String {
+    if second.is_empty() || label.eq_ignore_ascii_case(second) {
+        label.to_owned()
+    } else {
+        format!("{label} · {second}")
+    }
 }
 
 /// Effort words the providers use, lowest first. Used only to order efforts and to recognise an

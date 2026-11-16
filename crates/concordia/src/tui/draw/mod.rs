@@ -491,15 +491,17 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
             .rename_editor
             .as_ref()
             .filter(|_| index == app.tab_index);
-        let edit_width = 24usize
-            .min(usize::from(row.right().saturating_sub(x)).saturating_sub(prefix_width + 5));
+        let remaining = usize::from(row.right().saturating_sub(x));
+        // Chip body is " {title}  ×  " (1 + title + 5); trailing gap is painted separately.
+        let chrome = prefix_width + 6;
+        let edit_width = 24usize.min(remaining.saturating_sub(chrome));
         let title = if editor.is_some() {
             " ".repeat(edit_width)
         } else {
-            chip.title.clone()
+            ellipsis(&chip.title, remaining.saturating_sub(chrome).min(24))
         };
-        let text_width = prefix_width + Line::raw(title.as_str()).width() + 5;
-        let width = text_width.min(usize::from(row.right().saturating_sub(x))) as u16;
+        let text_width = prefix_width + 1 + cell_width(&title) + 5;
+        let width = text_width.min(remaining) as u16;
         if width == 0 {
             break;
         }

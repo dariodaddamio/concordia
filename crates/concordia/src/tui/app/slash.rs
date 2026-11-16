@@ -549,7 +549,7 @@ impl App {
                 integrations::open(self);
                 self.guide_open_picker(
                     "/harness",
-                    "inspect connected local harnesses",
+                    "inspect integrations and agent tools",
                     "Esc leaves receipts and provider homes unchanged",
                 );
             } else {
