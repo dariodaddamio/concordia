@@ -266,6 +266,10 @@ impl Connection {
                     self.text_fragment(id, delta).await;
                 }
             }
+            // A new summary part starts a new paragraph of the same reasoning stream.
+            "item/reasoning/summaryPartAdded" => {
+                self.emit(TurnProgress::ThinkingDelta("\n".into())).await;
+            }
             "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
                 if let Some(delta) = params["delta"].as_str() {
                     self.emit(TurnProgress::ThinkingDelta(delta.into())).await;

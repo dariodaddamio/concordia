@@ -83,11 +83,12 @@ fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
         ));
     ui.app
         .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
-            "second".into(),
+            "sec".into(),
         ));
+    // Streamed deltas can split a word; they join without an inserted line break.
     ui.app
         .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
-            "third\n".into(),
+            "ond\n".into(),
         ));
     ui.app.commit_live_thinking();
     let thinking = ui
@@ -96,7 +97,7 @@ fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
         .iter()
         .find(|message| message.role == MsgRole::Thinking)
         .unwrap();
-    assert_eq!(thinking.text, "first\nsecond\nthird\n");
+    assert_eq!(thinking.text, "first\nsecond\n");
 }
 struct Ui {
     app: App,
