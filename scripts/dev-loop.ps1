@@ -104,7 +104,9 @@ while ($true) {
         }
         continue
     }
-    if ($change.Name -notmatch '\.(rs|toml|ico|manifest)$') { continue }
+    # Editors often save through a temporary name and rename it, so react to any file change
+    # under the crate except its own build output.
+    if ($change.Name -match '(^|\\)target\\') { continue }
     # Let an editor finish writing a burst of files before building.
     do { $more = $watch.WaitForChanged([System.IO.WatcherChangeTypes]::All, 400) } until ($more.TimedOut)
     $started = Get-Date

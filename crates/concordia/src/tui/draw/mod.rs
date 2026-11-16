@@ -242,6 +242,10 @@ fn ellipsis(text: &str, width: usize) -> String {
         }
         value = text[..end].to_owned();
     }
+    // Text that was already shortened keeps a single ellipsis.
+    let mut value = value
+        .trim_end_matches(|c: char| matches!(c, '…' | ',' | '·' | ';' | ':') || c.is_whitespace())
+        .to_owned();
     value.push('…');
     value
 }
