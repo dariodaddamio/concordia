@@ -642,11 +642,13 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
         }
         let mut session = Session::start(&app.cwd, Some(command))?;
         session.owner = Some(expected_owner.clone());
-        session.name = format!(
-            "{} · {} · native controls",
-            app.provider.as_str(),
-            app.account
-        );
+        let provider = crate::accounts::display_provider_name(app.provider);
+        let account = app.account_heading();
+        session.name = if account.eq_ignore_ascii_case(provider) {
+            format!("{provider}'s own interface")
+        } else {
+            format!("{provider}'s own interface · {account}")
+        };
         Ok(session)
     };
     match launch() {
@@ -825,12 +827,17 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let content = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     let mut title = " Local terminal".to_string();
     if let Some(session) = app.local_terminal.session.as_mut() {
-        // The shell's name, not its full path ("powershell", not C:\WINDOWS\...\powershell.exe).
-        let shell = std::path::Path::new(&session.name)
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| session.name.clone());
-        title = format!(" {shell} \u{b7} local terminal");
+        title = if session.owner.is_some() {
+            // A provider's own interface is named after the account it runs as.
+            format!(" {}", session.name)
+        } else {
+            // The shell's name, not its full path ("powershell", not C:\WINDOWS\...\powershell.exe).
+            let shell = std::path::Path::new(&session.name)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| session.name.clone());
+            format!(" {shell} \u{b7} local terminal")
+        };
         if session.size != (content.height, content.width) {
             let size = PtySize {
                 rows: content.height,

@@ -16,6 +16,7 @@
 - Pickers use the same short key words (`Enter apply · Esc cancel`), the message box no longer repeats the slash-command hint from the footer, and F1 calls renaming a tab renaming the chat.
 - A restored Cursor chat whose earlier messages Concordia cannot read says that they stay in Cursor's own chat, instead of reporting a failed request and pointing at login diagnostics.
 - With a file pane open, Ctrl+T and the other tab shortcuts work whenever the chat has focus, and the pane's keys are listed in the footer instead of in the pane border and the message box.
+- `/terminal native` titles its pane with the provider's name ("Cursor's own interface") instead of repeating the account id.
 - The local terminal pane is titled with its shell, and its footer drops whole hints when the window is narrow instead of cutting them.
 - Chat tab titles end with an ellipsis at a word instead of being cut mid-word.
 - The header, `/model` and Settings show a model once, for example `Auto` instead of `Auto · auto`.
