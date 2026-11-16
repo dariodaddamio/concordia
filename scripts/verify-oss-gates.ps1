@@ -62,10 +62,10 @@ $publicIdentifiers = @{
     'crates/concordia/src/release.rs' = @('dariodaddamio/concordia')
     'crates/concordia/src/tui/landing.rs' = @('https://dariodaddamio.github.io/concordia/')
     'docs/install.md' = @('dariodaddamio/concordia')
-    'crates/concordia/src/harness/adapter.rs' = @('@dariodaddamio/harness')
+    'crates/concordia/src/harness/adapter.rs' = @('@dariodaddamio/habena')
     'scripts/install.ps1' = @('dariodaddamio/concordia')
     'scripts/test-install.ps1' = @('dariodaddamio/concordia')
-    'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/harness', 'https://dariodaddamio.github.io/concordia/')
+    'scripts/verify-oss-gates.ps1' = @('dariodaddamio/concordia', '@dariodaddamio/habena', 'https://dariodaddamio.github.io/concordia/')
 }
 
 # Owner-requested public brand name, including its shared CLI documentation. Permit this exact

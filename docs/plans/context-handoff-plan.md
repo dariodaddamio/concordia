@@ -336,8 +336,8 @@ a message is sent, and pressing Esc can close them explicitly.
   through Concordia's MCP tool, and each change shows who made it.
 - Clickable and keyboard-driven, following the principles in "Interface rule".
 
-Needs from Harness: open plan rows are printed only as text today, by a repository script
-(`check-active-plan.mjs --open`). Harness adds `harness plan open --json`, and Concordia reads it
+Needs from Habena: open plan rows are printed only as text today, by a repository script
+(`check-active-plan.mjs --open`). Habena adds `habena plan open --json`, and Concordia reads it
 through the adapter, as it reads `version --json` and `tools --json`. Open: the limit on goals.
 
 ## How to know it works

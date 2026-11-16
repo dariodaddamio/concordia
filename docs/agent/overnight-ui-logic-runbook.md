@@ -116,7 +116,7 @@ Preparation inspected source commit `1e16b8d`, build `2026-11-15a`. The checkout
 Re-read HEAD/status at launch: do not replace newer work or start from an older default branch.
 The recent model/effort and updater changes must remain in the campaign baseline.
 
-- Harness reports version `0.10.0`. `harness worker status` selects native Codex collaboration
+- Habena reports version `0.10.0`. `habena worker status` selects native Codex collaboration
   in the current Codex host; it reports Firstmate inactive because `FM_HOME` is unset.
 - No Firstmate executable or checkout was found in the checked PATH/common locations. This is
   unverified availability, not proof that Firstmate is absent everywhere. No Firstmate launch
@@ -193,7 +193,7 @@ installing orchestration infrastructure.
    original worktrees, tool versions, available disk and the native Windows execution host.
 2. Discover the real Firstmate checkout, its instructions, supported provider adapters and native
    lifecycle tools. Verify `FM_HOME` and actual tool registration. Start from its supported host
-   environment; do not set a marker just to make Harness say it is active. Harness reports and
+   environment; do not set a marker just to make Habena say it is active. Habena reports and
    plans dispatch; its repository scripts do not start an agent runtime.
 3. Prove the selected route: dispatch a tiny worker in a disposable scratch workspace, have it
    return a verifiable file/artifact, inspect its actual model/effort/session and reap it. Prove
@@ -227,8 +227,8 @@ an unstarted overnight campaign must not be reported as running.
 The existing local command forms are:
 
 ```powershell
-harness version --json
-harness worker status
+habena version --json
+habena worker status
 claude --version
 claude --help
 agent --version
@@ -239,7 +239,7 @@ git status --short
 git worktree list --porcelain
 ```
 
-Run Harness commands in the project root or pass its supported `--root` option. This installed
+Run Habena commands in the project root or pass its supported `--root` option. This installed
 version does not support `--json` on `worker status`. Do not invent `fm` flags. Capture verified
 Firstmate commands in the run's capability record after reading that installation's help.
 
@@ -264,18 +264,18 @@ gate, weakening a test, changing authentication or claiming an unavailable capab
    arbitrary private histories or run installers from guessed URLs.
 
    ```powershell
-   Get-Command harness, firstmate, fm, claude, codex, agent -ErrorAction SilentlyContinue |
+   Get-Command habena, firstmate, fm, claude, codex, agent -ErrorAction SilentlyContinue |
        Select-Object Name, Source
    Get-Item Env:FM_HOME -ErrorAction SilentlyContinue
    wsl.exe --list --quiet
-   harness worker status
-   harness worker plan investigation
+   habena worker status
+   habena worker plan investigation
    ```
 
 3. If a real checkout is located, read its AGENTS/README/architecture and native command help.
    Follow that installation's launch procedure and inspect the lead's actual available tools.
    Missing package files or a shell executable do not prove registered runtime tools.
-4. Check Harness's detection boundary before diagnosing Firstmate itself. The inspected
+4. Check Habena's detection boundary before diagnosing Firstmate itself. The inspected
    `packages/harness/src/firstmate.ts` requires a valid `FM_HOME` checkout and an evaluated root
    inside it; `worker-status.ts`/`worker-plan.ts` use the requested project root. An external
    Concordia root may therefore produce an inactive report despite a separate runtime existing.
@@ -285,7 +285,7 @@ gate, weakening a test, changing authentication or claiming an unavailable capab
 5. The inspected Codex detector uses session environment markers. A Claude process launched
    from a Codex shell may inherit those markers without possessing native Codex collaboration
    tools. A PASS line is not tool registration or a successful worker launch.
-6. `harness worker plan` is planning-only: `dispatchReady: false` is intentional in this version.
+6. `habena worker plan` is planning-only: `dispatchReady: false` is intentional in this version.
    Inspect `policyReady`, reason and workspace separately. It does not start a worker. Missing
    isolation requires a verified registered worktree; absence of native dispatch requires a
    working host adapter. Concordia has no package tooling: omit package-script options rather
@@ -490,7 +490,7 @@ The existing source gates are:
 ```powershell
 cargo fmt --all -- --check
 cargo check --locked -p concordia
-harness run check:docs --changed
+habena run check:docs --changed
 powershell -NoProfile -File scripts/verify-oss-gates.ps1
 powershell -NoProfile -File scripts/check-hidden-process-spawns.ps1
 powershell -NoProfile -File scripts/check-module-cycles.ps1

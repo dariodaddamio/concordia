@@ -3,7 +3,7 @@
 This is Concordia's project identity layer. The portable layers come first and are not repeated
 here: the principles, design method and lookup sequence in
 [preferences/ui-core.md](preferences/ui-core.md), and the interaction rules in
-[preferences/ui.md](preferences/ui.md) (search them with `harness run ui:search <topic>`).
+[preferences/ui.md](preferences/ui.md) (search them with `habena run ui:search <topic>`).
 Concordia renders a grid of character cells in a native Windows window, so every measure below is
 in cells, and color is always a semantic role from [`tui/theme.rs`](../crates/concordia/src/tui/theme.rs),
 never a raw color.

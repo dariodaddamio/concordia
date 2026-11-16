@@ -29,7 +29,7 @@ Ask your question and press Enter
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |
-| `/terminal` | `[open\|native\|hide\|close]` | open the local terminal or selected provider interface | everyday |
+| `/terminal` | `[open\|native\|help\|hide\|close]` | open the local terminal or the selected provider's native interface | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
 | `/effort` | `[LEVEL]` | choose reasoning effort | everyday |

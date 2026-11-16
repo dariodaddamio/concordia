@@ -453,7 +453,7 @@ fn verify_end_to_end_opens_the_gate_only_for_a_real_matching_report() {
 }
 
 /// npm installs Node CLIs on Windows as `name.cmd`; a program named without its extension must
-/// still start, as `harness` does in a shell.
+/// still start, as `habena` does in a shell.
 #[cfg(windows)]
 #[test]
 fn a_cmd_shim_starts_by_its_bare_name() {

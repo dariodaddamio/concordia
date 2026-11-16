@@ -1,6 +1,6 @@
-//! Concordia's adapter for the generic `@dariodaddamio/harness` CLI.
+//! Concordia's adapter for the generic `@dariodaddamio/habena` CLI.
 //!
-//! This deliberately lives in Concordia: Harness owns its generic CLI, while Concordia owns
+//! This deliberately lives in Concordia: Habena owns its generic CLI, while Concordia owns
 //! the provider commands and the receipt identity derived from those commands.
 
 use super::{parse_manifest, Manifest, RunOutcome};
@@ -8,17 +8,17 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-const HARNESS_NAME: &str = "@dariodaddamio/harness";
+const HABENA_NAME: &str = "@dariodaddamio/habena";
 
 pub fn is_harness_program(program: &str) -> bool {
     Path::new(program)
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
-            name.eq_ignore_ascii_case("harness")
-                || name.eq_ignore_ascii_case("harness.exe")
-                || name.eq_ignore_ascii_case("harness.cmd")
-                || name.eq_ignore_ascii_case("harness.bat")
+            name.eq_ignore_ascii_case("habena")
+                || name.eq_ignore_ascii_case("habena.exe")
+                || name.eq_ignore_ascii_case("habena.cmd")
+                || name.eq_ignore_ascii_case("habena.bat")
         })
 }
 
@@ -45,7 +45,7 @@ fn version(run: &dyn Fn(&[String]) -> RunOutcome, program: &str) -> Result<Strin
     let object = value
         .as_object()
         .ok_or_else(|| format!("`{program} version --json` must return an object"))?;
-    if object.get("name").and_then(Value::as_str) != Some(HARNESS_NAME) {
+    if object.get("name").and_then(Value::as_str) != Some(HABENA_NAME) {
         return Err(format!(
             "`{program} version --json` returned an unexpected package name"
         ));
@@ -114,16 +114,16 @@ pub fn build(
     for item in tools(run, program)? {
         let object = item
             .as_object()
-            .ok_or_else(|| "Harness tools must be objects".to_string())?;
+            .ok_or_else(|| "Habena tools must be objects".to_string())?;
         let name = object
             .get("name")
             .and_then(Value::as_str)
             .filter(|name| !name.is_empty())
-            .ok_or_else(|| "Harness tool has no name".to_string())?;
+            .ok_or_else(|| "Habena tool has no name".to_string())?;
         let description = object
             .get("description")
             .and_then(Value::as_str)
-            .unwrap_or("Harness registered tool");
+            .unwrap_or("Habena registered tool");
         registered.push(serde_json::json!({
             "name": name,
             "description": description,
@@ -133,7 +133,7 @@ pub fn build(
     registered.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
 
     let mut root = BTreeMap::new();
-    root.insert("name", Value::String("harness".into()));
+    root.insert("name", Value::String("habena".into()));
     root.insert("version", Value::String(package_version));
     root.insert(
         "providers",
@@ -141,7 +141,7 @@ pub fn build(
     );
     root.insert("tools", Value::Array(registered));
     let text = serde_json::to_string(&root)
-        .map_err(|e| format!("could not encode Harness manifest: {e}"))?;
+        .map_err(|e| format!("could not encode Habena manifest: {e}"))?;
     let manifest = parse_manifest(&text, cwd)?;
     Ok((manifest, text))
 }
@@ -154,7 +154,7 @@ mod tests {
         match args.get(1).map(String::as_str) {
             Some("version") => RunOutcome {
                 exit: Some(0),
-                stdout: r#"{"name":"@dariodaddamio/harness","version":"0.11.0"}"#.into(),
+                stdout: r#"{"name":"@dariodaddamio/habena","version":"0.11.0"}"#.into(),
                 ..Default::default()
             },
             Some("tools") => RunOutcome {
@@ -171,22 +171,22 @@ mod tests {
 
     #[test]
     fn builds_actual_program_commands_and_registered_tools() {
-        let (manifest, text) = build("C:/bin/harness.cmd", Path::new("."), &fake).unwrap();
-        assert!(text.contains("C:/bin/harness.cmd"));
+        let (manifest, text) = build("C:/bin/habena.cmd", Path::new("."), &fake).unwrap();
+        assert!(text.contains("C:/bin/habena.cmd"));
         assert_eq!(manifest.version.as_deref(), Some("0.11.0"));
         assert_eq!(
             manifest.tools[0].argv,
-            ["C:/bin/harness.cmd", "tool", "reference-search"]
+            ["C:/bin/habena.cmd", "tool", "reference-search"]
         );
         assert_eq!(
             manifest.providers["cursor"].verify.as_ref().unwrap()[0],
-            "C:/bin/harness.cmd"
+            "C:/bin/habena.cmd"
         );
     }
 
     #[test]
     fn version_failure_is_not_silently_replaced_by_the_old_manifest() {
-        let error = build("harness", Path::new("."), &|_| RunOutcome {
+        let error = build("habena", Path::new("."), &|_| RunOutcome {
             exit: Some(1),
             stderr: "not found".into(),
             ..Default::default()
@@ -197,8 +197,8 @@ mod tests {
 
     #[test]
     fn tools_change_the_deterministic_manifest_text() {
-        let (one, text_one) = build("harness", Path::new("."), &fake).unwrap();
-        let (_, text_two) = build("harness", Path::new("."), &|args| {
+        let (one, text_one) = build("habena", Path::new("."), &fake).unwrap();
+        let (_, text_two) = build("habena", Path::new("."), &|args| {
             if args.get(1).map(String::as_str) == Some("tools") {
                 return RunOutcome {
                     exit: Some(0),
@@ -231,7 +231,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let error = build("harness", Path::new("."), &|args| {
+            let error = build("habena", Path::new("."), &|args| {
                 if args.get(1).map(String::as_str) == Some("tools") {
                     return outcome.clone();
                 }

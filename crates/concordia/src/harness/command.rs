@@ -231,7 +231,7 @@ fn load_manifest(target: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, Strin
             manifest,
         });
     }
-    // Harness has a Concordia-owned adapter contract. Other programs retain the generic
+    // Habena has a Concordia-owned adapter contract. Other programs retain the generic
     // external `concordia-manifest` integration.
     if super::adapter::is_harness_program(target) {
         let (manifest, text) = super::adapter::build(target, cwd, run)?;

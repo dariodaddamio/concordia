@@ -125,7 +125,7 @@ directories previously blocked by automatic approval review. Their absence was v
 
 ## Documentation rewrite
 
-Checks run for this rewrite slice: `harness docs check --plain`, `harness run check:docs --changed`,
+Checks run for this rewrite slice: `habena docs check --plain`, `habena run check:docs --changed`,
 `scripts/verify-oss-gates.ps1` and `git diff --check`, all passing. A changed-files-only check cannot
 certify untouched pages. No runtime rebuild or new provider turn was run for this documentation
 work; the entire rewrite and product interview remain in progress.

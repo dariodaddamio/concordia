@@ -214,7 +214,7 @@ fn project_root(folder: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
-/// One project's open work. `None` when its Harness predates `plan:open --json`.
+/// One project's open work. `None` when its Habena predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWork {
     pub folder: String,
@@ -228,7 +228,7 @@ pub struct WorkItem {
     pub queued: bool,
 }
 
-/// `harness run plan:open --json` output: active plans first, then the open and queued rows.
+/// `habena run plan:open --json` output: active plans first, then the open and queued rows.
 pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     let text = |v: &serde_json::Value, key: &str| {
@@ -254,7 +254,7 @@ pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     Some(items)
 }
 
-/// The connected Harness program (`/harness connect harness`), if any.
+/// The connected Habena program (`/harness connect habena`), if any.
 fn harness_program(state_root: &Path) -> Option<String> {
     crate::harness::connections::load(state_root)
         .ok()?
