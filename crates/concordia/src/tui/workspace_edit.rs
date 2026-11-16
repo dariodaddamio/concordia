@@ -733,6 +733,14 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if p.searching || !p.raw() || p.loading {
         return false;
     }
+    // Untouched panes stay pager-like: bare `q` closes (handled by workspace). After an edit,
+    // `q` is a character.
+    if key.modifiers.is_empty()
+        && matches!(key.code, KeyCode::Char('q'))
+        && !p.document.as_ref().is_some_and(|document| document.dirty())
+    {
+        return false;
+    }
     if key.code == KeyCode::F(3) && !p.query.is_empty() {
         if let Some(d) = &p.document {
             p.lines = display_lines(d.text()).unwrap_or_default();

@@ -567,7 +567,7 @@ pub async fn run_provider_turn_with_progress(
         on_started,
         on_progress,
         idle_timeout_from_config(),
-        None,
+        std::env::current_exe().ok(),
     )
     .await
 }
@@ -586,7 +586,7 @@ pub async fn run_provider_turn_with_idle_timeout(
         on_started,
         on_progress,
         idle_timeout,
-        None,
+        std::env::current_exe().ok(),
     )
     .await
 }

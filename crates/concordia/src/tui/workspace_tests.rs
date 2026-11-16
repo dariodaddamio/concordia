@@ -391,6 +391,10 @@ fn focused_raw_editor_owns_typing_enter_paste_and_dirty_close_preserves_chat() {
     assert!(h.app.workspace.close(id));
     h.key(KeyCode::Char('d'), KeyModifiers::NONE);
     assert!(h.app.workspace.panes.is_empty());
+    // An untouched pane behaves like a pager: bare q closes it.
+    h.open("note.txt", "body");
+    h.key(KeyCode::Char('q'), KeyModifiers::NONE);
+    assert!(h.app.workspace.panes.is_empty());
 }
 
 #[test]

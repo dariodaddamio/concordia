@@ -1065,9 +1065,12 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
         source_version(&root)? == expected_source,
         "source build identity changed during update; retry the build"
     );
-    let expected_version = format!("concordia {} ({})", expected_source.0, expected_source.1);
+    // `--version` may also carry BUILD_REV (`stamp` or `stamp, rev`); the source stamp must match.
+    let reported = verify_binary(&built)?;
+    let stamp_prefix = format!("concordia {} ({}", expected_source.0, expected_source.1);
     anyhow::ensure!(
-        verify_binary(&built)? == expected_version,
+        reported == format!("{stamp_prefix})")
+            || reported.starts_with(&format!("{stamp_prefix}, ")),
         "rebuilt executable does not match the selected source version; existing install kept"
     );
 
@@ -1703,24 +1706,82 @@ fn run_cargo_build(
 fn cargo_process_is_running() -> bool {
     #[cfg(windows)]
     {
+        // Parent `cargo test` / `cargo run` hosts are not "another" build; only peers block.
+        let ancestors = {
+            let procs = crate::sysstats::process_pairs();
+            let mut set = std::collections::HashSet::new();
+            let mut pid = std::process::id();
+            set.insert(pid);
+            for _ in 0..64 {
+                let Some(parent) = procs
+                    .iter()
+                    .find_map(|&(child, parent)| (child == pid).then_some(parent))
+                else {
+                    break;
+                };
+                if parent == 0 || !set.insert(parent) {
+                    break;
+                }
+                pid = parent;
+            }
+            set
+        };
         return crate::process_ui::command("tasklist")
             .args(["/FI", "IMAGENAME eq cargo.exe", "/FO", "CSV", "/NH"])
             .output()
             .map(|output| {
-                String::from_utf8_lossy(&output.stdout)
-                    .lines()
-                    .any(|line| line.trim_start().starts_with("\"cargo.exe\""))
+                String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                    let line = line.trim_start();
+                    if !line.starts_with("\"cargo.exe\"") {
+                        return false;
+                    }
+                    let pid = line
+                        .split(',')
+                        .nth(1)
+                        .and_then(|field| field.trim_matches('"').parse::<u32>().ok());
+                    pid.is_none_or(|pid| !ancestors.contains(&pid))
+                })
             })
             .unwrap_or(true);
     }
     #[cfg(not(windows))]
     {
+        let me = std::process::id();
         crate::process_ui::command("pgrep")
             .args(["-x", "cargo"])
             .output()
-            .map(|output| output.status.success())
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .filter_map(|pid| pid.parse::<u32>().ok())
+                    .any(|pid| pid != me && !is_ancestor_of(me, pid))
+            })
             .unwrap_or(true)
     }
+}
+
+#[cfg(not(windows))]
+fn is_ancestor_of(child: u32, candidate: u32) -> bool {
+    let mut pid = child;
+    for _ in 0..64 {
+        let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) else {
+            return false;
+        };
+        let Some(parent) = status.lines().find_map(|line| {
+            line.strip_prefix("PPid:")
+                .and_then(|value| value.trim().parse::<u32>().ok())
+        }) else {
+            return false;
+        };
+        if parent == candidate {
+            return true;
+        }
+        if parent == 0 || parent == pid {
+            return false;
+        }
+        pid = parent;
+    }
+    false
 }
 
 fn cargo_executable(root: &Path, log: &str) -> Result<PathBuf> {

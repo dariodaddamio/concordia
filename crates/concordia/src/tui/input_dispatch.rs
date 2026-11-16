@@ -192,8 +192,14 @@ pub(super) fn handle_key(
         return false;
     }
     if app.settings_view.is_some() && app.picker.is_none() {
-        settings::key(app, key);
-        return false;
+        // Esc closes settings; Ctrl+C must still arm quit the same way as on the chat screen.
+        let quit = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('c' | 'C'));
+        if !quit {
+            settings::key(app, key);
+            return false;
+        }
     }
     if app
         .picker

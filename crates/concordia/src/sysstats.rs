@@ -293,6 +293,11 @@ mod sys {
     }
 }
 
+/// Every process as `(pid, parent_pid)`. Used by the updater to ignore ancestor Cargo hosts.
+pub fn process_pairs() -> Vec<(u32, u32)> {
+    sys::process_list()
+}
+
 /// Working set of this process in bytes (`concordia doctor`).
 pub fn self_memory_bytes() -> Option<u64> {
     sys::working_set(std::process::id())

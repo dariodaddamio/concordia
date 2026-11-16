@@ -600,6 +600,8 @@ struct Surface {
     columns: u16,
     rows: u16,
     filled: usize,
+    /// True after an empty-frame StretchBlt seed; the next real paint must clear first.
+    seeded: bool,
 }
 impl Drop for Surface {
     fn drop(&mut self) {
@@ -952,18 +954,17 @@ impl Window {
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
         let surface_background = super::theme::native_default(false);
-        let mut seeded_previous = false;
+        let mut previous_surface = None;
         if self.surface.as_ref().is_none_or(|surface| {
             surface.width != client.right
                 || surface.height != client.bottom
                 || surface.background != surface_background
         }) {
-            // Keep the last committed frame visible while Windows delivers the resize event.
-            // The logical cell buffer is repainted immediately after the event, but it may be
-            // briefly empty while ratatui reflows the frame. Seeding the new bitmap from the
-            // previous one prevents that intermediate paint from exposing a blank window.
-            let previous_surface = self.surface.take();
-            seeded_previous = previous_surface.is_some();
+            // Rebuild the backing bitmap for the new client size. Start from the theme
+            // background; StretchBlt of the previous frame is applied only when the incoming
+            // cell buffer is still empty (see preserve_seed below). Stretching into a frame that
+            // will be fully redrawn leaves ClearType blend differences versus a clean paint.
+            previous_surface = self.surface.take();
             let previous_cells = previous_surface
                 .as_ref()
                 .map(|surface| surface.cells.clone())
@@ -990,6 +991,45 @@ impl Window {
                 return;
             }
             let previous_bitmap = SelectObject(memory, bitmap);
+            SetDCBrushColor(memory, color(Color::Reset, false));
+            FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+            self.surface = Some(Surface {
+                dc: memory,
+                bitmap,
+                previous_bitmap,
+                width: client.right,
+                height: client.bottom,
+                background: surface_background,
+                cells: previous_cells,
+                columns: previous_columns,
+                rows: previous_rows,
+                filled: previous_filled,
+                seeded: false,
+            });
+        }
+        // GDI rendering can be much slower than updating the cell buffer. Never keep
+        // the application thread waiting on the screen mutex while painting.
+        let screen = self
+            .shared
+            .screen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let surface = self.surface.as_mut().expect("surface initialized above");
+        let memory = surface.dc;
+        // The resized logical buffer may still be the transient, partially drawn frame produced
+        // by WM_SIZE. Keep the committed bitmap while the incoming frame is materially emptier;
+        // the first complete frame then replaces the cache normally.
+        let incoming_filled = screen
+            .cells
+            .iter()
+            .filter(|cell| **cell != Cell::default())
+            .count();
+        // A resize can briefly expose an empty frame while the application catches up. Seed only
+        // that transient paint from the previous bitmap; a non-empty frame redraws on a clean
+        // background so it matches a from-scratch paint.
+        let preserve_seed = previous_surface.is_some() && incoming_filled == 0;
+        if preserve_seed {
             if let Some(previous) = previous_surface.as_ref() {
                 StretchBlt(
                     memory,
@@ -1004,9 +1044,6 @@ impl Window {
                     previous.height,
                     SRCCOPY,
                 );
-            } else {
-                SetDCBrushColor(memory, color(Color::Reset, false));
-                FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
             }
             // The old bitmap can extend into a partial cell at the new client edge. That strip
             // is outside the logical frame and must match a fresh paint exactly.
@@ -1037,45 +1074,21 @@ impl Window {
                     GetStockObject(DC_BRUSH) as HBRUSH,
                 );
             }
-            self.surface = Some(Surface {
-                dc: memory,
-                bitmap,
-                previous_bitmap,
-                width: client.right,
-                height: client.bottom,
-                background: surface_background,
-                cells: previous_cells,
-                columns: previous_columns,
-                rows: previous_rows,
-                filled: previous_filled,
-            });
-            drop(previous_surface);
+            surface.seeded = true;
         }
-        // GDI rendering can be much slower than updating the cell buffer. Never keep
-        // the application thread waiting on the screen mutex while painting.
-        let screen = self
-            .shared
-            .screen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let surface = self.surface.as_mut().expect("surface initialized above");
-        let memory = surface.dc;
-        // The resized logical buffer may still be the transient, partially drawn frame produced
-        // by WM_SIZE. Keep the committed bitmap while the incoming frame is materially emptier;
-        // the first complete frame then replaces the cache normally.
-        let incoming_filled = screen
-            .cells
-            .iter()
-            .filter(|cell| **cell != Cell::default())
-            .count();
-        // A resize can briefly expose an empty frame while the application catches up. Keep the
-        // seeded bitmap for that one transient paint, but repaint any non-empty frame completely.
-        // A density heuristic is unsafe here because a smaller, valid frame naturally contains
-        // fewer populated cells than the old one.
-        let preserve_seed = seeded_previous && incoming_filled == 0;
+        drop(previous_surface);
         let original_font = SelectObject(memory, self.fonts[0]);
         let same_grid = surface.columns == screen.size.width && surface.rows == screen.size.height;
+        let expected_cells =
+            usize::from(screen.size.width).saturating_mul(usize::from(screen.size.height));
+        // A prior empty-frame StretchBlt can still sit under this paint when the grid size already
+        // matches. Clear first so glyph antialiasing is not blended onto the stretched seed.
+        if !preserve_seed && (surface.seeded || !same_grid || surface.cells.len() != expected_cells)
+        {
+            SetDCBrushColor(memory, color(Color::Reset, false));
+            FillRect(memory, &client, GetStockObject(DC_BRUSH) as HBRUSH);
+            surface.seeded = false;
+        }
         for y in 0..screen.size.height {
             if preserve_seed {
                 break;

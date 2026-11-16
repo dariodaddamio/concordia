@@ -2791,9 +2791,9 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
     let mut s = Session::launch(dir.path());
     s.request(serde_json::json!({"op":"resize","columns":180,"rows":34}));
 
+    // /delegate was removed from Concordia's slash surface (worker delivery lives in /config).
     for (name, command, marker) in [
         ("terminal", "/terminal", "/terminal · This panel"),
-        ("delegate", "/delegate", "/delegate · This panel"),
         ("native", "/native", "/native · This panel"),
         ("use", "/use", "accounts"),
         ("model", "/model", "model"),
@@ -2887,10 +2887,10 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
     s.send("\x1b");
     s.submit("/doctor");
-    s.until("shared doctor chooser", |s| {
-        s.screen().contains("/doctor · choose who runs it") && s.screen().contains("Concordia")
-    });
-    s.enter();
+    // Codex does not register /doctor, so Concordia's diagnostics open directly (no shared chooser).
+    if s.screen().contains("choose who runs it") {
+        s.enter();
+    }
     s.until("doctor MCP status", |s| {
         s.screen().contains("mcp") && s.screen().contains("Claude Code")
     });
@@ -3610,6 +3610,11 @@ fn assert_clean(check: &Value, label: &str) {
         check["differ"], 0,
         "{label}: window differs from a fresh paint: {check}"
     );
+    assert_no_stale_images(check, label);
+}
+
+/// No stale pixels inside an image area and none of the image drawn outside its thumbnail.
+fn assert_no_stale_images(check: &Value, label: &str) {
     for image in check["images"].as_array().unwrap() {
         assert_eq!(
             image["stale"], 0,

@@ -532,15 +532,15 @@ impl App {
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
+            // Catalog titles carry provider and scope (`Skills · codex · local sources`); keep them.
             settings::catalog(self, *hooks);
-            self.guide_open_picker(
-                if *hooks { "/hooks" } else { "/skills" },
+            self.footer_left = format!(
+                "↑↓ choose · Enter opens a source · Esc leaves sources unchanged · undo: {}",
                 if *hooks {
-                    "inspect native hook sources"
+                    "Esc leaves hook sources unchanged"
                 } else {
-                    "inspect selected skill sources"
-                },
-                "Esc leaves sources unchanged",
+                    "Esc leaves skill sources unchanged"
+                }
             );
             return true;
         }
