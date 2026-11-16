@@ -76,17 +76,27 @@ async fn turn_with(
             }
             if let TurnProgress::Interaction(request) = event {
                 match request.kind() {
+                    // Owned requests accept only an answer from their owner, as in the app.
                     NativeInteraction::Questions(questions) => {
                         kinds.push(format!("questions:{}", questions.len()));
                         let picks = vec![0; questions.len()];
-                        request.respond(request.single_choices(&picks).expect("answer"));
+                        let owner = request.owner().cloned().expect("owned interaction");
+                        request
+                            .respond_owned(&owner, request.single_choices(&picks).expect("answer"))
+                            .expect("answer accepted");
                     }
                     NativeInteraction::Permission { options, .. } => {
                         kinds.push("permission".into());
                         let first = options.first().map(|o| o.id.clone()).unwrap_or_default();
-                        request.respond(serde_json::json!({
-                            "outcome": {"outcome": "selected", "optionId": first}
-                        }));
+                        let owner = request.owner().cloned().expect("owned interaction");
+                        request
+                            .respond_owned(
+                                &owner,
+                                serde_json::json!({
+                                    "outcome": {"outcome": "selected", "optionId": first}
+                                }),
+                            )
+                            .expect("answer accepted");
                     }
                     other => kinds.push(format!("{other:?}")),
                 }
@@ -112,9 +122,18 @@ async fn turn_with(
         local_time: None,
         compaction: Default::default(),
     };
-    let out = run_provider_turn_with_transport(&req, owner(cwd, home), mode, None, Some(tx), None)
-        .await
-        .expect("turn");
+    // The question tool runs `concordia ask-mcp`; the test binary itself cannot serve it.
+    let ask_server = Path::new(env!("CARGO_BIN_EXE_concordia"));
+    let out = run_provider_turn_with_transport(
+        &req,
+        owner(cwd, home),
+        mode,
+        None,
+        Some(tx),
+        Some(ask_server),
+    )
+    .await
+    .expect("turn");
     (out, seen.await.unwrap())
 }
 
@@ -219,7 +238,7 @@ async fn question_tool_reaches_the_popup_broker() {
     let (out, kinds) = turn(
         &home,
         dir.path(),
-        "Use your ask-question tool (not plain text) to ask me one multiple-choice question: \
+        "Use your ask_user tool (not plain text) to ask me one multiple-choice question: \
          'Pick a letter' with options A and B. After I answer, reply with only the letter I picked.",
         &[],
         None,
