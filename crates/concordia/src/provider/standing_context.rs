@@ -12,10 +12,14 @@ pub struct State<'a> {
 }
 
 /// Return the Concordia tools exposed by the selected provider transport.
-/// The MCP catalog and the ACP question bridge are separate registrations.
+/// The MCP catalog and native question bridge are separate registrations.
 pub fn tools_for_transport(provider: ProviderKind, mode: crate::native_input::Mode) -> Vec<String> {
-    if matches!(provider, ProviderKind::Claude | ProviderKind::Codex) {
+    if provider == ProviderKind::Claude {
         crate::mcp::registered_tool_names()
+    } else if provider == ProviderKind::Codex {
+        let mut tools = crate::mcp::registered_tool_names();
+        tools.push("ask_user".into());
+        tools
     } else if matches!(
         (provider, mode),
         (ProviderKind::Cursor, crate::native_input::Mode::CursorAcp)

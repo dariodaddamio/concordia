@@ -127,13 +127,24 @@ async fn turn(
                     | NativeInteraction::CodexQuestions(questions) => {
                         seen.questions += 1;
                         let picks = vec![0; questions.len()];
-                        request.respond(request.single_choices(&picks).expect("answer"));
+                        // Turns run with an owner, so answers must name it (respond() ignores
+                        // owned requests and the turn would wait forever).
+                        let owner = request.owner().cloned().expect("owned interaction");
+                        request
+                            .respond_owned(&owner, request.single_choices(&picks).expect("answer"))
+                            .expect("answer accepted");
                     }
                     NativeInteraction::Permission { options, .. } => {
                         let first = options.first().map(|o| o.id.clone()).unwrap_or_default();
-                        request.respond(serde_json::json!({
-                            "outcome": {"outcome": "selected", "optionId": first}
-                        }));
+                        let owner = request.owner().cloned().expect("owned interaction");
+                        request
+                            .respond_owned(
+                                &owner,
+                                serde_json::json!({
+                                    "outcome": {"outcome": "selected", "optionId": first}
+                                }),
+                            )
+                            .expect("answer accepted");
                     }
                     _ => {}
                 },

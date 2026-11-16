@@ -1075,6 +1075,10 @@ impl Window {
                 );
             }
             surface.seeded = true;
+            // The seed came from the old flat row stride. Invalidate that cache before recording
+            // the new dimensions below, or the first row can compare equal against the old prefix
+            // and be skipped on the first complete frame after a shrink.
+            surface.cells.clear();
         }
         drop(previous_surface);
         let original_font = SelectObject(memory, self.fonts[0]);

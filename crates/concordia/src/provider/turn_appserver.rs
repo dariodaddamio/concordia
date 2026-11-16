@@ -36,6 +36,15 @@ struct Connection {
     dropped_deltas: usize,
     buffered: Vec<Value>,
     artifacts: crate::artifacts::Collector,
+    bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
+}
+
+struct QuestionListener(tokio::task::JoinHandle<()>);
+
+impl Drop for QuestionListener {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 impl Connection {
     async fn text_fragment(&mut self, id: &str, text: &str) {
@@ -353,6 +362,65 @@ impl Connection {
         crate::provider::stream_cards::upsert_card(&mut self.out.cards, card.clone());
         self.emit(TurnProgress::Card(card)).await;
     }
+    async fn bridge_request(&mut self, request: crate::ask_bridge::BridgeRequest) -> Result<()> {
+        let (Some(session), Some(turn)) = (self.thread.clone(), self.turn.clone()) else {
+            let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
+            return Ok(());
+        };
+        let Some(questions) = request.questions.as_array() else {
+            let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
+            return Ok(());
+        };
+        let bridge_id = format!("concordia-ask-user-{}", uuid::Uuid::new_v4());
+        let native = json!({
+            "sessionId": session,
+            "threadId": session,
+            "turnId": turn,
+            "toolCallId": bridge_id,
+            "prompt": "The agent needs a decision",
+            "questions": questions.iter().enumerate().map(|(i, question)| json!({
+                "id": format!("question-{i}"),
+                "prompt": question["question"],
+                "options": question["options"].as_array().into_iter().flatten().enumerate().map(|(j, option)| json!({
+                    "id": format!("option-{i}-{j}"),
+                    "label": option,
+                    "description": ""
+                })).collect::<Vec<_>>(),
+                "allowMultiple": question["multiple"].as_bool().unwrap_or(false)
+            })).collect::<Vec<_>>()
+        });
+        let (native_request, rx) = self
+            .interactions
+            .request(
+                &session,
+                json!(bridge_id),
+                "cursor/ask_question".into(),
+                native,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?
+            .ok_or_else(|| anyhow::anyhow!("bridge request identity was reused"))?;
+        if !send_progress(
+            &self.progress,
+            TurnProgress::Interaction(Box::new(native_request.clone())),
+            &self.handle,
+        )
+        .await
+        {
+            native_request.cancel();
+        }
+        let answer = tokio::select! {
+            _ = self.handle.wake.notified() => {
+                native_request.invalidate();
+                let _ = request.answer.send(json!(crate::ask_bridge::DISMISSED));
+                anyhow::bail!("cancelled");
+            }
+            answer = rx => answer.unwrap_or_else(|_| json!({"outcome":{"outcome":"cancelled"}})),
+        };
+        native_request.invalidate();
+        let text = crate::ask_bridge::answer_text(questions, &answer);
+        let _ = request.answer.send(json!(text));
+        Ok(())
+    }
     async fn listen(&mut self) -> Result<()> {
         for value in std::mem::take(&mut self.buffered) {
             if self.event(value).await? {
@@ -364,6 +432,9 @@ impl Connection {
             tokio::select! {
                 biased;
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
+                Some(request)=self.bridge_rx.recv()=> {
+                    self.bridge_request(request).await?;
+                }
                 Some((id,answer))=self.answers.recv()=> {
                     if let Some(request)=self.pending.remove(&id.to_string()) {
                         if request.was_resolved() {continue;}
@@ -464,6 +535,15 @@ pub(super) async fn run(
     for image in req.images {
         content.push(json!({"type":"image","url":format!("data:{};base64,{}",image.mime,image.data().map_err(anyhow::Error::msg)?)}));
     }
+    let ask_token = uuid::Uuid::new_v4().to_string();
+    let (ask_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ask_endpoint, ask_listener) =
+        crate::ask_bridge::spawn_listener(ask_token.clone(), ask_tx).await?;
+    let _question_listener = QuestionListener(ask_listener);
+    let ask_command = std::env::current_exe()
+        .context("Could not locate Concordia for the Codex ask MCP server")?
+        .to_string_lossy()
+        .into_owned();
     let mut command = crate::process_ui::tokio_command(&program);
     crate::process_ui::background(&mut command);
     #[cfg(unix)]
@@ -477,6 +557,20 @@ pub(super) async fn run(
         if let Some(value) = value {
             command.args([flag, value]);
         }
+    }
+    // Codex app-server reads MCP servers from the same -c configuration surface as `codex exec`.
+    // This server is per-turn because its endpoint and token belong only to this live bridge.
+    let ask_name = toml::Value::String("concordia-ask".into());
+    let ask_command = toml::Value::String(ask_command);
+    let ask_endpoint = toml::Value::String(ask_endpoint);
+    let ask_token = toml::Value::String(ask_token);
+    for value in [
+        format!("mcp_servers.{ask_name}.command={ask_command}"),
+        format!("mcp_servers.{ask_name}.args=[\"ask-mcp\"]"),
+        format!("mcp_servers.{ask_name}.env.CONCORDIA_ASK_ENDPOINT={ask_endpoint}"),
+        format!("mcp_servers.{ask_name}.env.CONCORDIA_ASK_TOKEN={ask_token}"),
+    ] {
+        command.arg("-c").arg(value);
     }
     command.envs(plan.env.clone());
     if let Some(native) = native {
@@ -560,6 +654,7 @@ pub(super) async fn run(
         dropped_deltas: 0,
         buffered: Vec::new(),
         artifacts: crate::artifacts::Collector::default(),
+        bridge_rx,
     };
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"clientInfo":{"name":"concordia","title":"Concordia","version":crate::version::VERSION},"capabilities":{"experimentalApi":true}}))).await??;

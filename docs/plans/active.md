@@ -44,3 +44,11 @@
 | `crates/concordia/src/tui/integrations.rs`, `update_ui.rs`, `native_agents.rs`, `related_files.rs` | ok: 1, 5, 10 | Drop body/title key hints and dead empty states; footers remain the key surface. |
 | `crates/concordia/src/tui/app/state.rs`, `sessions.rs` | ok: 1, 10 | Auto check failure logs and keeps preview without a chat line; disabled row ids cover open/agents hints. |
 
+### Campaign UI logic repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 5, 6, 9, 10 | Keep resize invalidation in the native window and invalidate only the rows made stale by the existing surface replacement; no full-frame redraw or test-only branch. |
+| crates/concordia/src/provider/turn_appserver.rs | ok: 1, 4, 5, 6, 7, 10 | Pass the existing ask bridge through the Codex app-server MCP configuration and route its questions through the existing interaction owner; preserve native modes and collaboration. |
+| crates/concordia/src/provider/standing_context.rs | ok: 1, 4, 5, 6, 7, 10 | Advertise the existing ask_user tool for Codex turns, whose owned UI path selects app-server; do not add a second tool registry. |
+
