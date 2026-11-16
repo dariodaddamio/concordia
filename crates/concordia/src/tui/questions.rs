@@ -921,11 +921,11 @@ impl State {
 pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     let h = if app.questions.waiting() {
         let inner = transcript.width.saturating_sub(2) as usize;
-        let wanted = app.questions.doc(inner).map_or(0, |doc| doc.height() + 1);
+        let wanted = app.questions.doc(inner).map_or(0, |doc| doc.height());
         let cap = (transcript.height as usize * 60 / 100)
             .min(transcript.height.saturating_sub(3) as usize);
         let h = wanted.min(cap);
-        // One row cannot hold a prompt and a hint; leave the transcript alone instead.
+        // One row cannot hold a prompt and an option; leave the transcript alone instead.
         if h < 2 {
             0
         } else {
@@ -986,7 +986,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     };
     let s = &mut app.questions;
-    let body = area.height as usize - 1;
+    let body = area.height as usize;
     let pinned = if doc.prompt.len() * 2 <= body {
         doc.prompt.len()
     } else {
@@ -1118,27 +1118,26 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             ));
         }
     }
-    f.render_widget(
-        Paragraph::new(if s.native.is_some() && multiple {
-            if s.focused {
-                " ↑↓ select · Space toggle · Enter confirm · Esc cancel request · F8 focus"
-            } else {
-                " F8 focus · or click · Space toggle · Enter confirm"
+}
+
+impl State {
+    /// Footer keys for the open question; key hints live only in the footer.
+    pub(super) fn footer_hint(&self) -> &'static str {
+        let multiple = self
+            .native
+            .as_ref()
+            .is_some_and(|request| request.allows_multiple(self.current));
+        match (self.native.is_some(), multiple, self.focused) {
+            (true, true, true) => {
+                "↑↓ select · Space toggle · Enter confirm · Esc cancel request · F8 focus"
             }
-        } else if s.native.is_some() {
-            if s.focused {
-                " ↑↓ select · Enter choose · Esc cancel request · F8 focus"
-            } else {
-                " F8 focus, or click an option to answer"
-            }
-        } else if s.focused {
-            "Up/Down select · Enter send · Esc close · F8 focus"
-        } else {
-            "F8 focus, or click an option to reply"
-        })
-        .style(dim),
-        Rect::new(area.x, area.bottom() - 1, area.width, 1),
-    );
+            (true, true, false) => "F8 focus · or click · Space toggle · Enter confirm",
+            (true, false, true) => "↑↓ select · Enter choose · Esc cancel request · F8 focus",
+            (true, false, false) => "F8 focus, or click an option to answer",
+            (false, _, true) => "↑↓ select · Enter send · Esc close · F8 focus",
+            (false, _, false) => "F8 focus, or click an option to reply",
+        }
+    }
 }
 pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
     let hit = app
@@ -2207,7 +2206,7 @@ mod tests {
             screen.contains(&format!("o{i}t000")) && screen.contains(&format!("o{i}t{last:03}"))
         };
         let rows = popup_rows(&mut app, width, height);
-        let popup_height = rows.iter().rposition(|r| r.contains("F8")).unwrap()
+        let popup_height = rows.iter().rposition(|r| r.contains("more below")).unwrap()
             - rows
                 .iter()
                 .position(|r| r.contains("Which route?"))

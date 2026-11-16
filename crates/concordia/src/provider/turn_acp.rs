@@ -292,7 +292,7 @@ impl Connection {
                 let detail = update
                     .get("rawInput")
                     .filter(|v| !v.is_null())
-                    .map(Value::to_string)
+                    .map(tool_input_detail)
                     .or_else(|| prior.and_then(|c| c.detail.clone()));
                 let mut card = StreamCard {
                     id,
@@ -310,6 +310,29 @@ impl Connection {
         }
     }
 }
+/// Cursor wraps an MCP tool's input as `{providerIdentifier, toolName, args}`. The card shows the
+/// arguments, and for Concordia's own question tool the questions themselves.
+fn tool_input_detail(raw: &Value) -> String {
+    let Some(args) = raw
+        .get("args")
+        .filter(|_| raw.get("providerIdentifier").is_some())
+    else {
+        return raw.to_string();
+    };
+    if raw["toolName"] == "ask_user" {
+        let questions: Vec<&str> = args["questions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|q| q["question"].as_str())
+            .collect();
+        if !questions.is_empty() {
+            return questions.join("\n");
+        }
+    }
+    args.to_string()
+}
+
 /// Cursor keeps print-mode chats (`create-chat`, `--resume`) apart from ACP sessions, so a chat
 /// started before ACP became the default cannot be loaded here. The caller continues it in print
 /// mode; nothing was prompted and nothing was shown.

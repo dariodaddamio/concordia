@@ -170,5 +170,5 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         ),
         Mode::Standard => "off (standard text transport)".into(),
     };
-    Ok(format!("{account}: native text input {description}. Future tasks capture this account/home preference; existing worker attempts keep theirs. Native capabilities are checked on connection."))
+    Ok(format!("{account}: native text input {description}. New turns and new workers on this account use it; workers already running keep their setting."))
 }

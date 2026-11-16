@@ -2,6 +2,9 @@
 
 ### Fixed (2026-11-16a)
 
+- An answer to a Cursor or Codex question that takes longer than a minute now reaches the agent. Before, the agent's tool call timed out after 60 seconds while the popup stayed open, and the late answer was lost.
+- The question popup lists its keys in the footer, and Cursor's question card shows the question instead of the tool's raw input.
+- Turning on Cursor's native text input says plainly which turns and workers use it.
 - A restored Cursor chat whose earlier messages Concordia cannot read says that they stay in Cursor's own chat, instead of reporting a failed request and pointing at login diagnostics.
 - With a file pane open, Ctrl+T and the other tab shortcuts work whenever the chat has focus, and the pane's keys are listed in the footer instead of in the pane border and the message box.
 - The local terminal pane is titled with its shell, and its footer drops whole hints when the window is narrow instead of cutting them.
