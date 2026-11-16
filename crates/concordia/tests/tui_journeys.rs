@@ -1579,7 +1579,15 @@ fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
     });
     let screen = s.screen();
     assert!(!screen.contains("Continue a chat or start a new one."));
-    assert!(!screen.contains("+"));
+    // What's new quotes CHANGELOG bullets (for example Ctrl+O). Forbid only the old
+    // new-chat affordance, not every plus in changelog copy.
+    assert!(
+        !screen.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == "+" || trimmed.starts_with("+ New") || trimmed.starts_with("+New")
+        }),
+        "Home must not show the old + new-chat control: {screen}"
+    );
     let (documentation_y, documentation_line) = screen
         .lines()
         .enumerate()
@@ -2421,7 +2429,11 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
     let mut s = Session::launch(dir.path());
     s.send("\x07");
     s.until("empty Agents view from Home", |s| {
-        s.screen().contains("Agents ·") && s.screen().contains("No agents reported")
+        let screen = s.screen();
+        // Title is footer-only for keys; empty copy is "No agents yet." (1ec7bbf).
+        screen.contains("Agents")
+            && screen.contains("No agents yet.")
+            && screen.contains("Enter inspect")
     });
     s.send("\x1b");
     s.submit("[wait] [agents] inspect children");
@@ -2512,6 +2524,12 @@ fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_prov
     std::fs::write(sessions.join("restore.jsonl"), lines.join("\n") + "\n").unwrap();
     let mut s = Session::launch(dir.path());
     s.submit("/resume");
+    // /resume opens immediately with a disabled Loading row; wait for the background
+    // list before Enter (Enter on loading is a no-op, not a selection).
+    s.until("resume list finished loading", |s| {
+        let screen = s.screen();
+        !screen.contains("Loading chats") && screen.contains("native session")
+    });
     s.enter();
     s.until("last restored reply", |s| {
         s.screen().contains("RESTORED_HISTORY_59")
@@ -2571,7 +2589,9 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     std::fs::write(home.join("auth.json"), serde_json::json!({"tokens":{"id_token":"e30.eyJlbWFpbCI6ICJtZW1iZXJAZXhhbXBsZS5pbnZhbGlkIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.fixture"}}).to_string()).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
+        // Keep the stored synthetic-model in the catalog so the header still names it;
+        // fixture-model remains available for argument completion and effort selection.
+        r#"{"models":[{"slug":"synthetic-model","display_name":"synthetic-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]},{"slug":"fixture-model","display_name":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
     )
     .unwrap();
     let mut s = Session::launch(dir.path());
@@ -2682,9 +2702,8 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     }
     s.until("account metadata shown", |s| {
         let screen = s.screen();
-        screen.contains("Email: member@example.invalid")
-            && screen.contains("Plan: Plus")
-            && screen.contains("Workspace:")
+        // Cards omit Workspace/Credits/Email/Plan when the provider did not report them.
+        screen.contains("Email: member@example.invalid") && screen.contains("Plan: Plus")
     });
     s.send("\x1b");
     s.paste("/use cu");
@@ -2753,11 +2772,11 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.submit("/usage");
     s.until("wide usage cards", |s| {
         let screen = s.screen();
-        screen
-            .lines()
-            .any(|line| line.contains("Plan:") && line.contains("Workspace:"))
-            && screen.contains("bucket-0")
-            && screen.matches("Email:").count() > 1
+        // Wide windows place two account cards side by side.
+        screen.contains("bucket-0")
+            && screen
+                .lines()
+                .any(|line| line.contains("\u{2502}Codex") && line.contains("\u{2502}Claude"))
     });
     std::fs::write(evidence.join("check-2.txt"), s.screen()).unwrap();
     std::fs::write(evidence.join("check-3.txt"), s.screen()).unwrap();
@@ -2909,21 +2928,41 @@ fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending()
     let mut s = Session::launch(dir.path());
     s.submit("/usage");
     s.until("paused message box and exit cue", |s| {
-        s.screen().contains("Esc or X closes usage")
+        let screen = s.screen();
+        // Key names live in the footer; the paused composer only owns the input.
+        screen.contains("Chat input is paused.")
+            && screen.contains("Esc")
+            && screen.lines().any(|line| line.contains('X'))
     });
+    // /usage is not a typed filter surface (footer has no filter cue; modal says paused).
+    // Paste must stay out of the chat draft and must not dispatch a prompt.
     s.paste("fixture filter");
-    s.until("paste stays in modal filter", |s| {
-        s.screen().contains("fixture filter")
+    s.until("paste does not escape paused usage", |s| {
+        s.screen().contains("Chat input is paused.")
+            && s.draft().is_empty()
+            && s.prompts().is_empty()
     });
     assert!(s.draft().is_empty());
     assert!(s.prompts().is_empty());
     let screen = s.screen();
+    // /usage has no outer frame; the close control sits on the last card's top-right edge.
     let (y, line) = screen
         .lines()
         .enumerate()
-        .find(|(_, line)| line.contains("usage") && line.contains('X'))
-        .unwrap();
-    let x = line.chars().position(|c| c == 'X').unwrap();
+        .filter(|(_, line)| {
+            line.contains('X')
+                && line
+                    .rfind('X')
+                    .is_some_and(|at| at + 1 >= line.trim_end().chars().count().saturating_sub(3))
+        })
+        .last()
+        .expect("usage close X is visible on a card edge");
+    let x = line
+        .char_indices()
+        .filter(|(_, c)| *c == 'X')
+        .map(|(index, _)| line[..index].chars().count())
+        .last()
+        .expect("close X column");
     s.send(&format!(
         "\x1b[<0;{};{}M\x1b[<0;{};{}m",
         x + 1,
@@ -2932,7 +2971,7 @@ fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending()
         y + 1
     ));
     s.until("X returned to editable chat", |s| {
-        !s.screen().contains("Esc or X closes usage") && s.screen().contains("Message Concordia")
+        !s.screen().contains("Chat input is paused.") && s.screen().contains("Message Concordia")
     });
     assert!(s.prompts().is_empty());
     s.exit();

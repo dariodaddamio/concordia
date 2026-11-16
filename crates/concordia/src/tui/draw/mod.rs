@@ -2836,7 +2836,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         )
     } else if app.view.scroll > 0 {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
-    } else if app.busy {
+    } else if app.busy && app.picker.is_none() {
         (
             if app.idle_notice.is_some() {
                 "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"

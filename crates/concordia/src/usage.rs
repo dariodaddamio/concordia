@@ -1461,7 +1461,10 @@ impl UsageFetcher {
             Err(Some(_)) if cursor => cursor_usage(),
             Err(Some(err)) => UsageSnapshot::no_data(
                 "limits unavailable",
-                format!("could not read Claude limits ({err}); /usage tries again"),
+                format!(
+                    "could not read {} limits ({err}); /usage tries again",
+                    crate::accounts::display_account_name(provider, provider.as_str())
+                ),
             ),
         }
     }
