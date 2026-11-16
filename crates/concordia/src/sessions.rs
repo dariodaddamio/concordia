@@ -25,6 +25,34 @@ struct Discovery {
     entries_scanned: usize,
 }
 
+/// Reuse one account-home walk across many exact session lookups (doctor / resume).
+#[derive(Default)]
+struct DiscoveryCache {
+    by_home: std::collections::HashMap<(ProviderKind, PathBuf), Discovery>,
+}
+
+impl DiscoveryCache {
+    fn discover(
+        &mut self,
+        provider: ProviderKind,
+        home: &Path,
+        file_limit: usize,
+        entry_limit: usize,
+    ) -> &Discovery {
+        let key = (provider, home.to_path_buf());
+        self.by_home.entry(key).or_insert_with(|| match provider {
+            ProviderKind::Codex => discover_codex(home, file_limit, entry_limit),
+            ProviderKind::Claude => discover_claude(home, file_limit, entry_limit),
+            ProviderKind::Cursor => discover_cursor(home, file_limit, entry_limit),
+            ProviderKind::Grok | ProviderKind::Opencode => Discovery {
+                files: Vec::new(),
+                truncated: false,
+                entries_scanned: 0,
+            },
+        })
+    }
+}
+
 fn bounded_text(value: &str, max_chars: usize) -> String {
     let mut chars = value.chars();
     let mut out: String = chars.by_ref().take(max_chars).collect();
@@ -127,7 +155,9 @@ pub struct PickerRow {
 
 impl PickerRow {
     pub fn disabled(&self) -> bool {
-        self.id.starts_with("continue-disabled:") || self.id == "resume:loading"
+        self.id.starts_with("continue-disabled:")
+            || self.id == "resume:loading"
+            || self.id == "doctor:loading"
     }
 }
 
@@ -185,6 +215,24 @@ impl ChatDiagnostic {
 
 /// Diagnose durable task chats without changing provider files or Concordia state.
 pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagnostic {
+    let mut cache = DiscoveryCache::default();
+    diagnose_task_cached(root, task, &mut cache)
+}
+
+/// Diagnose many tasks while walking each account home at most once.
+pub fn diagnose_tasks(root: &Path, tasks: &[crate::store::TaskRecord]) -> Vec<ChatDiagnostic> {
+    let mut cache = DiscoveryCache::default();
+    tasks
+        .iter()
+        .map(|task| diagnose_task_cached(root, task, &mut cache))
+        .collect()
+}
+
+fn diagnose_task_cached(
+    root: &Path,
+    task: &crate::store::TaskRecord,
+    cache: &mut DiscoveryCache,
+) -> ChatDiagnostic {
     let session = task.sessions.last();
     let (account, provider, native_session_id) = session.map_or_else(
         || (String::new(), ProviderKind::Codex, String::new()),
@@ -218,27 +266,35 @@ pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagno
                     crate::native_memory::PointerFailureCause::AccountHomeChanged,
                 )
             }
-            Some(_) => match find_native_record(root, &account, Some(provider), &native_session_id)
-            {
-                Ok(Some((_, path))) => match crate::native_history::read_bound(
+            Some(_) => {
+                let found = find_native_record_cached(
                     root,
                     &account,
-                    provider,
+                    Some(provider),
                     &native_session_id,
-                    &path,
-                ) {
-                    Ok(_) => ChatOpenability::Openable,
+                    cache,
+                );
+                match found {
+                    Ok(Some((_, path))) => match crate::native_history::probe_bound(
+                        root,
+                        &account,
+                        provider,
+                        &native_session_id,
+                        &path,
+                    ) {
+                        Ok(_) => ChatOpenability::Openable,
+                        Err(error) => ChatOpenability::Unopenable(
+                            crate::native_memory::PointerFailureCause::from_error(&error),
+                        ),
+                    },
+                    Ok(None) => ChatOpenability::Unopenable(
+                        crate::native_memory::PointerFailureCause::FileDeletedOrMoved,
+                    ),
                     Err(error) => ChatOpenability::Unopenable(
                         crate::native_memory::PointerFailureCause::from_error(&error),
                     ),
-                },
-                Ok(None) => ChatOpenability::Unopenable(
-                    crate::native_memory::PointerFailureCause::FileDeletedOrMoved,
-                ),
-                Err(error) => ChatOpenability::Unopenable(
-                    crate::native_memory::PointerFailureCause::from_error(&error),
-                ),
-            },
+                }
+            }
         }
     };
     ChatDiagnostic {
@@ -254,9 +310,9 @@ pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagno
 }
 
 pub fn unopenable_tasks(root: &Path) -> Vec<ChatDiagnostic> {
-    crate::store::list_tasks(root)
-        .iter()
-        .map(|task| diagnose_task(root, task))
+    let tasks = crate::store::list_tasks(root);
+    diagnose_tasks(root, &tasks)
+        .into_iter()
         .filter(|diagnostic| diagnostic.cause().is_some())
         .collect()
 }
@@ -639,6 +695,10 @@ fn summarize_codex_with_child(
                 }
             }
         }
+        // Home/landing only need 0 / 1 / 2 / 3+; stop once the bucket is known.
+        if user_messages >= 3 && preview.is_some() {
+            break;
+        }
     }
     Some((
         SessionSummary {
@@ -683,6 +743,10 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
                     preview = Some(title);
                 }
             }
+        }
+        // Home/landing only need 0 / 1 / 2 / 3+; stop once the bucket is known.
+        if user_messages >= 3 && preview.is_some() {
+            break;
         }
     }
     Some(SessionSummary {
@@ -1080,6 +1144,17 @@ pub fn find_native_record(
     provider: Option<ProviderKind>,
     session_id: &str,
 ) -> Result<Option<(SessionSummary, PathBuf)>, String> {
+    let mut cache = DiscoveryCache::default();
+    find_native_record_cached(state_root, account, provider, session_id, &mut cache)
+}
+
+fn find_native_record_cached(
+    state_root: &Path,
+    account: &str,
+    provider: Option<ProviderKind>,
+    session_id: &str,
+    cache: &mut DiscoveryCache,
+) -> Result<Option<(SessionSummary, PathBuf)>, String> {
     let accounts: Vec<_> = list_all_accounts(state_root)
         .into_iter()
         .filter(|a| a.account == account && provider.is_none_or(|p| a.provider == p))
@@ -1093,16 +1168,12 @@ pub fn find_native_record(
     let Some(home) = account_def.home_path.as_ref() else {
         return Ok(None);
     };
-    let discovery = match account_def.provider {
-        ProviderKind::Codex => discover_codex(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
-        ProviderKind::Claude => discover_claude(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
-        ProviderKind::Cursor => discover_cursor(home, MAX_DISCOVERED_FILES, MAX_DISCOVERY_ENTRIES),
-        ProviderKind::Grok | ProviderKind::Opencode => Discovery {
-            files: Vec::new(),
-            truncated: false,
-            entries_scanned: 0,
-        },
-    };
+    let discovery = cache.discover(
+        account_def.provider,
+        home,
+        MAX_DISCOVERED_FILES,
+        MAX_DISCOVERY_ENTRIES,
+    );
     if discovery.truncated {
         return Err(
             "native chat scan bound reached; could not verify this session is unique".into(),
@@ -1111,9 +1182,9 @@ pub fn find_native_record(
     let uuid_id = is_uuid(session_id);
     let mut matches = Vec::new();
     let mut summarized = 0;
-    for (path, ms) in discovery.files {
+    for (path, ms) in &discovery.files {
         let filename_id = match account_def.provider {
-            ProviderKind::Codex | ProviderKind::Claude => session_id_from_filename(&path),
+            ProviderKind::Codex | ProviderKind::Claude => session_id_from_filename(path),
             ProviderKind::Cursor => path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -1130,12 +1201,12 @@ pub fn find_native_record(
             );
         }
         if let Some(mut record) =
-            summarize_one(&account_def.account, account_def.provider, &path, ms)
+            summarize_one(&account_def.account, account_def.provider, path, *ms)
         {
             if record.0.session_id == session_id {
                 if account_def.provider != ProviderKind::Cursor {
                     let mut header = Vec::new();
-                    File::open(&path)
+                    File::open(path)
                         .map_err(|error| error.to_string())?
                         .take(MAX_SUMMARY_BYTES)
                         .read_to_end(&mut header)

@@ -2045,8 +2045,9 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     if picker.kind == PickerKind::Usage {
+        // One margin column each side; cards themselves are the only bordered surfaces.
         let width = area.width.saturating_sub(2);
-        let cols = ((width.saturating_sub(2)) / 54).max(1) as usize;
+        let cols = (width / 54).max(1) as usize;
         picker.usage_cols = cols;
         let rows = picker
             .filtered()
@@ -2054,7 +2055,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|row| (row.id.clone(), row.label.clone(), row.detail.clone()))
             .collect::<Vec<_>>();
         let selected = picker.state.selected().unwrap_or(0);
-        let cell_width = ((width.saturating_sub(2)) / cols as u16).max(1);
+        let cell_width = (width / cols as u16).max(1);
         let wrap = |text: &str, width: usize| {
             text.lines()
                 .flat_map(|line| {
@@ -2109,60 +2110,52 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .chunks(cols)
             .map(|chunk| chunk.iter().map(Vec::len).max().unwrap_or(1) as u16 + 2)
             .collect::<Vec<_>>();
-        // Size the outer surface to its cards only — no empty rows under the grid.
-        let content_height = cell_height.iter().sum::<u16>().saturating_add(2).max(3);
-        let height = content_height.min(area.height);
+        let row_count = cell_height.len();
+        // Cards only: one blank row between card rows, nothing trailing under the last row.
+        let content_height = cell_height.iter().sum::<u16>() + row_count.saturating_sub(1) as u16;
+        let height = content_height.max(1).min(area.height);
+        // Exactly as wide as the cards, so the close control sits on the last card's edge.
         let popup = Rect {
             x: area.x + 1,
             y: area.y,
-            width,
+            width: (cell_width * cols as u16).min(width),
             height,
         };
         f.render_widget(Clear, popup);
-        let title = if picker.filter.is_empty() {
-            fit_panel_title(&picker.title, popup.width)
-        } else {
-            fit_panel_title(
-                &format!("{} · filter: {}", picker.title, picker.filter),
-                popup.width,
-            )
-        };
-        let frame = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {title} "));
-        f.render_widget(frame, popup);
-        let inner = Block::default().inner(popup);
         let selected_row = selected / cols;
         let mut first_row = 0usize;
         while first_row < selected_row {
-            let top: u16 = cell_height[..selected_row].iter().sum();
-            let visible: u16 = cell_height[first_row..=selected_row].iter().sum();
-            if top < cell_height[..first_row].iter().sum::<u16>() + inner.height
-                && visible <= inner.height
+            let gap_before = first_row as u16;
+            let gap_to_selected = selected_row as u16;
+            let top: u16 = cell_height[..selected_row].iter().sum::<u16>() + gap_to_selected;
+            let visible: u16 = cell_height[first_row..=selected_row].iter().sum::<u16>()
+                + selected_row.saturating_sub(first_row) as u16;
+            if top < cell_height[..first_row].iter().sum::<u16>() + gap_before + popup.height
+                && visible <= popup.height
             {
                 break;
             }
             first_row += 1;
         }
-        let mut y = inner.y;
+        let mut y = popup.y;
         for (index, (id, _label, detail)) in rows.into_iter().enumerate() {
             let col = index % cols;
             let row = index / cols;
             if row < first_row {
                 continue;
             }
-            if y >= inner.bottom() {
+            if y >= popup.bottom() {
                 break;
             }
             let cell = Rect {
-                x: inner.x + col as u16 * cell_width,
+                x: popup.x + col as u16 * cell_width,
                 y,
                 width: cell_width.min(
-                    inner
+                    popup
                         .right()
-                        .saturating_sub(inner.x + col as u16 * cell_width),
+                        .saturating_sub(popup.x + col as u16 * cell_width),
                 ),
-                height: cell_height[row].min(inner.bottom().saturating_sub(y)),
+                height: cell_height[row].min(popup.bottom().saturating_sub(y)),
             };
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -2190,8 +2183,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 }
             }
             f.render_widget(Paragraph::new(lines).block(block), cell);
-            if col + 1 == cols {
+            app.picker_rows.push((cell, index));
+            if col + 1 == cols || index + 1 == visible_lines.len() {
                 y = y.saturating_add(cell_height[row]);
+                if row + 1 < row_count {
+                    y = y.saturating_add(1);
+                }
             }
         }
         modal::draw_close(f, popup, app, modal::Target::Picker);

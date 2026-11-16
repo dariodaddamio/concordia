@@ -253,10 +253,23 @@ pub(in crate::tui) struct ModelRefresh {
     pub(in crate::tui) rx: std_mpsc::Receiver<Result<crate::models::RefreshedModels, String>>,
 }
 
-/// Background build of `/resume` rows so the UI thread stays responsive.
-pub(in crate::tui) struct ResumeLoad {
+/// Background picker payload so `/resume` and `/doctor` keep the UI thread responsive.
+pub(in crate::tui) enum PickerLoadPayload {
+    Resume {
+        title: String,
+        rows: Vec<PickerRow>,
+    },
+    Doctor {
+        checks: Vec<crate::doctor::Check>,
+        fixes: Vec<crate::doctor::Fix>,
+    },
+}
+
+/// In-flight background build for a picker that opened with a muted loading row.
+pub(in crate::tui) struct PickerLoad {
     pub(in crate::tui) generation: u64,
-    pub(in crate::tui) rx: std_mpsc::Receiver<(String, Vec<PickerRow>)>,
+    pub(in crate::tui) kind: PickerKind,
+    pub(in crate::tui) rx: std_mpsc::Receiver<PickerLoadPayload>,
 }
 
 impl Picker {
@@ -407,8 +420,8 @@ pub(crate) struct App {
     pub(in crate::tui) doctor: Option<DoctorUi>,
     pub(in crate::tui) doctor_applier: Box<dyn crate::doctor::FixApplier>,
     pub(in crate::tui) model_refresh: Option<ModelRefresh>,
-    pub(in crate::tui) resume_load: Option<ResumeLoad>,
-    pub(in crate::tui) resume_load_generation: u64,
+    pub(in crate::tui) picker_load: Option<PickerLoad>,
+    pub(in crate::tui) picker_load_generation: u64,
     pub(in crate::tui) effort_model: Option<String>,
     pub(in crate::tui) token_reads: tokens::State,
     pub(in crate::tui) integrations: integrations::State,
@@ -2035,8 +2048,8 @@ impl App {
             doctor: None,
             doctor_applier: Box::new(crate::doctor::DoctorAppliers),
             model_refresh: None,
-            resume_load: None,
-            resume_load_generation: 0,
+            picker_load: None,
+            picker_load_generation: 0,
             effort_model: None,
             token_reads: tokens::State::default(),
             integrations: integrations::State::default(),

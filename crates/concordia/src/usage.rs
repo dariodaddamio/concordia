@@ -693,46 +693,58 @@ pub fn profiled_picker_row(
         // of the bucket scroll range so End lands on the final bucket rather than a note below it.
         row.detail.clear();
     }
-    let email = identity
-        .login
-        .as_deref()
-        .filter(|s| s.contains('@'))
-        .unwrap_or("not reported");
+    let email = identity.login.as_deref().filter(|s| s.contains('@'));
     let plan = identity
         .plan
         .as_deref()
         .or(snap.plan.as_deref())
         .filter(|p| !p.trim().is_empty() && *p != "unknown")
-        .unwrap_or("not reported");
-    let plan = match plan.to_ascii_lowercase().as_str() {
-        "free" => "Free",
-        "plus" => "Plus",
-        "pro" => "Pro",
-        "max" => "Max",
-        "team" => "Team",
-        "business" => "Business",
-        "enterprise" => "Enterprise",
-        "edu" => "Education",
-        "individual" => "Individual",
-        _ => plan,
-    };
+        .map(|plan| match plan.to_ascii_lowercase().as_str() {
+            "free" => "Free",
+            "plus" => "Plus",
+            "pro" => "Pro",
+            "max" => "Max",
+            "team" => "Team",
+            "business" => "Business",
+            "enterprise" => "Enterprise",
+            "edu" => "Education",
+            "individual" => "Individual",
+            _ => plan,
+        });
     let head = crate::accounts::display_account_name(provider, id);
     let limits = row
         .label
         .split_once('\n')
         .map(|(_, limits)| limits.to_string())
         .unwrap_or_else(|| snap.used_left_text());
-    let mut label = format!("{head} \u{b7} Plan: {plan}");
-    let credits = snap.credits_text();
-    let workspace = identity
+    let mut head_parts = vec![head];
+    if let Some(email) = email {
+        head_parts.push(format!("Email: {email}"));
+    }
+    if let Some(plan) = plan {
+        head_parts.push(format!("Plan: {plan}"));
+    }
+    let credits = match &snap.credits {
+        Some(credits) if credits.unlimited == Some(true) => Some("Credits: unlimited".into()),
+        Some(credits) if credits.balance.is_some() => {
+            Some(format!("Credits: {} balance", credits.balance.unwrap()))
+        }
+        Some(credits) if credits.has_credits == Some(false) => {
+            Some("Credits: none available".into())
+        }
+        // "not reported" / "balance not reported" stay off the card.
+        _ => None,
+    };
+    if let Some(credits) = credits.as_deref() {
+        head_parts.push(credits.to_string());
+    }
+    let mut label = head_parts.join(" \u{b7} ");
+    if let Some(workspace) = identity
         .team
         .as_deref()
         .filter(|team| !team.trim().is_empty())
-        .unwrap_or("not reported");
-    label.push_str(&format!(" \u{b7} Workspace: {workspace}"));
-    label.push_str(&format!("\nEmail: {email}"));
-    if credits != "Credits: not reported" {
-        label.push_str(&format!(" \u{b7} {credits}"));
+    {
+        label.push_str(&format!("\nWorkspace: {workspace}"));
     }
     if !limits.is_empty() {
         label.push('\n');
@@ -2672,8 +2684,12 @@ mod profile_row_tests {
             ..identity
         };
         let row = profiled_picker_row("claude", missing.provider, &snapshot, &missing);
-        assert!(row
-            .label
-            .contains("Email: not reported \u{b7} Plan: not reported"));
+        assert!(
+            !row.label.contains("not reported"),
+            "unreported fields are omitted: {}",
+            row.label
+        );
+        assert!(row.label.starts_with("Claude"), "{}", row.label);
+        assert!(row.label.contains("Credits: 12.5 balance"), "{}", row.label);
     }
 }

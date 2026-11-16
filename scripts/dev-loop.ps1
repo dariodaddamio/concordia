@@ -81,6 +81,11 @@ function Running {
 }
 
 Note "dev loop for $repo"
+# A window left by an earlier loop would hold the control port; close only windows run from
+# this loop's own bin folder.
+Get-Process concordia -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and $_.Path.StartsWith($bin, [StringComparison]::OrdinalIgnoreCase) } catch { $false }
+} | ForEach-Object { Stop-Process -Id $_.Id -Force; Note "closed earlier dev window (pid $($_.Id))" }
 if (-not (Build)) { throw 'initial build failed' }
 Swap
 Launch

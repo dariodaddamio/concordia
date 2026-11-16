@@ -77,6 +77,30 @@ pub fn read_bound(
     Ok(history)
 }
 
+/// Confirm a bound native record can be opened without parsing its transcript. Listing
+/// surfaces (/resume, /doctor) call this for every chat; the full read happens on open.
+pub fn probe_bound(
+    root: &Path,
+    account: &str,
+    provider: ProviderKind,
+    session_id: &str,
+    path: &Path,
+) -> Result<(), String> {
+    if provider == ProviderKind::Cursor {
+        let home = crate::accounts::get_account(root, account)
+            .and_then(|a| a.home_path)
+            .ok_or("Cursor account home is unavailable")?;
+        crate::native_memory::Binding::new(provider, account, &home, session_id)?;
+        return Ok(());
+    }
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("native record is not a file".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();

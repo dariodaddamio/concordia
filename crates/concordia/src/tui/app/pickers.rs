@@ -48,48 +48,81 @@ impl App {
         self.footer_left = "↑↓ Enter · type to filter · Esc".into();
         let state_root = self.state_root.clone();
         let cwd = self.cwd.clone();
-        let (tx, rx) = std_mpsc::channel();
-        self.resume_load_generation = self.resume_load_generation.wrapping_add(1);
-        let generation = self.resume_load_generation;
-        let _ = std::thread::Builder::new()
-            .name("concordia-resume-list".into())
-            .spawn(move || {
-                let _ = tx.send(build_resume_picker_payload(&state_root, &cwd));
-            });
-        self.resume_load = Some(ResumeLoad { generation, rx });
+        self.start_picker_load(PickerKind::Resume, "concordia-resume-list", move || {
+            let (title, rows) = build_resume_picker_payload(&state_root, &cwd);
+            PickerLoadPayload::Resume { title, rows }
+        });
     }
 
-    pub(in crate::tui) fn poll_resume_load(&mut self) -> bool {
-        let Some(load) = self.resume_load.as_ref() else {
+    fn start_picker_load(
+        &mut self,
+        kind: PickerKind,
+        thread_name: &str,
+        work: impl FnOnce() -> PickerLoadPayload + Send + 'static,
+    ) {
+        let (tx, rx) = std_mpsc::channel();
+        self.picker_load_generation = self.picker_load_generation.wrapping_add(1);
+        let generation = self.picker_load_generation;
+        let _ = std::thread::Builder::new()
+            .name(thread_name.into())
+            .spawn(move || {
+                let _ = tx.send(work());
+            });
+        self.picker_load = Some(PickerLoad {
+            generation,
+            kind,
+            rx,
+        });
+    }
+
+    pub(in crate::tui) fn poll_picker_load(&mut self) -> bool {
+        let Some(load) = self.picker_load.as_ref() else {
             return false;
         };
         let generation = load.generation;
+        let expected = load.kind;
         let result = match load.rx.try_recv() {
             Ok(payload) => payload,
             Err(std_mpsc::TryRecvError::Empty) => return false,
             Err(std_mpsc::TryRecvError::Disconnected) => {
-                self.resume_load = None;
+                self.picker_load = None;
                 return false;
             }
         };
-        self.resume_load = None;
+        self.picker_load = None;
         // Esc while loading closes the picker and discards this late result.
-        if generation != self.resume_load_generation {
+        if generation != self.picker_load_generation {
             return false;
         }
-        let Some(picker) = self.picker.as_mut() else {
-            return false;
-        };
-        if picker.kind != PickerKind::Resume {
+        if self
+            .picker
+            .as_ref()
+            .is_none_or(|picker| picker.kind != expected)
+        {
             return false;
         }
-        let (title, rows) = result;
-        let filter = picker.filter.clone();
-        picker.title = title;
-        picker.rows = rows;
-        picker.filter = filter;
-        picker.select_clamp();
-        true
+        match result {
+            PickerLoadPayload::Resume { title, rows } => {
+                let Some(picker) = self.picker.as_mut() else {
+                    return false;
+                };
+                let filter = picker.filter.clone();
+                picker.title = title;
+                picker.rows = rows;
+                picker.filter = filter;
+                picker.select_clamp();
+                true
+            }
+            PickerLoadPayload::Doctor { checks, fixes } => {
+                self.doctor = Some(DoctorUi {
+                    checks,
+                    fixes,
+                    fixed: HashMap::new(),
+                });
+                self.refresh_doctor_picker();
+                true
+            }
+        }
     }
     pub(in crate::tui) fn resume_explicit_session(&mut self, id: &str) {
         match crate::sessions::find_native_record(
@@ -1147,14 +1180,25 @@ impl App {
         self.show_picker_at(kind, title, rows, filterable, 0);
     }
     pub(in crate::tui) fn open_doctor(&mut self) {
-        let checks = crate::doctor::run_fast_checks_at(&self.state_root);
-        let fixes = crate::doctor::proposed_fixes(&self.state_root, &checks);
-        self.doctor = Some(DoctorUi {
-            checks,
-            fixes,
-            fixed: HashMap::new(),
+        self.doctor = None;
+        // Open immediately with a muted checking row; doctor work runs off the UI thread.
+        self.show_picker(
+            PickerKind::Doctor,
+            "doctor".into(),
+            vec![PickerRow {
+                id: "doctor:loading".into(),
+                label: "Checking…".into(),
+                detail: String::new(),
+            }],
+            false,
+        );
+        self.footer_left = "Esc cancels".into();
+        let state_root = self.state_root.clone();
+        self.start_picker_load(PickerKind::Doctor, "concordia-doctor", move || {
+            let checks = crate::doctor::run_fast_checks_at(&state_root);
+            let fixes = crate::doctor::proposed_fixes(&state_root, &checks);
+            PickerLoadPayload::Doctor { checks, fixes }
         });
-        self.refresh_doctor_picker();
     }
     pub(in crate::tui) fn refresh_doctor_picker(&mut self) {
         let Some(doctor) = self.doctor.as_ref() else {
@@ -1362,11 +1406,11 @@ impl App {
         if self
             .picker
             .as_ref()
-            .is_some_and(|picker| picker.kind == PickerKind::Resume)
+            .is_some_and(|picker| matches!(picker.kind, PickerKind::Resume | PickerKind::Doctor))
         {
             // Invalidate so a late worker result cannot reopen or refill after Esc.
-            self.resume_load_generation = self.resume_load_generation.wrapping_add(1);
-            self.resume_load = None;
+            self.picker_load_generation = self.picker_load_generation.wrapping_add(1);
+            self.picker_load = None;
         }
         self.effort_model = None;
         self.picker = None;
@@ -1484,7 +1528,7 @@ impl App {
         self.show_picker(PickerKind::Guided, "/mcp add · This panel previews the server change.".into(), vec![PickerRow {
             id: "mcp:add:confirm".into(),
             label: format!("Add {name} using {command}"),
-            detail: format!("validated name and command; change: add an enabled local stdio server with arguments [{}]; undo: /mcp remove {name}", args.join(" ")),
+            detail: format!("Adds an enabled local stdio server with arguments [{}]. Undo with /mcp remove {name}.", args.join(" ")),
         }], false);
         self.mcp_add_preview = Some((name, command, args));
         self.footer_left = "Enter confirms the preview · Esc cancels with nothing changed".into();
@@ -1585,7 +1629,7 @@ impl App {
         let label = row.label.clone();
         let kind = picker.kind;
         let shared_command = self.shared_command.clone();
-        if row.disabled() || id == "resume:loading" {
+        if row.disabled() {
             return;
         }
         if kind == PickerKind::Doctor {
@@ -1667,19 +1711,19 @@ impl App {
                 match id.as_str() {
                     "terminal:open" => {
                         local_terminal::command(self, "open");
-                        self.push_system("Open local PowerShell validated; the terminal pane is open. Undo: run /terminal close.");
+                        self.push_system("Opened a local PowerShell pane. Undo: run /terminal close.");
                     }
                     "terminal:native" => {
                         local_terminal::command(self, "native");
-                        self.push_system("Open the provider's native interface validated; the native terminal action was requested. Undo: run /terminal close.");
+                        self.push_system("Requested the provider's native interface. Undo: run /terminal close.");
                     }
                     "terminal:hide" => {
                         local_terminal::command(self, "hide");
-                        self.push_system("Hide the running terminal validated; the process remains alive. Undo: run /terminal open.");
+                        self.push_system("Hid the terminal; its process is still running. Undo: run /terminal open.");
                     }
                     "terminal:close" => {
                         local_terminal::command(self, "close");
-                        self.push_system("Close the terminal validated; its process was stopped. Undo: run /terminal open.");
+                        self.push_system("Closed the terminal and stopped its process. Undo: run /terminal open.");
                     }
                     "rename:set" => {
                         let mut editor = Editor::default();
@@ -1690,7 +1734,7 @@ impl App {
                     }
                     "rename:clear" => {
                         if self.rename_session("") {
-                            self.push_system("Restore automatic title validated; the custom title was cleared. Undo: set the previous title again with /rename.");
+                            self.push_system("Restored the automatic title; the custom title was cleared. Undo: set the previous title again with /rename.");
                         }
                     }
                     id if id.starts_with("delegate:") => {
@@ -1727,7 +1771,7 @@ impl App {
                         let parts = id.split(':').collect::<Vec<_>>();
                         if let [_, account, action] = parts.as_slice() {
                             let result = crate::native_input::command(&self.state_root, account, action);
-                            self.push_system(result.map_or_else(|error| format!("native input validation failed: {error}"), |message| format!("native input validated for {account}; {message}. Undo: choose the opposite transport.")));
+                            self.push_system(result.map_or_else(|error| format!("Native transport change failed: {error}"), |message| format!("Updated native transport for {account}; {message}. Undo: choose the opposite transport.")));
                         }
                     }
                     id if id.starts_with("queue:") => match id {
@@ -1742,7 +1786,7 @@ impl App {
                         }
                     }
                     "close:none" => self.push_system("No open file panes were found; nothing changed. Undo: not needed."),
-                    _ => self.push_system(format!("{label} validated; no change was made. Esc cancels and leaves the current state unchanged.")),
+                    _ => self.push_system(format!("{label}: no change was made. Esc cancels and leaves the current state unchanged.")),
                 }
             }
             PickerKind::SettingsView | PickerKind::FilePreferences | PickerKind::Customization => {
@@ -2145,12 +2189,12 @@ fn build_resume_picker_payload(state_root: &Path, cwd: &Path) -> (String, Vec<Pi
         .cloned()
         .collect();
     let mut rows = tasks_to_picker_rows(&tasks);
+    let diagnostics = crate::sessions::diagnose_tasks(state_root, &tasks);
     for row in &mut rows {
         let Some(task_id) = row.id.strip_prefix("task:") else {
             continue;
         };
-        if let Some(task) = tasks.iter().find(|task| task.id == task_id) {
-            let diagnostic = crate::sessions::diagnose_task(state_root, task);
+        if let Some(diagnostic) = diagnostics.iter().find(|d| d.task_id == task_id) {
             if let Some(cause) = diagnostic.cause() {
                 row.detail = format!(
                     "unopenable · {} · Enter to repair (or run chat repair; draft kept)",

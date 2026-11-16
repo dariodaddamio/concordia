@@ -174,7 +174,7 @@ fn resume_of_session_without_task_record_works() {
     app.open_resume_picker();
     // The list is built off the UI thread; wait for it to arrive.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !app.poll_resume_load() && std::time::Instant::now() < deadline {
+    while !app.poll_picker_load() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let picker = app.picker.as_ref().expect("resume picker");

@@ -117,10 +117,10 @@ impl App {
             let args = trimmed.strip_prefix("/terminal").unwrap_or_default().trim();
             if args.is_empty() {
                 self.open_guided_command("/terminal", vec![
-                    PickerRow { id: "terminal:open".into(), label: "Open local PowerShell".into(), detail: "validated for this project; starts a terminal pane; undo: close the pane".into() },
-                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "validated for the selected account; resumes this chat's exact provider session when available; undo: close that session".into() },
-                    PickerRow { id: "terminal:hide".into(), label: "Hide the running terminal".into(), detail: "validated when a terminal is running; keeps its process alive; undo: choose Open again".into() },
-                    PickerRow { id: "terminal:close".into(), label: "Close the terminal".into(), detail: "validated when a terminal exists; stops its process; undo: open a new terminal".into() },
+                    PickerRow { id: "terminal:open".into(), label: "Open local PowerShell".into(), detail: "Starts a terminal pane here. Close the pane to undo.".into() },
+                    PickerRow { id: "terminal:native".into(), label: "Open the provider's native interface".into(), detail: "Opens the selected account's native session for this chat when available. Close that session to undo.".into() },
+                    PickerRow { id: "terminal:hide".into(), label: "Hide the running terminal".into(), detail: "Hides the terminal and keeps its process running. Choose Open again to undo.".into() },
+                    PickerRow { id: "terminal:close".into(), label: "Close the terminal".into(), detail: "Stops the terminal process. Open a new terminal to undo.".into() },
                 ]);
             } else {
                 local_terminal::command(self, args);
@@ -131,8 +131,8 @@ impl App {
             let name = trimmed.strip_prefix("/rename").unwrap_or_default().trim();
             if name.is_empty() {
                 self.open_guided_command("/rename", vec![
-                    PickerRow { id: "rename:set".into(), label: "Set a title".into(), detail: "validated in the title editor; changes this chat title; undo: run /rename again with the previous title".into() },
-                    PickerRow { id: "rename:clear".into(), label: "Restore automatic title".into(), detail: "validated for the current chat; clears its custom title; undo: set the previous title again".into() },
+                    PickerRow { id: "rename:set".into(), label: "Set a title".into(), detail: "Opens the title editor for this chat. Run /rename again with the previous title to undo.".into() },
+                    PickerRow { id: "rename:clear".into(), label: "Restore automatic title".into(), detail: "Clears this chat's custom title. Set the previous title again to undo.".into() },
                 ]);
             } else if !self.rename_session(name) {
                 return true;
@@ -179,7 +179,7 @@ impl App {
                         rows.push(PickerRow {
                             id: format!("native:{}:{}", account.account, action),
                             label: format!("{} · {}", account.label, label),
-                            detail: format!("validated for account {}; {effect}", account.account),
+                            detail: format!("For account {}; {effect}", account.account),
                         });
                     }
                 }
@@ -260,9 +260,9 @@ impl App {
                         })
                         .collect::<Vec<_>>();
                 choices.extend([
-                    PickerRow { id: "mcp:add".into(), label: "Add a server".into(), detail: format!("validated against a command and argument array; adds one registry entry ({} detected); undo: /mcp remove NAME", servers) },
-                    PickerRow { id: "mcp:toggle".into(), label: "Enable or disable a server".into(), detail: "validated against a detected server; changes delivery state only; undo: choose the previous state".into() },
-                    PickerRow { id: "mcp:remove".into(), label: "Remove a server".into(), detail: "validated against a detected server; removes only the Concordia registry entry; undo: add it again".into() },
+                    PickerRow { id: "mcp:add".into(), label: "Add a server".into(), detail: format!("Adds one registry entry from a command and arguments ({} detected). Undo with /mcp remove NAME.", servers) },
+                    PickerRow { id: "mcp:toggle".into(), label: "Enable or disable a server".into(), detail: "Changes delivery state for a detected server. Choose the previous state to undo.".into() },
+                    PickerRow { id: "mcp:remove".into(), label: "Remove a server".into(), detail: "Removes only the Concordia registry entry for a detected server. Add it again to undo.".into() },
                     PickerRow { id: "mcp:import".into(), label: "Import from provider configuration".into(), detail: "reads provider files without writing them, then offers each server for confirmation; undo: not needed".into() },
                 ]);
                 self.open_guided_command("/mcp", choices);
@@ -283,8 +283,8 @@ impl App {
         }
         if trimmed == "/help" {
             self.open_guided_command("/help", vec![
-                PickerRow { id: "help:everyday".into(), label: "Show everyday commands".into(), detail: "validated against the command registry; shows the common commands and their arguments; undo: Esc closes the panel".into() },
-                PickerRow { id: "help:all".into(), label: "Show every command".into(), detail: "validated against the command registry; shows every registered command and its arguments; undo: Esc closes the panel".into() },
+                PickerRow { id: "help:everyday".into(), label: "Show everyday commands".into(), detail: "Shows the common commands and their arguments. Esc closes the panel.".into() },
+                PickerRow { id: "help:all".into(), label: "Show every command".into(), detail: "Shows every registered command and its arguments. Esc closes the panel.".into() },
             ]);
             return true;
         }
@@ -346,9 +346,7 @@ impl App {
                     .map(|pane| PickerRow {
                         id: format!("close:{}", pane.id),
                         label: format!("Close file pane #{}", pane.id),
-                        detail:
-                            "validated against this open pane; closes it; undo: reopen the file"
-                                .into(),
+                        detail: "Closes this open file pane. Reopen the file to undo.".into(),
                     })
                     .collect::<Vec<_>>();
                 if rows.is_empty() {
@@ -379,11 +377,28 @@ impl App {
         }
         if line.trim() == "/queue" {
             let count = self.queue.items.len();
-            self.open_guided_command("/queue", vec![
-                PickerRow { id: "queue:list".into(), label: "Review queued prompts".into(), detail: format!("validated; shows {count} queued prompt(s); undo: Esc") },
-                PickerRow { id: "queue:resume".into(), label: "Resume the queue".into(), detail: "validated when prompts are queued; resumes automatic delivery; undo: pause the queue".into() },
-                PickerRow { id: "queue:clear".into(), label: "Clear the queue".into(), detail: "validated before deletion; removes queued prompts; undo: not available".into() },
-            ]);
+            self.open_guided_command(
+                "/queue",
+                vec![
+                    PickerRow {
+                        id: "queue:list".into(),
+                        label: "Review queued prompts".into(),
+                        detail: format!("Shows {count} queued prompt(s). Esc closes the panel."),
+                    },
+                    PickerRow {
+                        id: "queue:resume".into(),
+                        label: "Resume the queue".into(),
+                        detail:
+                            "Resumes automatic delivery of queued prompts. Pause the queue to undo."
+                                .into(),
+                    },
+                    PickerRow {
+                        id: "queue:clear".into(),
+                        label: "Clear the queue".into(),
+                        detail: "Removes queued prompts. This cannot be undone.".into(),
+                    },
+                ],
+            );
             return true;
         }
         if let Some(arg) = queue::slash_arg(line) {

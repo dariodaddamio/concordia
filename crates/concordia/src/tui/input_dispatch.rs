@@ -38,7 +38,9 @@ fn rename_key(app: &mut App, key: KeyEvent) {
             }
             let saved = app.rename_session(&editor.text());
             if saved {
-                app.push_system("Chat title validated and saved. Undo: run /rename again with the previous title.");
+                app.push_system(
+                    "Chat title saved. Undo: run /rename again with the previous title.",
+                );
             } else {
                 app.rename_editor = Some(editor);
             }

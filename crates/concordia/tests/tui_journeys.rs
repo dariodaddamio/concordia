@@ -3525,9 +3525,16 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     std::fs::write(evidence.join("check-3-renamed.txt"), s.screen()).unwrap();
 
     s.submit("[wait]");
-    s.until("running tool elapsed timer", |s| {
-        s.screen().contains("Run command") && s.screen().contains("· 0:")
-    });
+    // A running command shows a timer only when it reports a timeout; this fixture's
+    // command reports none, so the card is visible without an elapsed clock.
+    s.until("running tool card", |s| s.screen().contains("Run command"));
+    assert!(
+        !s.screen()
+            .lines()
+            .any(|line| line.contains("Run command") && line.contains("· 0:")),
+        "a command without a timeout must not show a timer: {}",
+        s.screen()
+    );
     std::fs::write(evidence.join("check-6.txt"), s.screen()).unwrap();
     std::fs::write(dir.path().join("gate"), "release").unwrap();
     s.until("waiting tool released", |s| {
