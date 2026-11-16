@@ -201,12 +201,21 @@ impl super::App {
                     self.keep.lease = Some(Arc::new(lease));
                     self.keep.recovery_choices = choices;
                     if let Some(data) = restored {
+                        let had_content = !data.draft.trim().is_empty()
+                            || !data.queue.is_empty()
+                            || data.pending_edit.is_some();
                         self.restore_composer(&data.draft);
                         self.parked_draft = data.alternate_draft;
+                        // Restored prompts wait for the user; a pause with nothing queued
+                        // would silently hold every prompt queued later.
+                        self.queue.paused = !data.queue.is_empty();
                         self.queue.items = data.queue;
                         self.restore_pending_edit(data.pending_edit);
-                        self.queue.paused = true;
-                        self.push_system("Your unsent draft and queued messages were restored.");
+                        if had_content {
+                            self.push_system(
+                                "Your unsent draft and queued messages were restored.",
+                            );
+                        }
                     }
                 }
                 Err(error) => {
@@ -412,9 +421,9 @@ impl super::App {
         self.keep.lease.take();
         self.restore_composer(&data.draft);
         self.parked_draft = data.alternate_draft;
+        self.queue.paused = !data.queue.is_empty();
         self.queue.items = data.queue;
         self.restore_pending_edit(data.pending_edit);
-        self.queue.paused = true;
         self.keep.lease = Some(lease);
         self.keep.recovery_choices.clear();
         self.restore_turn_checkpoint();

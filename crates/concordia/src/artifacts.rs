@@ -98,7 +98,8 @@ impl Record {
             .unwrap_or_default()
             .to_string_lossy();
         let path = target
-            .map(|target| format!("[Open current file](<{target}>)"))
+            // Card details are plain text; a bare path is clickable there, link markup is not.
+            .map(|target| format!("Open current file: {target}"))
             .unwrap_or_else(|| {
                 "Open unavailable: reported path is outside the execution directory or excluded"
                     .into()
