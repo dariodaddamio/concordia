@@ -562,23 +562,34 @@ fn discover_claude(home: &Path, file_limit: usize, entry_limit: usize) -> Discov
 }
 
 fn discover_cursor(home: &Path, file_limit: usize, entry_limit: usize) -> Discovery {
-    let chats = home.join("chats");
-    if !chats.is_dir() {
-        return Discovery {
-            files: Vec::new(),
-            truncated: false,
-            entries_scanned: 0,
-        };
-    }
     let mut found = Vec::new();
     let mut visited = 0;
     let mut truncated = false;
-    let Ok(projects) = fs::read_dir(&chats) else {
-        return Discovery {
-            files: found,
-            truncated,
-            entries_scanned: visited,
-        };
+    // Chats run through Cursor's ACP server live in `acp-sessions/<id>/`, beside the
+    // `chats/<project>/<id>/` folders of print-mode and editor chats, in the same format.
+    if let Ok(sessions) = fs::read_dir(home.join("acp-sessions")) {
+        for chat in sessions.flatten() {
+            visited += 1;
+            if visited > entry_limit || found.len() >= file_limit {
+                truncated = true;
+                break;
+            }
+            let meta = chat.path().join("meta.json");
+            if meta.is_file() {
+                found.push((chat.path(), mtime_ms(&meta)));
+            }
+        }
+    }
+    let chats = home.join("chats");
+    let projects = match fs::read_dir(&chats) {
+        Ok(projects) if !truncated => projects,
+        _ => {
+            return Discovery {
+                files: found,
+                truncated,
+                entries_scanned: visited.min(entry_limit),
+            }
+        }
     };
     'projects: for project in projects.flatten() {
         visited += 1;

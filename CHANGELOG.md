@@ -6,6 +6,7 @@
 - The question popup lists its keys in the footer, and Cursor's question card shows the question instead of the tool's raw input.
 - Turning on Cursor's native text input says plainly which turns and workers use it.
 - Restarting no longer adds another copy of a recovered request to the chat each time; before, every restart appended the same prompt again.
+- `/resume` and restored tabs find Cursor chats made in native text input (ACP) mode. Cursor keeps them in `acp-sessions`, which Concordia did not read, so they showed as "file deleted or moved".
 - A finished Cursor turn no longer comes back as an unfinished request after a restart. Its recovery record stayed open because Cursor keeps no native record for Concordia to reference.
 - The notice for a recovered unfinished request says plainly that nothing was sent again and no longer points at a continue action that restart recovery does not show. When Codex cannot record its thread, the choice of where to continue opens, as its message says.
 - The header's subscription line ends at a word with an ellipsis when a file pane narrows the chat.
