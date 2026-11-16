@@ -393,10 +393,22 @@ pub(crate) fn visible_user_history(mut text: &str) -> &str {
             "task-notification",
             "system-reminder",
             "local-command-caveat",
+            "concordia_standing_context",
         ]
         .into_iter()
         .find(|tag| text.starts_with(&format!("<{tag}>")));
-        let Some(tag) = wrapper else { break };
+        let Some(tag) = wrapper else {
+            // ACP transcripts keep Concordia's standing context as plain text before the request.
+            const START: &str = "You run inside Concordia, which hosts native provider CLIs.";
+            const END: &str = "Do not ask the user to do work Concordia can do.";
+            if text.starts_with(START) {
+                if let Some(index) = text.find(END) {
+                    text = &text[index + END.len()..];
+                    continue;
+                }
+            }
+            break;
+        };
         let end = format!("</{tag}>");
         let Some(index) = text.find(&end) else {
             return "";

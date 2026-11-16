@@ -7,6 +7,8 @@
 - Turning on Cursor's native text input says plainly which turns and workers use it.
 - Restarting no longer adds another copy of a recovered request to the chat each time; before, every restart appended the same prompt again.
 - Checking Cursor usage no longer leaves an empty chat in Cursor's chat folder each time. The check removes the chat it created; empty chats left by earlier checks stay until you remove them.
+- A Cursor chat read back from its native history no longer shows Concordia's own setup text as your first message.
+- Opening a Cursor chat no longer says the account's usage is exhausted when only the API pool is used up and the chat's model draws on Auto.
 - `/resume` and restored tabs find Cursor chats made in native text input (ACP) mode. Cursor keeps them in `acp-sessions`, which Concordia did not read, so they showed as "file deleted or moved".
 - A finished Cursor turn no longer comes back as an unfinished request after a restart. Its recovery record stayed open because Cursor keeps no native record for Concordia to reference.
 - The notice for a recovered unfinished request says plainly that nothing was sent again and no longer points at a continue action that restart recovery does not show. When Codex cannot record its thread, the choice of where to continue opens, as its message says.

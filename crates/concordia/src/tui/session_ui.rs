@@ -579,8 +579,14 @@ impl App {
             self.push_system("could not clear the previous unfinished-request record; it has been kept for recovery");
         }
         self.push_system("Loading recent messages for the selected session…");
-        if crate::usage::peek_cached_usage(&self.state_root, provider, account, &home)
-            .is_some_and(|usage| usage.exhausted)
+        if crate::usage::peek_cached_usage_for_model(
+            &self.state_root,
+            provider,
+            account,
+            &home,
+            Some(&self.model),
+        )
+        .is_some_and(|usage| usage.exhausted)
         {
             self.push_system("This account's recorded usage is exhausted. You can still read this chat. Use /use to choose another account, /model to choose a model, or /usage refresh to check the limit before sending.");
         }

@@ -134,7 +134,10 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
     let cwd = session
         .cwd
         .ok_or("Cursor session has no explicit workspace")?;
-    let cwd = std::fs::canonicalize(cwd).map_err(|_| "Cursor history workspace is unavailable")?;
+    // Cursor rejects a verbatim `\\?\C:\...` workspace with invalid params, so pass the plain form.
+    let cwd = crate::workspace_paths::display_path(
+        &std::fs::canonicalize(cwd).map_err(|_| "Cursor history workspace is unavailable")?,
+    );
     let sid = binding.session_id.clone();
     // The public API is synchronous (CLI/MCP and blocking TUI source preparation). A private
     // bounded runtime thread also works when a caller already owns a Tokio runtime.
