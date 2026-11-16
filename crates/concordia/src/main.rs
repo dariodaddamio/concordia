@@ -78,6 +78,15 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Mcp,
     },
     CommandSpec {
+        // Started by providers (Cursor ACP) as the concordia-ask MCP server; without this entry
+        // the subcommand was rejected and the ask-the-user tool never reached the provider.
+        name: "ask-mcp",
+        aliases: &[],
+        args: "",
+        help: "serve the ask-the-user tool to a provider (started by Concordia)",
+        command: Command::AskMcp,
+    },
+    CommandSpec {
         name: "file-edit",
         aliases: &[],
         args: "FILE",

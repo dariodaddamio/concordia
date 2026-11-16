@@ -20,6 +20,13 @@ impl App {
         }
         #[cfg(not(test))]
         {
+            // A window driven through the test-control port must not open the user's browser or
+            // Explorer (an automated run once left a 5 GB browser behind); like tray signals,
+            // the external handoff is suppressed there and only reported.
+            if std::env::var_os("CONCORDIA_TEST_CONTROL").is_some() {
+                self.flash(format!("opened {label} {target}"));
+                return;
+            }
             if self.file_jobs.len() >= 8 {
                 self.flash("file launchers are busy");
                 return;
