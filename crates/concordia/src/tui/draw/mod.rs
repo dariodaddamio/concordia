@@ -1098,11 +1098,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
                     .as_deref()
                     .map(|reset| format!(", {reset}"))
                     .unwrap_or_default();
+                // A narrow chat column (a file pane beside it) shortens the line at a word.
+                let used: usize = line.iter().map(|span| cell_width(&span.content)).sum();
+                let text = format!(
+                    "{}│  Subscription: {subscription}{reset}",
+                    if credits_known { "  " } else { " " }
+                );
                 line.push(Span::styled(
-                    format!(
-                        "{}│  Subscription: {subscription}{reset}",
-                        if credits_known { "  " } else { " " }
-                    ),
+                    ellipsis(&text, usize::from(area.width).saturating_sub(used)),
                     bar.fg(usage_color),
                 ));
             }
