@@ -1161,7 +1161,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     };
     // As tall as the longer pane's content, within the space there is.
     let welcome_visible = landing.welcome
-        && !compact_intro
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
@@ -1173,13 +1172,22 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             (area.width as usize * 45 / 100).saturating_sub(2),
         ) + 7
     };
-    let content = landing
-        .rows()
-        .len()
-        .max(if welcome_visible { 7 } else { 0 })
-        .max(if compact_intro { 7 } else { 0 })
-        .max(usage_content)
-        .min(u16::MAX as usize - 2) as u16;
+    // Compact intro stacks above the chat list, so its rows must add to the list
+    // height rather than replace it (otherwise the list area collapses to zero).
+    let content = {
+        let chats = landing.rows().len();
+        let intro = if welcome_visible || compact_intro {
+            7
+        } else {
+            0
+        };
+        let stacked = if compact_intro && !welcome_visible {
+            chats.saturating_add(intro)
+        } else {
+            chats.max(intro)
+        };
+        stacked.max(usage_content).min(u16::MAX as usize - 2) as u16
+    };
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
         ..area
@@ -1241,7 +1249,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);
-        landing.chats_area = inner;
         if welcome_visible {
             let mut lines = vec![
                 Line::styled("Welcome to Concordia", selected),
@@ -1315,12 +1322,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Rect::new(
                 inner.x,
                 inner.y.saturating_add(7),
-                inner.height.saturating_sub(7),
                 inner.width,
+                inner.height.saturating_sub(7),
             )
         } else {
             inner
         };
+        // Hit-testing must use the list region, not the compact intro above it.
+        landing.chats_area = list_area;
         let rows = landing.rows();
         let height = list_area.height as usize;
         if landing.chat_sel < landing.chat_top {

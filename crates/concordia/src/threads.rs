@@ -1346,8 +1346,9 @@ mod tests {
     #[test]
     fn unstored_map_says_so() {
         let m = build_map(&[user("hi")], "", 1600, false, None, None);
-        assert!(m.contains("pointers not stored"));
+        assert!(m.contains("(memory)"));
         assert!(!m.contains("thread read"));
+        assert!(!m.contains("read="));
     }
 
     #[test]
@@ -1580,6 +1581,6 @@ mod tests {
         ];
         let ev = events_from_messages(&msgs, "codex");
         assert_eq!(ev.len(), 2);
-        assert!(build_map(&ev, "", 1600, false, None, None).contains("a/b.rs (1 edit)"));
+        assert!(build_map(&ev, "", 1600, false, None, None).contains("changed=a/b.rs(1)"));
     }
 }

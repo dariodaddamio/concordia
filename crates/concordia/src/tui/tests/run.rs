@@ -715,7 +715,14 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     assert!(h.screen().contains("Thinking - Expand"));
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
-    assert!(h.screen().contains("Thinking - Collapse"));
+    // Ctrl+O expands the last collapsed item of the latest reply (the late edit card),
+    // not an earlier thinking block (F01).
+    assert!(
+        !h.app.activity.is_expanded(thought_index, false),
+        "Ctrl+O must not reopen earlier thinking when a later card is collapsed"
+    );
+    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Collapse"));
     assert!(h.app.activity.detail.is_none());
     h.app.messages.clear();
     h.app.messages.push(ChatLine {

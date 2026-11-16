@@ -921,8 +921,16 @@ fn mode_command_shows_and_sets_the_mode() {
     let mut h = Harness::new(100, 24);
     h.type_str("/mode");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        h.app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Trust),
+        "bare /mode opens the permissions picker"
+    );
     let s = h.screen();
-    assert!(s.contains("mode: edit"), "{s}");
+    assert!(s.contains("Edit · current") || s.contains("Edit"), "{s}");
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     h.type_str("/mode plan");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);

@@ -1190,18 +1190,26 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         }
         h.draw();
         let screen = h.screen();
-        let ownership = if matches!(
-            kind,
-            PickerKind::Usage | PickerKind::Tokens | PickerKind::Related | PickerKind::Update
-        ) {
-            "Chat input is paused"
+        // Update is a full page (no paused composer). Overlay pickers keep ownership copy.
+        if kind != PickerKind::Update {
+            let ownership = if matches!(
+                kind,
+                PickerKind::Usage | PickerKind::Tokens | PickerKind::Related
+            ) {
+                "Chat input is paused"
+            } else {
+                "Typing filters the list, not your chat"
+            };
+            assert!(
+                screen.contains(ownership),
+                "{kind:?}: expected ownership hint, got {screen}"
+            );
         } else {
-            "Typing filters the list, not your chat"
-        };
-        assert!(
-            screen.contains(ownership),
-            "{kind:?}: expected ownership hint, got {screen}"
-        );
+            assert!(
+                screen.contains("Esc close") || screen.contains("Esc cancel"),
+                "Update page must expose close/cancel: {screen}"
+            );
+        }
         assert!(
             !screen.contains("Esc or X"),
             "{kind:?}: key names belong in the footer, not the paused composer: {screen}"
@@ -1305,7 +1313,10 @@ fn mouse_pointer_matches_clickable_targets_and_text() {
     assert_eq!(pointer::shape(&h.app, 4, y as u16), "pointer");
     let r = h.app.areas.input;
     assert_eq!(pointer::shape(&h.app, r.x + 3, r.y), "text");
-    assert_eq!(pointer::shape(&h.app, 0, 0), "default");
+    // Header Home/Chat navigation occupies (0,0).
+    assert_eq!(pointer::shape(&h.app, 0, 0), "pointer");
+    // Open-work body text is not a hit target.
+    assert_eq!(pointer::shape(&h.app, 90, y as u16), "default");
 }
 
 #[test]
@@ -1917,31 +1928,13 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
         assert!(header.contains("Work (Codex)"), "{header}");
+        // Top bar keeps nickname + model controls; email reveal was removed from the header.
         assert!(!header.contains("member@example.invalid"), "{header}");
-        assert!(header.contains("view email"), "{header}");
+        assert!(!header.contains("view email"), "{header}");
+        assert!(h.app.areas.header_email.is_none());
         let usage = screen.lines().nth(1).unwrap();
         assert!(usage.contains("Credits: 12.5 balance"), "{usage}");
         assert!(usage.contains("Subscription: 5h 80% left"), "{usage}");
-        let email = h.app.areas.header_email.unwrap();
-        h.down(email.x, email.y);
-        h.up(email.x, email.y);
-        h.draw();
-        assert!(h
-            .screen()
-            .lines()
-            .next()
-            .unwrap()
-            .contains("member@example.invalid"));
-        let email = h.app.areas.header_email.unwrap();
-        h.down(email.x, email.y);
-        h.up(email.x, email.y);
-        h.draw();
-        assert!(!h
-            .screen()
-            .lines()
-            .next()
-            .unwrap()
-            .contains("member@example.invalid"));
     }
 }
 

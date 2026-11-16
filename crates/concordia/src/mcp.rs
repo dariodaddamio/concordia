@@ -656,14 +656,55 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let thread = std::thread::spawn(move || {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = listener.accept().unwrap();
-                let mut bytes = [0u8; 4096];
-                let count = stream.read(&mut bytes).unwrap();
-                let wire = String::from_utf8(bytes[..count].to_vec()).unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = stream.read(&mut chunk).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..count]);
+                    let Some(header_end) = bytes
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|index| index + 4)
+                    else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("Content-Length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + content_length {
+                        break;
+                    }
+                }
+                let wire = String::from_utf8(bytes).unwrap();
                 assert!(wire.contains("synthetic-token"));
-                let body = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic result"}]}}"#;
                 use std::io::Write;
+                if wire.contains("notifications/initialized") {
+                    write!(
+                        stream,
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                let body = if wire.contains("\"method\":\"initialize\"") {
+                    format!(
+                        r#"{{"jsonrpc":"2.0","id":0,"result":{{"protocolVersion":"{LATEST_PROTOCOL}","capabilities":{{}},"serverInfo":{{"name":"synthetic","version":"0"}}}}}}"#
+                    )
+                } else {
+                    r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic result"}]}}"#.into()
+                };
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

@@ -514,7 +514,7 @@ mod tests {
         );
         assert!(Document::import(dir.path(), &dir.path().join("file.pdf"))
             .unwrap_err()
-            .contains("binary"));
+            .contains("Attach UTF-8"));
         std::fs::write(&source, vec![b'x'; MAX_DOCUMENT_BYTES + 1]).unwrap();
         assert!(Document::import(dir.path(), &source).is_err());
         std::fs::write(&source, [255, 254, 0]).unwrap();

@@ -445,7 +445,11 @@ mod tests {
         let msgs = long_history();
         let p = build_context_pack(&msgs, ProviderKind::Claude, ProviderKind::Codex, 6000, None)
             .unwrap();
-        assert!(p.text.contains("pointers not stored"));
+        assert!(p.text.contains("(memory)"));
+        assert!(
+            !p.text.contains("thread read"),
+            "log-off maps omit stored read pointers"
+        );
         assert!(
             !p.text.contains("asked: question 0"),
             "maps do not dump the transcript"

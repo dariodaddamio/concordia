@@ -256,9 +256,15 @@ fn selecting_an_account_defers_context_until_submission() {
 
 #[test]
 fn home_model_selection_is_saved_without_sending_a_turn_or_map() {
-    let (mut app, _dir, _) = setup();
+    let (mut app, _dir, home) = setup();
     select_account(&app.state_root, "synthetic").unwrap();
     app.refresh_binding();
+    // Model picks must resolve through the account catalog.
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"chosen-small-model","display_name":"Chosen Small","visibility":"list"}]}"#,
+    )
+    .unwrap();
     crate::tui::landing::open_home_tab(&mut app);
     app.show_picker(
         PickerKind::Model,
