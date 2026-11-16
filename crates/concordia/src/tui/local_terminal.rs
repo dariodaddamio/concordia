@@ -825,7 +825,12 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let content = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
     let mut title = " Local terminal".to_string();
     if let Some(session) = app.local_terminal.session.as_mut() {
-        title = format!(" {} | local terminal", session.name);
+        // The shell's name, not its full path ("powershell", not C:\WINDOWS\...\powershell.exe).
+        let shell = std::path::Path::new(&session.name)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| session.name.clone());
+        title = format!(" {shell} \u{b7} local terminal");
         if session.size != (content.height, content.width) {
             let size = PtySize {
                 rows: content.height,
@@ -882,7 +887,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         if let Phase::Exited(status) = &session.phase {
-            title.push_str(&format!(" | exited: {status}; Ctrl+Shift+W resets shell"));
+            title.push_str(&format!(" \u{b7} exited: {status}"));
         }
         if !screen.hide_cursor()
             && screen.scrollback() == 0
@@ -898,8 +903,42 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(title).style(Style::default().fg(Color::Cyan)),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    let hint = app.local_terminal.notice.as_deref().unwrap_or(
-        "F11 / Ctrl+` chat | /terminal native provider UI | /terminal help | Ctrl+C interrupt | Shift+PgUp/PgDn scroll | Ctrl+Shift+W stop shell",
-    );
+    // Footer keys in priority order; whole items are dropped from the end when the row is too
+    // narrow, so no key is ever cut in half.
+    let hint = match app.local_terminal.notice.as_deref() {
+        Some(notice) => notice.to_owned(),
+        None => {
+            let exited = app
+                .local_terminal
+                .session
+                .as_ref()
+                .is_some_and(|session| matches!(session.phase, Phase::Exited(_)));
+            let items: &[&str] = if exited {
+                &["F11 chat", "Ctrl+Shift+W reset shell", "/terminal help"]
+            } else {
+                &[
+                    "F11 chat",
+                    "Ctrl+C interrupt",
+                    "Shift+PgUp/PgDn scroll",
+                    "Ctrl+Shift+W stop shell",
+                    "/terminal native provider",
+                    "/terminal help",
+                ]
+            };
+            let mut line = String::new();
+            for item in items {
+                let next = if line.is_empty() {
+                    (*item).to_owned()
+                } else {
+                    format!("{line} \u{b7} {item}")
+                };
+                if next.chars().count() > footer.width as usize {
+                    break;
+                }
+                line = next;
+            }
+            line
+        }
+    };
     frame.render_widget(Paragraph::new(hint), footer);
 }
