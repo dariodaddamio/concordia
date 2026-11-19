@@ -15,15 +15,21 @@ pub struct State<'a> {
 /// The MCP catalog and native question bridge are separate registrations.
 pub fn tools_for_transport(provider: ProviderKind, mode: crate::native_input::Mode) -> Vec<String> {
     if provider == ProviderKind::Claude {
-        crate::mcp::registered_tool_names()
+        let mut tools = crate::mcp::registered_tool_names();
+        if mode == crate::native_input::Mode::ClaudeStdio {
+            tools.push("AskUserQuestion".into());
+        }
+        tools
     } else if provider == ProviderKind::Codex {
         let mut tools = crate::mcp::registered_tool_names();
         tools.push("ask_user".into());
         tools
     } else if matches!(
         (provider, mode),
-        (ProviderKind::Cursor, crate::native_input::Mode::CursorAcp)
-            | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+        (
+            ProviderKind::Cursor,
+            crate::native_input::Mode::Standard | crate::native_input::Mode::CursorAcp
+        ) | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
             | (
                 ProviderKind::Opencode,
                 crate::native_input::Mode::OpencodeAcp
@@ -41,17 +47,24 @@ pub fn render(state: &State<'_>) -> String {
     } else {
         state.tools.join(", ")
     };
+    let question_tool = if state.tools.iter().any(|tool| tool == "AskUserQuestion") {
+        "AskUserQuestion"
+    } else if state.tools.iter().any(|tool| tool == "ask_user") {
+        "ask_user"
+    } else {
+        "unavailable"
+    };
     let guidance = match (
         state.tools.iter().any(|tool| tool == "agents"),
-        state.tools.iter().any(|tool| tool == "ask_user"),
+        question_tool != "unavailable",
     ) {
-        (true, true) => " Delegate with agents; clarify choices with ask_user.",
+        (true, true) => " Delegate with agents; ask clarification immediately during the turn.",
         (true, false) => " Delegate with agents; use native questions when available.",
-        (false, true) => " Use ask_user for choices or clarification.",
+        (false, true) => " Ask clarification immediately during the turn.",
         (false, false) => " No Concordia tools are registered.",
     };
     let text = format!(
-        "You run inside Concordia, which hosts native provider CLIs. Provider: {provider}. Account: {account}. Role: {role}. Tools: {tools}.{guidance} Preserve native approvals and explicit session identity. Do not ask the user to do work Concordia can do.",
+        "You run inside Concordia, which hosts native provider CLIs. Provider: {provider}. Account: {account}. Role: {role}. Questions: {question_tool}, shown in Concordia during the turn when available. Tools: {tools}.{guidance} Preserve native approvals and explicit session identity.",
         provider = state.provider.as_str(),
         account = compact(state.account),
         role = compact(state.role),

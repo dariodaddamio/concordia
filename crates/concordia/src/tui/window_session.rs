@@ -232,9 +232,11 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 if checkpoint && !app.native_sources.is_empty() {
                     valid = bind_recovered_source(&mut app);
                 }
-                let same_conversation = !checkpoint
-                    || (app.keep.restored_conversation
-                        && app.deleg.d.conversation_id() == saved.conversation);
+                let same_conversation = if app.keep.restored_conversation {
+                    app.deleg.d.conversation_id() == saved.conversation
+                } else {
+                    !checkpoint
+                };
                 app.messages = if same_conversation {
                     saved.messages.into_iter().map(SavedLine::restore).collect()
                 } else {
@@ -277,15 +279,15 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 }
                 app.view.scroll = saved.scroll;
                 // The request checkpoint can be newer than the periodic window snapshot.
-                if !app.keep.turn_recovery_notice {
+                if !app.keep.turn_recovery_notice && same_conversation {
                     app.native_sources = saved.sources;
                 }
-                if !app.keep.turn_recovery_notice && valid {
+                if !app.keep.turn_recovery_notice && valid && same_conversation {
                     app.native_session_id = saved.session;
                 } else {
                     app.native_session_id = None;
                 }
-                if !checkpoint {
+                if !checkpoint && same_conversation {
                     app.session_ui.title = saved.title;
                 }
                 app.session_chip = app.session_ui.title.clone();

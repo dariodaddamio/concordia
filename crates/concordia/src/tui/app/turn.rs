@@ -1,8 +1,75 @@
 use super::super::*;
 
 impl App {
+    pub(in crate::tui) fn can_steer_draft(&self) -> bool {
+        self.busy
+            && !self.cancel_requested
+            && !self.questions.waiting()
+            && self.pending_steer.is_none()
+            && self.images.count() == 0
+            && !self.editor.text().trim().is_empty()
+            && !self.editor.text().trim_start().starts_with('/')
+            && self
+                .cancel_handle
+                .as_ref()
+                .is_some_and(|handle| handle.can_steer())
+    }
+
+    fn poll_steer(&mut self) -> bool {
+        let Some(pending) = self.pending_steer.as_mut() else {
+            return false;
+        };
+        let result = match pending.response.try_recv() {
+            Ok(result) => result,
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+            Err(_) => {
+                Err("Steering was not confirmed; check native history before resending".into())
+            }
+        };
+        let pending = self.pending_steer.take().unwrap();
+        if pending.conversation != self.deleg.d.conversation_id() {
+            return true;
+        }
+        match result {
+            Ok(()) => {
+                self.commit_live_thinking();
+                self.commit_live_text();
+                self.remember_prompt(&pending.prompt);
+                self.push_user(pending.prompt.clone());
+                if self.composer_value() == pending.prompt {
+                    self.editor.clear();
+                    self.clear_selections();
+                }
+                self.persist_draft_now();
+                self.flash("Message added to the running Codex turn");
+            }
+            Err(error) => self.flash(format!("{error}; your draft is kept")),
+        }
+        true
+    }
+
+    pub(in crate::tui) fn question_origin(&self) -> questions::Origin {
+        questions::Origin {
+            provider: self.provider,
+            account: self.account.clone(),
+            session: self.native_session_id.clone(),
+        }
+    }
+
+    pub(in crate::tui) fn question_identity(&self, text: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let run = self
+            .native_owner
+            .as_ref()
+            .map(|owner| owner.run_id.as_str())
+            .unwrap_or(self.deleg.d.conversation_id());
+        format!("{run}:{:x}", Sha256::digest(text.as_bytes()))
+    }
+
     fn offer_question(&mut self, text: &str) {
-        self.questions.offer(text);
+        let origin = self.question_origin();
+        let id = self.question_identity(text);
+        let _ = self.questions.offer_owned(text, false, origin, id);
         if self.questions.waiting() && self.composer_value().is_empty() && self.queue.edit.is_none()
         {
             self.questions.focused = true;
@@ -12,6 +79,46 @@ impl App {
 
     pub(in crate::tui) fn apply_progress(&mut self, ev: TurnProgress) {
         match ev {
+            TurnProgress::Question(request) => {
+                if !self.busy
+                    || self.cancel_requested
+                    || self.native_owner.as_ref() != Some(&request.owner)
+                    || request.owner.conversation_id != self.deleg.d.conversation_id()
+                    || self
+                        .native_session_id
+                        .as_deref()
+                        .is_some_and(|id| id != request.session_id)
+                {
+                    request.acknowledge(Err(
+                        "the originating task/session is no longer active".into()
+                    ));
+                    return;
+                }
+                if self.native_session_id.is_none() {
+                    self.apply_progress(TurnProgress::Session(request.session_id.clone()));
+                }
+                let text = serde_json::json!({"questions":request.questions}).to_string();
+                let id = self.question_identity(&text);
+                let origin = questions::Origin {
+                    provider: request.owner.provider,
+                    account: request.owner.account.clone(),
+                    session: Some(request.session_id.clone()),
+                };
+                let inserted = self.questions.offer_owned(&text, true, origin, id.clone());
+                match inserted {
+                    Err(error) => request.acknowledge(Err(error)),
+                    Ok(inserted) => match self.persist_draft_checked() {
+                        Ok(()) => request.acknowledge(Ok(())),
+                        Err(error) => {
+                            if inserted {
+                                self.questions.remove_owned(&id);
+                            }
+                            self.mirror_recovery_snapshot();
+                            request.acknowledge(Err(error.to_string()));
+                        }
+                    },
+                }
+            }
             TurnProgress::Artifact(record) => {
                 if self.native_owner.as_ref() == Some(&record.owner)
                     && record.owner.conversation_id == self.deleg.d.conversation_id()
@@ -94,7 +201,7 @@ impl App {
                     *request,
                     !plan && !codex_review && self.editor.text().is_empty(),
                 );
-                self.pause_queue();
+                self.persist_draft_now();
             }
             TurnProgress::Session(id) => {
                 self.native_usage_session = Some(id.clone());
@@ -122,6 +229,50 @@ impl App {
                         map,
                     ) {
                         self.flash(format!("task link could not be saved: {error}"));
+                    }
+                }
+            }
+            TurnProgress::Commands {
+                owner,
+                session_id,
+                commands,
+            } => {
+                if self.busy
+                    && !self.cancel_requested
+                    && self.native_owner.as_ref() == Some(&owner)
+                    && self.native_session_id.as_deref() == Some(session_id.as_str())
+                {
+                    let previous = self
+                        .palette_entries()
+                        .get(self.palette.selected)
+                        .map(|entry| {
+                            (
+                                entry.command.clone(),
+                                entry.custom,
+                                entry.provider,
+                                entry.shared,
+                            )
+                        });
+                    self.provider_commands = Some(palette::SessionCommands {
+                        owner,
+                        home_path: self.home_path.clone(),
+                        cwd: self.cwd.clone(),
+                        session_id,
+                        commands,
+                    });
+                    if let Some(previous) = previous {
+                        if let Some(index) = self.palette_entries().iter().position(|entry| {
+                            (
+                                entry.command.as_str(),
+                                entry.custom,
+                                entry.provider,
+                                entry.shared,
+                            ) == (previous.0.as_str(), previous.1, previous.2, previous.3)
+                        }) {
+                            self.palette.selected = index;
+                        } else {
+                            self.palette.dismissed = true;
+                        }
                     }
                 }
             }
@@ -329,6 +480,10 @@ impl App {
         }
     }
     pub(in crate::tui) fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        self.poll_steer();
+        if self.pending_steer.take().is_some() {
+            self.push_system("Steering was not confirmed before the turn ended. Your draft is kept; check native history before resending.");
+        }
         self.clear_idle_notice();
         self.busy_send_confirmation = None;
         self.submitted_prompt = None;
@@ -603,6 +758,7 @@ impl App {
     }
     pub(in crate::tui) fn on_tick(&mut self) -> bool {
         let mut visible_change = self.busy && self.appearance.ui.motion;
+        visible_change |= self.poll_steer();
         visible_change |= self.local_terminal.poll();
         visible_change |= self.poll_reference_journal();
         visible_change |= self.questions.refresh_native();

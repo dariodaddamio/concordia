@@ -10,10 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Enter as a key press and release in the console's win32-input-mode encoding (virtual key 13,
-/// scan code 28). Cursor's screen ignores a bare carriage return in its slash menu, so `/usage`
-/// never ran and every fetch timed out; a real key event runs it.
-const ENTER_KEY: &[u8] = b"\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_";
+// CSI-u Return reaches Ink's submit handler; Win32 input records no longer do on Cursor 2026.11.17.
+const ENTER_KEY: &[u8] = b"\x1b[13u";
 
 /// Whole fetch budget: start, ready, `/usage`, table.
 pub const PTY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -107,7 +105,10 @@ fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) 
     let since_ms = since
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_millis());
-    let probe = probe.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let probe = probe
+        .to_string_lossy()
+        .trim_end_matches('\\')
+        .to_lowercase();
     let Ok(projects) = std::fs::read_dir(chats) else {
         return;
     };
@@ -130,9 +131,9 @@ fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) 
             else {
                 continue;
             };
-            let made_here = meta["cwd"].as_str().is_some_and(|cwd| {
-                cwd.trim_end_matches('\\').to_lowercase() == probe
-            });
+            let made_here = meta["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.trim_end_matches('\\').to_lowercase() == probe);
             let created = meta["createdAtMs"].as_u64().map_or(0, u128::from);
             if made_here && meta["hasConversation"] == false && created >= since_ms {
                 let _ = std::fs::remove_dir_all(&dir);
@@ -243,7 +244,7 @@ fn drive(
     let mut epoch: Option<Instant> = None;
     loop {
         if start.elapsed() >= timeout {
-            return Err(format!("timed out after {}s", timeout.as_secs()));
+            return Err(format!("Cursor changed its usage screen or did not respond within {}s; usage is unavailable", timeout.as_secs()));
         }
         let (bytes, first, last) = {
             let s = shared.lock().map_err(|_| "poisoned")?;
@@ -379,28 +380,33 @@ mod tests {
 
     const TABLE: &str = "Usage \u{2022} Pro                 Resets Nov 6\n Category  Current  Usage\n Included  27% used  ###\n On-Demand  Disabled\n";
 
-    /// A fake agent: prints a banner, waits for a line on stdin, then prints the table (or not).
+    /// A fake raw-input agent: accepts the same local command and Return sequence as Cursor.
     fn fake_agent(dir: &Path, table: bool, hang_after: bool) -> PtySpec {
         let sample = dir.join("sample.txt");
         std::fs::write(&sample, if table { TABLE } else { "nothing useful\n" }).unwrap();
         #[cfg(windows)]
         let (script, body) = (
-            dir.join("fake-agent.cmd"),
+            dir.join("fake-agent.ps1"),
             format!(
-                "@echo off\r\necho Cursor Agent ready\r\nset /p x=\r\ntype \"{}\"\r\n{}",
-                sample.display(),
-                if hang_after {
-                    "ping -n 60 127.0.0.1 >nul\r\n"
-                } else {
-                    ""
-                }
+                r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ProbeInput {{ [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); }}'
+[ProbeInput]::SetConsoleMode([ProbeInput]::GetStdHandle(-10), 0x0200) | Out-Null
+[Console]::WriteLine('Cursor Agent ready')
+$stream = [Console]::OpenStandardInput()
+$bytes = New-Object byte[] 11
+$offset = 0
+while ($offset -lt 11) {{ $n = $stream.Read($bytes, $offset, 11 - $offset); if ($n -eq 0) {{ exit 1 }}; $offset += $n }}
+if ([Text.Encoding]::UTF8.GetString($bytes) -ne "/usage$([char]27)[13u") {{ exit 2 }}
+[Console]::Write([IO.File]::ReadAllText('{}'))
+{}"#,
+                sample.display().to_string().replace('\'', "''"),
+                if hang_after { "Start-Sleep 60" } else { "" }
             ),
         );
         #[cfg(unix)]
         let (script, body) = (
             dir.join("fake-agent.sh"),
             format!(
-                "#!/bin/sh\necho 'Cursor Agent ready'\nread x\ncat '{}'\n{}",
+                "#!/bin/sh\nstty -icanon -echo\necho 'Cursor Agent ready'\ndd bs=1 count=11 of=/dev/null 2>/dev/null\ncat '{}'\n{}",
                 sample.display(),
                 if hang_after { "sleep 60\n" } else { "" }
             ),
@@ -411,6 +417,17 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        #[cfg(windows)]
+        let (program, args, env) = (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".into(),
+                "-File".into(),
+                script.to_string_lossy().into_owned(),
+            ],
+            Vec::new(),
+        );
+        #[cfg(unix)]
         let (program, args, env) = interactive_launch(script.to_str().unwrap());
         PtySpec {
             program,
@@ -439,7 +456,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spec = fake_agent(dir.path(), false, true);
         let e = run_usage_in_pty(&spec, Duration::from_secs(4)).unwrap_err();
-        assert!(e.contains("timed out") || e.contains("exited"), "{e}");
+        assert!(
+            e.contains("usage is unavailable") || e.contains("exited"),
+            "{e}"
+        );
     }
 
     #[test]

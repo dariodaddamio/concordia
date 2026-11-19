@@ -35,7 +35,8 @@ impl App {
             }
         }
         if command == "/model" {
-            self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+            self.footer_left =
+                "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         }
     }
 
@@ -189,7 +190,30 @@ impl App {
             return;
         };
         let draft = self.editor.text().to_owned();
+        let conversation = self.deleg.d.conversation_id().to_owned();
+        let mut questions = self.questions.saved(&conversation);
+        let previous_recovery = self.keep.lease.clone();
         self.handle_slash("/new");
+        if self.deleg.d.conversation_id() == conversation {
+            return;
+        }
+        if questions.waiting() {
+            questions.conversation = self.deleg.d.conversation_id().into();
+            if let Err(error) = self
+                .questions
+                .restore(questions, self.deleg.d.conversation_id())
+            {
+                self.push_system(error);
+                return;
+            }
+            if let Err(error) = self.persist_draft_checked() {
+                self.push_system(error.to_string());
+                return;
+            }
+            if let Some(previous) = previous_recovery {
+                let _ = previous.dismiss_current();
+            }
+        }
         self.editor.set_text(&draft);
         self.task_id = Some(task_id);
         self.pending_repair_map = Some(map_text);
@@ -947,7 +971,8 @@ impl App {
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
-        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+        self.footer_left =
+            "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
         {
@@ -987,6 +1012,25 @@ impl App {
             rows,
             false,
         );
+    }
+
+    /// Header chip click: the same model or effort picker, drawn under the chip.
+    /// A second click on the chip that opened it closes it.
+    pub(in crate::tui) fn toggle_header_dropdown(&mut self, kind: PickerKind, chip: Rect) {
+        let open = self.header_dropdown.is_some_and(|(open, _)| open == kind)
+            && self.picker.as_ref().is_some_and(|picker| picker.kind == kind);
+        if open {
+            self.dismiss_picker();
+            return;
+        }
+        match kind {
+            PickerKind::Model => self.open_model_picker(),
+            PickerKind::Effort => self.open_effort_picker(),
+            _ => return,
+        }
+        if self.picker.as_ref().is_some_and(|picker| picker.kind == kind) {
+            self.header_dropdown = Some((kind, chip));
+        }
     }
 
     pub(in crate::tui) fn open_effort_picker(&mut self) {
@@ -1339,6 +1383,7 @@ impl App {
         if !rows.is_empty() {
             state.select(Some(idx.min(rows.len() - 1)));
         }
+        self.header_dropdown = None;
         self.picker = Some(Picker {
             kind,
             title,
@@ -1445,6 +1490,7 @@ impl App {
             self.picker_load = None;
         }
         self.effort_model = None;
+        self.header_dropdown = None;
         self.picker = None;
         self.update_preview = None;
         self.footer_left = FOOTER_HINT.into();
@@ -1678,6 +1724,8 @@ impl App {
         }
         let effort_model = self.effort_model.take();
         let role_editing = self.role_editing.clone();
+        // Dismissing clears the header dropdown anchor; a follow-up choice reuses it.
+        let header_anchor = self.header_dropdown;
         self.dismiss_picker();
         if matches!(kind, PickerKind::Model | PickerKind::Effort) {
             self.role_editing = role_editing;
@@ -1721,6 +1769,15 @@ impl App {
                     self.push_system("shared command account is no longer registered; nothing was sent");
                     return;
                 };
+                let name = command.split_whitespace().next().unwrap_or_default();
+                if def.provider == self.provider && def.account == self.account
+                    && self.available_provider_commands().is_some_and(|commands| {
+                        !commands.iter().any(|candidate| candidate.name.eq_ignore_ascii_case(name))
+                    })
+                {
+                    self.push_system("The provider no longer advertises this command; nothing was sent.");
+                    return;
+                }
                 if let Err(error) = select_account(&self.state_root, account) {
                     self.push_system(format!("shared command account switch failed · {error}"));
                     return;
@@ -2090,6 +2147,10 @@ impl App {
                 }
             }
             PickerKind::Model => {
+                // A model chosen from the header dropdown asks for its effort in the same place.
+                let anchor = header_anchor
+                    .filter(|(kind, _)| *kind == PickerKind::Model)
+                    .map(|(_, chip)| chip);
                 if let Some(model_id) = id.strip_prefix("model:") {
                     let Some(model) = crate::models::find_at(&self.state_root, self.provider, &self.account, model_id) else {
                         self.push_system("Model is no longer in this account's catalog. Refresh /model and choose again.");
@@ -2107,6 +2168,11 @@ impl App {
                         }
                     } else if model.efforts.len() > 1 {
                         self.open_model_efforts(model_id);
+                        if let Some(chip) = anchor.filter(|_| {
+                            self.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Effort)
+                        }) {
+                            self.header_dropdown = Some((PickerKind::Effort, chip));
+                        }
                     } else {
                         let effort = model.efforts.first().map(|effort| effort.name.as_str());
                         if let Err(error) = self.commit_model_effort(&model, effort) { self.push_system(error); }

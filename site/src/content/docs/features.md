@@ -16,6 +16,9 @@ intended direction so the site does not promise unfinished work.
   The default policy asks before handoff and role-configured fallback models are tried first.
 - Keep provider authentication, native sessions, tools, approvals and model catalogs owned by
   each provider.
+- Source candidate `2026-11-17a`: discover ACP slash commands from the selected session,
+  including updates before the first prompt. Empty lists remove provider suggestions, and
+  stale shared-command choices cannot invoke a removed command.
 
 ## Context and continuity
 
@@ -31,6 +34,17 @@ intended direction so the site does not promise unfinished work.
 - Keep projects in the Projects panel and show delegated and provider runs in the Agents panel.
 - Keep multiple chats in tabs with background, close and resume behavior.
 - Show provider questions and approvals in Needs attention without replaying uncertain actions.
+- Local source candidate `2026-11-18b`: offer steering or queueing text during a Codex app-server
+  turn. Confirm against the exact thread/turn before clearing the draft; never retry uncertain input.
+- Read Cursor 2026.11.17 usage through its local screen using CSI-u Return, without a model prompt.
+- Local source candidate `2026-11-18a`: default Claude to its question-capable stdio adapter,
+  preserving explicit off. Declare owned host/question capability for Habena context. Live
+  Claude/Codex qualification and installed distribution remain pending.
+- Source candidate `2026-11-17b`: expose `ask_user` in default Cursor sessions through a
+  session-local plugin. Preserve pending clarifications and partial replies across restart and
+  chosen agent handoff; keep the original source visible and native approvals bound to their run.
+- Queue completed clarification replies after successful recovery storage, even when another
+  question bundle remains open. Keep input editable and show an explicit error if saving fails.
 - Run a per-chat PowerShell terminal, preview files with `/open`, and edit through the built-in
   editor.
 - Render Markdown, Mermaid diagrams, images and attachment previews.

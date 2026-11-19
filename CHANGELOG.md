@@ -1,5 +1,35 @@
 # Changelog
 
+### Changed (2026-11-18b, local source)
+
+- While Codex is running through app-server, Enter offers steering the current turn; a second Enter confirms and Tab queues. Text stays in the composer until acceptance. Refusal or an uncertain connection preserves it without retrying. Attachments and other transports keep their existing behavior.
+- Cursor 2026.11.17 usage works again using CSI-u Return. A changed or unresponsive usage screen reports usage unavailable; the probe sends no model prompt.
+- A protocol failure while sending Codex's initialization notification can use the existing fallback before a prompt is sent. Identity and policy refusals still stop the turn.
+
+### Changed (2026-11-18a, local source)
+
+- Claude defaults to the existing stdio adapter that handles native questions during the turn; an explicit saved off choice remains respected.
+- An open question holds your queued prompts until you answer it; a typed instruction is sent as written and the question stays open until answered.
+- A question restored after a restart no longer notifies a second time.
+- `ask_user` results carry a machine-readable `questionState` (`pending` or `answered`) so hooks such as Habena's can pause edits while you have not answered.
+- Clicking the model or effort chip in the header opens a compact dropdown directly under the chip, showing names only; a second click, Escape or a click elsewhere closes it, and a model with several efforts asks for the effort in the same place. Typing `/model` or `/effort` keeps the full picker.
+- A Codex update no longer stops Codex chats: a newer Codex is tried on its native protocol, and if that fails before your message is sent, the turn runs on Codex's standard transport with one notice.
+- Claude's slash commands, including skills it announces for the session, appear in the `/` suggestions with their descriptions, the same way Cursor's ACP commands do.
+- Codex `/fork` runs in Concordia: the chat continues on the new thread, the task records both, and the original thread is unchanged.
+- `/doctor` reports how many accounts are signed in out of all accounts, counted the way `/use` counts them, instead of the number of extra stored accounts.
+- Standing context names the available question tool. Owned launches declare bounded host/provider/question capabilities for Habena; ownerless launches clear inherited declarations. Native activation and live Claude/Codex verification remain pending.
+
+### Fixed (2026-11-17b)
+
+- Cursor's default transport exposes `ask_user` through a temporary session-local plugin. Its acknowledgement confirms storage, not a user answer. Windows plugin paths use the existing PowerShell launcher rather than unsafe batch arguments.
+- Clarifications retain their source, partial answers, multiple selections and notes across turn completion, restart and explicitly chosen replacement agents. Multiple bundles queue without replacing one another or blocking completed replies.
+- Saving a reply and removing its question share one recovery snapshot. Save failure keeps the question editable and reports that nothing was queued. Native approvals are never restored as grants; starting another conversation keeps pending questions in the previous task's recovery.
+
+### Fixed (2026-11-17a)
+
+- ACP slash-command discovery uses the active session's advertised commands, including updates received before the first prompt. An empty advertised list removes provider suggestions; switching accounts, reconnecting or opening native controls discards the previous catalog.
+- Shared-command choices and custom prompt collisions follow the active advertised catalog. A command removed while its picker is open cannot be sent from that stale choice.
+
 ### Fixed (2026-11-16a)
 
 - An answer to a Cursor or Codex question that takes longer than a minute now reaches the agent. Before, the agent's tool call timed out after 60 seconds while the popup stayed open, and the late answer was lost.

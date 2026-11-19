@@ -508,6 +508,12 @@ impl App {
             self.push_system("resume failed: account has no native home");
             return false;
         };
+        if let Err(error) = self.preserve_questions_before_new_task() {
+            self.flash(format!(
+                "Resume paused: {error}; pending clarifications retained"
+            ));
+            return false;
+        }
         if let Err(error) = select_account(&self.state_root, account) {
             self.push_system(format!("resume account switch failed: {error}"));
             return false;
@@ -684,7 +690,6 @@ impl App {
                 .and_then(|index| index.checked_sub(1));
             self.messages.clear();
             self.related_files.reset();
-            self.questions.clear();
             self.view = TranscriptView::default();
             match result {
                 Ok(history) => {

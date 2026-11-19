@@ -37,6 +37,9 @@ struct Connection {
     buffered: Vec<Value>,
     artifacts: crate::artifacts::Collector,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
+    steers: mpsc::Receiver<SteerRequest>,
+    steering: Option<(u64, SteerRequest)>,
+    next_steer_id: u64,
 }
 
 struct QuestionListener(tokio::task::JoinHandle<()>);
@@ -144,6 +147,32 @@ impl Connection {
         self.emit(TurnProgress::Card(card)).await;
     }
     async fn event(&mut self, value: Value) -> Result<bool> {
+        if value.get("method").is_none() {
+            if self
+                .steering
+                .as_ref()
+                .is_some_and(|(id, _)| value["id"] == *id)
+            {
+                let (_, request) = self.steering.take().unwrap();
+                let result = if let Some(error) = value.get("error") {
+                    Err(format!(
+                        "Codex refused steering: {}",
+                        error["message"]
+                            .as_str()
+                            .unwrap_or("native request rejected")
+                            .chars()
+                            .take(240)
+                            .collect::<String>()
+                    ))
+                } else if value["result"]["turnId"].as_str() == self.turn.as_deref() {
+                    Ok(())
+                } else {
+                    Err("Steering was not confirmed for this turn; check native history before resending".into())
+                };
+                let _ = request.reply.send(result);
+            }
+            return Ok(false);
+        }
         let method = value["method"].as_str().unwrap_or("");
         let params = &value["params"];
         let same_thread = params["threadId"].as_str() == self.thread.as_deref();
@@ -436,6 +465,16 @@ impl Connection {
             tokio::select! {
                 biased;
                 _=self.handle.wake.notified()=>anyhow::bail!("cancelled"),
+                Some(request)=self.steers.recv(), if self.steering.is_none()=> {
+                    let id = self.next_steer_id;
+                    self.next_steer_id += 1;
+                    let frame = json!({"jsonrpc":"2.0","id":id,"method":"turn/steer","params":{
+                        "threadId":self.thread,"expectedTurnId":self.turn,
+                        "input":[{"type":"text","text":request.text,"text_elements":[]}]
+                    }});
+                    self.steering = Some((id, request));
+                    self.write(frame).await?;
+                }
                 Some(request)=self.bridge_rx.recv()=> {
                     self.bridge_request(request).await?;
                 }
@@ -455,6 +494,12 @@ impl Connection {
         }
     }
 }
+
+/// The Codex CLI version this transport was qualified against.
+const QUALIFIED_VERSION: &str = "codex-cli 0.166.0";
+/// Start of a failure that happened before the prompt reached Codex; the caller may rerun the
+/// same turn on the standard transport without sending the prompt twice.
+pub(super) const UNAVAILABLE: &str = "Codex native protocol unavailable before the prompt was sent";
 
 pub(super) async fn run(
     req: &ProviderTurnRequest<'_>,
@@ -504,10 +549,14 @@ pub(super) async fn run(
     })
     .await?
     .map_err(anyhow::Error::msg)?;
-    anyhow::ensure!(
-        version.trim() == "codex-cli 0.166.0",
-        "Native Codex input supports CLI 0.166.0; installed version is unverified. No fallback was started"
-    );
+    if version.trim() != QUALIFIED_VERSION {
+        // Providers stay current; a newer Codex is tried, and a protocol mismatch before the
+        // prompt is sent falls back to the standard transport in the caller.
+        crate::logging::info(&format!(
+            "codex app-server: installed {} differs from the qualified {QUALIFIED_VERSION}",
+            version.trim()
+        ));
+    }
     let read_only = planned_options(&plan.argv)
         .any(|(flag, value)| matches!(flag, "-s" | "--sandbox") && value == Some("read-only"));
     let full = planned_options(&plan.argv)
@@ -640,6 +689,7 @@ pub(super) async fn run(
         }
     }
     let (answer_tx, answers) = mpsc::unbounded_channel();
+    let (steer_tx, steers) = mpsc::channel(1);
     let mut conn = Connection {
         input,
         output,
@@ -659,16 +709,25 @@ pub(super) async fn run(
         buffered: Vec::new(),
         artifacts: crate::artifacts::Collector::default(),
         bridge_rx,
+        steers,
+        steering: None,
+        next_steer_id: 100,
     };
+    let mut prompt_sent = false;
+    // Only a protocol call that fails may fall back; identity and policy refusals never do.
+    let mut protocol_failure = true;
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"clientInfo":{"name":"concordia","title":"Concordia","version":crate::version::VERSION},"capabilities":{"experimentalApi":true}}))).await??;
+        protocol_failure = false;
         anyhow::ensure!(init["codexHome"].as_str().and_then(|path|Path::new(path).canonicalize().ok()).as_ref()==Some(&home),"Codex app-server account home mismatch; prompt withheld");
         conn.interactions.initialized_codex("0.166.0");
+        protocol_failure = true;
         conn.write(json!({"jsonrpc":"2.0","method":"initialized","params":{}})).await?;
         let mut params=json!({"cwd":plan.cwd,"sandbox":sandbox,"approvalPolicy":approval,"approvalsReviewer":"user"});
         if let Some(model)=req.model {params["model"]=json!(model);}
         let method=if let Some(id)=req.native_session_id {params["threadId"]=json!(id);params["excludeTurns"]=json!(true);"thread/resume"} else {"thread/start"};
         let thread=tokio::time::timeout(Duration::from_secs(12),conn.rpc(2,method,params)).await??;
+        protocol_failure = false;
         let id=thread["thread"]["id"].as_str().filter(|id|!id.is_empty()&&id.len()<=4096).context("Native thread ID missing")?;
         anyhow::ensure!(req.native_session_id.is_none_or(|expected|expected==id),"Codex resumed a different thread; prompt withheld");
         anyhow::ensure!(thread["cwd"].as_str().and_then(|path|Path::new(path).canonicalize().ok())==Some(Path::new(&plan.cwd).canonicalize()?),"Codex thread workspace mismatch; prompt withheld");
@@ -676,11 +735,27 @@ pub(super) async fn run(
         conn.thread=Some(id.into());conn.out.session_id=Some(id.into());conn.emit(TurnProgress::Session(id.into())).await;
         let command = req.prompt.split_whitespace().next().unwrap_or("");
         if command == "/compact" && req.prompt.split_whitespace().count() == 1 {
+            prompt_sent = true;
             tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "thread/compact/start", json!({"threadId": id}))).await??;
             conn.emit(TurnProgress::Notice("Codex compaction requested".into())).await;
             return Ok::<(), anyhow::Error>(());
         }
+        if command == "/fork" && req.prompt.split_whitespace().count() == 1 {
+            // The original thread stays as it was; this chat continues on the new one.
+            prompt_sent = true;
+            let fork = tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "thread/fork", json!({"threadId": id, "cwd": plan.cwd, "sandbox": sandbox, "approvalPolicy": approval, "approvalsReviewer": "user", "excludeTurns": true}))).await??;
+            let forked = fork["thread"]["id"].as_str().filter(|forked| !forked.is_empty() && forked.len() <= 4096).context("Codex fork returned no thread ID")?;
+            anyhow::ensure!(forked != id, "Codex fork returned the original thread; nothing was changed");
+            anyhow::ensure!(fork["cwd"].as_str().and_then(|path| Path::new(path).canonicalize().ok()) == Some(Path::new(&plan.cwd).canonicalize()?), "Codex fork workspace mismatch; the chat stays on the original thread");
+            anyhow::ensure!(fork["approvalPolicy"] == approval && fork["approvalsReviewer"] == "user", "Codex fork did not honor the approval policy; the chat stays on the original thread");
+            conn.thread = Some(forked.into());
+            conn.out.session_id = Some(forked.into());
+            conn.emit(TurnProgress::Session(forked.into())).await;
+            conn.emit(TurnProgress::Notice("Forked into a new Codex thread; this chat continues there and the original thread is unchanged.".into())).await;
+            return Ok::<(), anyhow::Error>(());
+        }
         if command == "/review" && req.prompt.split_whitespace().count() == 1 {
+            prompt_sent = true;
             let review = tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "review/start", json!({"threadId": id, "delivery": "inline", "target": {"type": "uncommittedChanges"}}))).await??;
             conn.turn = Some(review["turn"]["id"].as_str().filter(|turn| !turn.is_empty() && turn.len() <= 4096).context("Codex review returned no turn ID")?.into());
             return conn.listen().await;
@@ -690,13 +765,24 @@ pub(super) async fn run(
         if let Some(effort)=req.effort.filter(|effort| !effort.trim().is_empty()) {
             params["effort"] = json!(effort);
         }
+        prompt_sent = true;
         let turn=tokio::time::timeout(Duration::from_secs(12),conn.rpc(3,"turn/start",params)).await??;
         conn.turn=Some(turn["turn"]["id"].as_str().filter(|id|!id.is_empty()&&id.len()<=4096).context("Native turn ID missing")?.into());
+        handle.set_steering(Some(steer_tx));
         conn.listen().await
     }.await;
+    handle.set_steering(None);
+    // A lost acknowledgement is uncertain: never retry input on another turn or transport.
+    if let Some((_, request)) = conn.steering.take() {
+        let _ = request.reply.send(Err("Steering was not confirmed before the connection ended; check native history before resending".into()));
+    }
     conn.out.cancelled |= handle.cancel_flag.load(Ordering::SeqCst);
     if let Err(error) = result {
-        if !conn.out.cancelled {
+        if !conn.out.cancelled && !prompt_sent && protocol_failure {
+            // Nothing reached Codex yet: report quietly so the caller can use the standard transport.
+            conn.out.failed = true;
+            conn.out.stderr_tail = format!("{UNAVAILABLE}: {error:#}");
+        } else if !conn.out.cancelled {
             conn.out.failed = true;
             conn.out.stderr_tail = format!("{error:#}");
             conn.emit(TurnProgress::Error(conn.out.stderr_tail.clone()))

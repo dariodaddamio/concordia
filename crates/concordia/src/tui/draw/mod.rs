@@ -15,6 +15,7 @@ fn card_copy_prefix(text: &str) -> usize {
 pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.permission_rows.clear();
     app.areas.permissions_popup = Rect::default();
+    app.areas.header_dropdown = None;
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
@@ -199,6 +200,34 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
 /// Cell width of `text` (ASCII-wide aware via `text::char_width`).
 fn cell_width(text: &str) -> usize {
     text.chars().map(text::char_width).sum()
+}
+
+/// A header dropdown row shows only the name, like a select: `Claude Haiku 5.5 · claude-haiku-5-5
+/// · current` becomes `Claude Haiku 5.5 · current`.
+fn dropdown_label(label: &str) -> String {
+    let current = label.ends_with(" \u{b7} current");
+    let name = label.split(" \u{b7} ").next().unwrap_or(label);
+    if current && name != label {
+        format!("{name} \u{b7} current")
+    } else {
+        name.to_owned()
+    }
+}
+
+/// Visible content rows of a header dropdown before it scrolls (plus two border rows).
+const DROPDOWN_ROWS: usize = 10;
+
+/// Width of a header dropdown: the longest row or title with border, padding and the `> ` marker,
+/// never narrower than the chip it drops from.
+fn dropdown_width(rows: &[&PickerRow], title: &str, chip: Rect, screen: Rect) -> u16 {
+    let longest = rows
+        .iter()
+        .map(|row| cell_width(&dropdown_label(&row.label)))
+        .max()
+        .unwrap_or(0)
+        .max(cell_width(title));
+    let wanted = (longest + 6).max(usize::from(chip.width));
+    wanted.min(usize::from(screen.width)) as u16
 }
 
 /// Shortens `text` to `width` cells, cutting at a word boundary and ending with an ellipsis.
@@ -2204,8 +2233,15 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
     }
+    let screen = f.area();
+    let dropdown = app
+        .header_dropdown
+        .filter(|(kind, _)| *kind == picker.kind)
+        .map(|(_, chip)| chip);
     let width = if picker.kind == PickerKind::Trust {
         area.width.saturating_sub(2).min(54)
+    } else if let Some(chip) = dropdown {
+        dropdown_width(&picker.filtered(), &picker.filter, chip, screen)
     } else {
         area.width.saturating_sub(4).max(20)
     };
@@ -2314,7 +2350,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             },
             |rows| rows.iter().map(Vec::len).sum::<usize>(),
         )
-        .min(24) as u16)
+        .min(if dropdown.is_some() {
+            DROPDOWN_ROWS
+        } else {
+            24
+        }) as u16)
         .saturating_add(2)
         .max(3);
     let mut popup = Rect {
@@ -2331,6 +2371,14 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height.min(area.height)
         },
     };
+    if let Some(chip) = dropdown {
+        // Drops from the header row under the chip, left-aligned to it, clamped to the screen.
+        popup.width = popup.width.min(screen.width);
+        popup.x = chip.x.min(screen.right().saturating_sub(popup.width));
+        popup.y = chip.y.saturating_add(1);
+        popup.height = height.min(screen.bottom().saturating_sub(popup.y));
+        app.areas.header_dropdown = Some(popup);
+    }
     if picker.kind == PickerKind::Trust {
         // Anchor beside the permissions chip, but end above the composer when one is drawn.
         let right = app.areas.permissions.right().min(area.right());
@@ -2399,7 +2447,14 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         picker.title.clone()
     };
     let title = fit_panel_title(
-        &if picker.filter.is_empty() {
+        &if dropdown.is_some() {
+            // A dropdown hangs from its labelled chip, so it needs no heading of its own.
+            if picker.filter.is_empty() {
+                String::new()
+            } else {
+                format!("filter: {}", picker.filter)
+            }
+        } else if picker.filter.is_empty() {
             heading
         } else {
             format!("{} · filter: {}", heading, picker.filter)
@@ -2448,14 +2503,21 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 return ListItem::new(lines);
             }
-            let (head, current) = match r.label.split_once(" \u{b7} current") {
+            let compact = dropdown.is_some().then(|| dropdown_label(&r.label));
+            let label = compact.as_deref().unwrap_or(&r.label);
+            let (head, current) = match label.split_once(" \u{b7} current") {
                 Some((h, _)) => (h.to_string(), true),
-                None => (r.label.clone(), false),
+                None => (label.to_string(), false),
             };
             let current_suffix = if current { " \u{b7} current" } else { "" };
             let current_w = cell_width(current_suffix);
             let fit_width = row_width.saturating_sub(current_w);
-            let (fitted_label, fitted_detail) = fit_label_detail(&head, &r.detail, fit_width);
+            let detail = if compact.is_some() {
+                ""
+            } else {
+                r.detail.as_str()
+            };
+            let (fitted_label, fitted_detail) = fit_label_detail(&head, detail, fit_width);
             let mut spans = match usage_style::picker_spans(&fitted_label) {
                 Some(s) => s,
                 None => vec![Span::styled(fitted_label, label_style)],
@@ -2567,16 +2629,6 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         Line::from(Span::styled(
             if updating.is_some() {
                 " message (paused) "
-            } else if app.workspace.focused.is_some() {
-                " message "
-            } else if app.busy
-                && app.busy_send_confirmation.as_ref().is_some_and(|armed| {
-                    armed.turn_started == app.turn_started
-                        && armed.conversation == app.deleg.d.conversation_id()
-                        && armed.armed.elapsed() <= Duration::from_secs(5)
-                })
-            {
-                " Enter again to interrupt + send · Tab queues "
             } else {
                 " message "
             },
@@ -2859,7 +2911,27 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         )
     } else if app.busy && app.picker.is_none() {
         (
-            if app.idle_notice.is_some() {
+            if app.pending_steer.is_some() {
+                "Waiting for steering confirmation · Ctrl+C cancel"
+            } else if app.can_steer_draft() {
+                if app.busy_send_confirmation.as_ref().is_some_and(|armed| {
+                    armed.prompt == app.composer_value()
+                        && armed.turn_started == app.turn_started
+                        && armed.conversation == app.deleg.d.conversation_id()
+                        && armed.armed.elapsed() <= Duration::from_secs(5)
+                }) {
+                    "Enter again steer · Tab queue · Ctrl+C cancel"
+                } else {
+                    "Enter choose steer · Tab queue · Ctrl+C cancel"
+                }
+            } else if app.busy_send_confirmation.as_ref().is_some_and(|armed| {
+                armed.prompt == app.composer_value()
+                    && armed.turn_started == app.turn_started
+                    && armed.conversation == app.deleg.d.conversation_id()
+                    && armed.armed.elapsed() <= Duration::from_secs(5)
+            }) {
+                "Enter again interrupt + send · Tab queue · Ctrl+C cancel"
+            } else if app.idle_notice.is_some() {
                 "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
             } else {
                 "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"

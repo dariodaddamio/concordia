@@ -53,6 +53,8 @@ pub struct RecoveryData {
     pub queue: Vec<String>,
     #[serde(default)]
     pub pending_edit: Option<RecoveryEdit>,
+    #[serde(default)]
+    pub(super) questions: super::questions::Saved,
     pub updated_unix_ms: u128,
 }
 
@@ -139,6 +141,22 @@ impl RecoveryLease {
         pending: Option<&RecoveryEdit>,
         alternate: Option<&str>,
     ) -> io::Result<()> {
+        self.save_with_questions(
+            draft,
+            queue,
+            pending,
+            alternate,
+            &super::questions::Saved::default(),
+        )
+    }
+    pub(super) fn save_with_questions(
+        &self,
+        draft: &str,
+        queue: &[String],
+        pending: Option<&RecoveryEdit>,
+        alternate: Option<&str>,
+        questions: &super::questions::Saved,
+    ) -> io::Result<()> {
         let path = self.directory.join(RECORD_FILE);
         if fs::metadata(&path).is_ok_and(|metadata| metadata.len() > RECORD_BYTES as u64) {
             return Err(io::Error::other(
@@ -153,6 +171,7 @@ impl RecoveryLease {
             alternate_draft: Option<&'a str>,
             queue: &'a [String],
             pending_edit: Option<&'a RecoveryEdit>,
+            questions: &'a super::questions::Saved,
             updated_unix_ms: u128,
         }
         let data = Snapshot {
@@ -161,6 +180,7 @@ impl RecoveryLease {
             alternate_draft: alternate,
             queue,
             pending_edit: pending,
+            questions,
             updated_unix_ms: now_ms(),
         };
         let bytes = bounded_json(&data, RECORD_BYTES)?;
@@ -362,6 +382,7 @@ pub fn available(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
         if data.draft.trim().is_empty()
             && data.queue.is_empty()
             && data.pending_edit.is_none()
+            && !data.questions.waiting()
             && unfinished.is_none()
             && !turn_unavailable
             && files.is_none()
@@ -377,6 +398,8 @@ pub fn available(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
                         "Unfinished-request recovery unavailable; original kept unchanged".into()
                     } else if files.is_some() {
                         "Unsaved file workspace".into()
+                    } else if data.questions.waiting() {
+                        "Unanswered task clarifications".into()
                     } else {
                         data.draft
                     }

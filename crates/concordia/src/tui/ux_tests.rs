@@ -218,7 +218,9 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
         ui.key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(ui.rx.try_recv().unwrap(), instruction);
         assert!(ui.rx.try_recv().is_err());
-        assert!(!ui.app.questions.waiting());
+        // A typed instruction is sent as written; the question stays open until answered
+        // (owner, 2026-11-18: no question left unanswered).
+        assert!(ui.app.questions.waiting());
     }
 }
 
@@ -355,6 +357,78 @@ fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
 }
 #[test]
 fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
+    {
+        let mut ui = Ui::new();
+        ui.app.busy = true;
+        ui.app.editor.set_text("unconfirmed draft");
+        let (tx, response) = tokio::sync::oneshot::channel();
+        ui.app.pending_steer = Some(crate::tui::app::state::PendingSteer {
+            prompt: "unconfirmed draft".into(),
+            conversation: ui.app.deleg.d.conversation_id().into(),
+            response,
+        });
+        ui.app.on_turn_done(
+            TurnOutcome {
+                cancelled: true,
+                ..Default::default()
+            },
+            &ui.tx,
+        );
+        assert!(ui.app.pending_steer.is_none());
+        assert!(tx.send(Ok(())).is_err());
+        ui.app.on_tick();
+        assert_eq!(ui.app.editor.text(), "unconfirmed draft");
+        assert!(!ui
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::User && m.text == "unconfirmed draft"));
+    }
+    for (accepted, edit) in [(true, false), (true, true), (false, false)] {
+        let mut ui = Ui::new();
+        ui.app.busy = true;
+        ui.app.editor.set_text("steering draft");
+        let (tx, response) = tokio::sync::oneshot::channel();
+        ui.app.pending_steer = Some(crate::tui::app::state::PendingSteer {
+            prompt: "steering draft".into(),
+            conversation: ui.app.deleg.d.conversation_id().into(),
+            response,
+        });
+        ui.key(KeyCode::Enter, KeyModifiers::NONE);
+        ui.key(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(ui.app.queue.items.is_empty());
+        assert!(ui.rx.try_recv().is_err());
+        assert_eq!(ui.app.editor.text(), "steering draft");
+        if edit {
+            ui.app.editor.set_text("newer draft");
+        }
+        tx.send(if accepted {
+            Ok(())
+        } else {
+            Err("turn mismatch".into())
+        })
+        .unwrap();
+        ui.app.on_tick();
+        assert!(ui.app.pending_steer.is_none());
+        assert_eq!(
+            ui.app.editor.text(),
+            if edit {
+                "newer draft"
+            } else if accepted {
+                ""
+            } else {
+                "steering draft"
+            }
+        );
+        assert_eq!(
+            ui.app
+                .messages
+                .iter()
+                .filter(|m| m.role == MsgRole::User && m.text == "steering draft")
+                .count(),
+            usize::from(accepted)
+        );
+    }
     let mut ui = Ui::new();
     ui.app.run_line("active task".into(), &ui.tx);
     ui.rx.try_recv().unwrap();

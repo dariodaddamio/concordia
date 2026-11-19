@@ -27,6 +27,12 @@ pub struct CommandSpec {
     pub description: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+}
+
 const CODEX_COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/compact",
@@ -182,20 +188,15 @@ pub fn command_specs(kind: ProviderKind) -> &'static [CommandSpec] {
 
 pub fn command_supported(kind: ProviderKind, name: &str) -> bool {
     match kind {
-        ProviderKind::Codex => matches!(name, "/compact" | "/review"),
+        ProviderKind::Codex => matches!(name, "/compact" | "/review" | "/fork"),
         ProviderKind::Claude => !matches!(name, "/vim" | "/context"),
         ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => true,
     }
 }
 
-pub fn command_unavailable_reason(kind: ProviderKind, name: &str) -> &'static str {
+pub fn command_unavailable_reason(kind: ProviderKind, _name: &str) -> &'static str {
     match kind {
-        ProviderKind::Codex => match name {
-            "/fork" => {
-                "Codex exposes thread/fork, but Concordia does not yet adopt its new thread identity"
-            }
-            _ => "Codex app-server has no matching RPC for this command",
-        },
+        ProviderKind::Codex => "Codex app-server has no matching RPC for this command",
         ProviderKind::Claude => {
             "the Claude Agent SDK stream does not expose this interactive terminal command"
         }

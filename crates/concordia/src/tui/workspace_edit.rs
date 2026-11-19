@@ -184,6 +184,29 @@ impl Workspace {
         };
         Ok(())
     }
+    pub(in crate::tui) fn transfer_file_recovery(
+        &mut self,
+        lease: Arc<recovery::RecoveryLease>,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        if self.editor.pending.is_some() {
+            return Err("file recovery is still loading".into());
+        }
+        if workspace
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != self.editor.workspace
+        {
+            return Err("file recovery workspace changed".into());
+        }
+        self.flush_file_recovery()?;
+        lease
+            .save_files(&encoded(self)?)
+            .map_err(|error| error.to_string())?;
+        self.editor.lease = Some(lease);
+        self.editor.persisted = signature(self);
+        Ok(())
+    }
     pub(in crate::tui) fn flush_file_recovery(&mut self) -> Result<(), String> {
         if self.editor.pending.is_some() {
             return Ok(());

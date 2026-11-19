@@ -471,6 +471,9 @@ pub(super) async fn run(
         ..Default::default()
     };
     let artifact_owner = owner.clone();
+    // Claude announces its slash commands for this session; the palette offers exactly those.
+    let command_owner = owner.clone();
+    let mut command_help: std::collections::HashMap<String, String> = Default::default();
     let mut artifacts = crate::artifacts::Collector::default();
     let mut interactions = InteractionConnection::new(owner, handle.cancel_flag.clone());
     let mut parser = crate::provider::stream_json::StreamParser::new(
@@ -563,6 +566,11 @@ pub(super) async fn run(
                         .is_some_and(|version| crate::provider::compat::version_at_least(version, SUPPORTED_VERSION)),
                         "Claude native initialize version differs from the selected CLI");
                     initialized = true;
+                    for command in value.pointer("/response/response/commands").and_then(Value::as_array).into_iter().flatten().take(256) {
+                        if let (Some(name), Some(help)) = (command["name"].as_str(), command["description"].as_str()) {
+                            command_help.insert(name.trim_start_matches('/').to_ascii_lowercase(), help.to_owned());
+                        }
+                    }
                     interactions.initialized_claude(observed_version.as_str()).map_err(anyhow::Error::msg)?;
                     write_frame(&mut input, &message).await?;
                     sent_prompt = true;
@@ -583,6 +591,50 @@ pub(super) async fn run(
                         ) {
                             if let Some(context) = plan.standing_context.as_deref() {
                                 write_frame(&mut input, &user_message(context)).await?;
+                            }
+                        }
+                    }
+                    Some("init") => {
+                        if let (Some(owner), Some(session)) = (command_owner.as_ref(), session) {
+                            if let Some(listed) = value["slash_commands"].as_array() {
+                                let mut seen = std::collections::HashSet::new();
+                                let commands = listed
+                                    .iter()
+                                    .take(256)
+                                    .filter_map(|name| {
+                                        let name = name.as_str()?.trim_start_matches('/');
+                                        if name.is_empty()
+                                            || name.len() > 128
+                                            || name.chars().any(|c| c.is_whitespace() || c.is_control())
+                                            || !seen.insert(name.to_ascii_lowercase())
+                                        {
+                                            return None;
+                                        }
+                                        let help = command_help.get(&name.to_ascii_lowercase()).map(String::as_str).unwrap_or_default();
+                                        Some(crate::provider::AvailableCommand {
+                                            name: format!("/{name}"),
+                                            description: crate::text_safe::terminal_safe(help)
+                                                .split_whitespace()
+                                                .collect::<Vec<_>>()
+                                                .join(" ")
+                                                .chars()
+                                                .take(400)
+                                                .collect(),
+                                        })
+                                    })
+                                    .collect();
+                                // The catalog belongs to this session, so name it first.
+                                send_progress(&progress, TurnProgress::Session(session.to_owned()), &handle).await;
+                                send_progress(
+                                    &progress,
+                                    TurnProgress::Commands {
+                                        owner: owner.clone(),
+                                        session_id: session.to_owned(),
+                                        commands,
+                                    },
+                                    &handle,
+                                )
+                                .await;
                             }
                         }
                     }

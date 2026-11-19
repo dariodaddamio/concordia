@@ -19,10 +19,12 @@ struct Connection {
     progress: Option<mpsc::Sender<TurnProgress>>,
     out: TurnOutcome,
     session_id: Option<String>,
+    session_ready: bool,
+    owner: Option<InteractionOwner>,
     interactions: InteractionConnection,
     prompting: bool,
     bridge_rx: tokio::sync::mpsc::UnboundedReceiver<crate::ask_bridge::BridgeRequest>,
-    available_commands: std::collections::HashSet<String>,
+    available_commands: std::collections::HashMap<String, Vec<super::super::AvailableCommand>>,
     standing_context: Option<String>,
     last_compaction: Option<String>,
 }
@@ -224,12 +226,13 @@ impl Connection {
         }
     }
     async fn update(&mut self, value: &Value) {
-        // session/load replays the old transcript before its response. History belongs to
-        // readback, not this turn's answer, thinking stream or active tool cards.
-        if !self.prompting {
+        let Some(session_id) = value.pointer("/params/sessionId").and_then(Value::as_str) else {
             return;
-        }
-        if value.pointer("/params/sessionId").and_then(Value::as_str) != self.session_id.as_deref()
+        };
+        if self
+            .session_id
+            .as_deref()
+            .is_some_and(|id| id != session_id)
         {
             return;
         }
@@ -237,12 +240,60 @@ impl Connection {
             return;
         };
         if update["sessionUpdate"] == "available_commands_update" {
-            self.available_commands = update["availableCommands"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|command| command["name"].as_str().map(str::to_owned))
+            let Some(advertised) = update["availableCommands"].as_array() else {
+                self.emit(TurnProgress::Notice(
+                    "Provider command discovery returned an invalid catalog; the last valid list is unchanged.".into(),
+                )).await;
+                return;
+            };
+            if !self.available_commands.contains_key(session_id)
+                && self.available_commands.len() >= 8
+            {
+                return;
+            }
+            let mut seen = std::collections::HashSet::new();
+            let commands: Vec<_> = advertised
+                .iter()
+                .take(128)
+                .filter_map(|command| {
+                    let name = command["name"].as_str()?.trim_start_matches('/');
+                    if name.is_empty()
+                        || name.len() > 128
+                        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+                        || !seen.insert(name.to_ascii_lowercase())
+                    {
+                        return None;
+                    }
+                    Some(super::super::AvailableCommand {
+                        name: format!("/{name}"),
+                        description: crate::text_safe::terminal_safe(
+                            command["description"].as_str().unwrap_or_default(),
+                        )
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .chars()
+                        .take(400)
+                        .collect(),
+                    })
+                })
                 .collect();
+            if commands.len() != advertised.len() {
+                self.emit(TurnProgress::Notice(
+                    "Provider command discovery returned incomplete metadata; some commands could not be listed.".into(),
+                )).await;
+                if commands.is_empty() && !advertised.is_empty() {
+                    return;
+                }
+            }
+            self.available_commands
+                .insert(session_id.to_owned(), commands);
+            self.emit_commands().await;
+            return;
+        }
+        // session/load replays the old transcript before its response. History belongs to
+        // readback, not this turn's answer, thinking stream or active tool cards.
+        if !self.prompting {
             return;
         }
         if update["sessionUpdate"] == "compaction_update" && update["status"] == "completed" {
@@ -314,6 +365,21 @@ impl Connection {
                 self.emit(TurnProgress::Card(card)).await;
             }
             _ => {}
+        }
+    }
+    async fn emit_commands(&self) {
+        if !self.session_ready {
+            return;
+        }
+        if let (Some(session_id), Some(owner)) = (&self.session_id, &self.owner) {
+            if let Some(commands) = self.available_commands.get(session_id) {
+                self.emit(TurnProgress::Commands {
+                    owner: owner.clone(),
+                    session_id: session_id.clone(),
+                    commands: commands.clone(),
+                })
+                .await;
+            }
         }
     }
 }
@@ -551,10 +617,12 @@ pub(super) async fn run(
         progress,
         out: TurnOutcome::default(),
         session_id: req.native_session_id.map(str::to_owned),
+        session_ready: false,
+        owner: owner.clone(),
         interactions: InteractionConnection::new(owner, handle.cancel_flag.clone()),
         prompting: false,
         bridge_rx,
-        available_commands: std::collections::HashSet::new(),
+        available_commands: Default::default(),
         standing_context: plan.standing_context.clone(),
         last_compaction: None,
     };
@@ -600,6 +668,9 @@ pub(super) async fn run(
         anyhow::ensure!(!session.get("sessionId").is_some_and(|id| req.native_session_id.is_some_and(|expected| id.as_str()!=Some(expected))), "Cursor ACP loaded a different native session; prompt withheld");
         let sid=req.native_session_id.map(str::to_owned).or_else(||session["sessionId"].as_str().map(str::to_owned)).context("Cursor ACP returned no session id")?;
         conn.out.session_id=Some(sid.clone());conn.session_id=Some(sid.clone());conn.emit(TurnProgress::Session(sid.clone())).await;
+        conn.session_ready = true;
+        conn.available_commands.retain(|id, _| id == &sid);
+        conn.emit_commands().await;
         // Honor the final plan after locked-code enforcement, rather than the requested trust.
         if req.provider == ProviderKind::Cursor {
             let mode=if planned_options(&plan.argv).any(|(flag,value)|flag=="--mode"&&value==Some("plan")){"plan"}else{"agent"};

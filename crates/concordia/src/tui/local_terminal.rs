@@ -509,6 +509,7 @@ pub(super) fn native_command(app: &mut App, command_line: &str) {
 }
 
 fn open_native(app: &mut App, initial_input: Option<&str>) {
+    app.provider_commands = None;
     let expected_owner = format!(
         "{}\0{}\0{}\0{}\0{}\0{}",
         app.deleg.d.conversation_id(),

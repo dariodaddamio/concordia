@@ -8,10 +8,22 @@ impl App {
             detail: "run Concordia's command".into(),
         }];
         for account in accounts_with_auth(&self.state_root) {
-            if crate::provider::command_specs(account.provider)
-                .iter()
-                .any(|command| command.name.eq_ignore_ascii_case(name))
-            {
+            let advertised = (account.provider == self.provider && account.account == self.account)
+                .then(|| self.available_provider_commands())
+                .flatten();
+            let listed = advertised.map_or_else(
+                || {
+                    crate::provider::command_specs(account.provider)
+                        .iter()
+                        .any(|command| command.name.eq_ignore_ascii_case(name))
+                },
+                |commands| {
+                    commands
+                        .iter()
+                        .any(|command| command.name.eq_ignore_ascii_case(name))
+                },
+            );
+            if listed {
                 let transport = crate::provider::command_supported(account.provider, name);
                 rows.push(PickerRow {
                     id: format!("shared:account:{}", account.account),
@@ -109,7 +121,11 @@ impl App {
             .is_some_and(|pending| pending.eq_ignore_ascii_case(trimmed));
         if bypass {
             self.shared_command = None;
-        } else if let Some(name) = crate::commands::shared_command_name(trimmed, self.provider) {
+        } else if let Some(name) = crate::commands::shared_command_name(
+            trimmed,
+            self.provider,
+            self.available_provider_commands(),
+        ) {
             self.open_shared_command_picker(trimmed, &name);
             return true;
         }
@@ -205,6 +221,7 @@ impl App {
                     {
                         Err("finish or cancel that account's active native turn before changing transport".into())
                     } else {
+                        self.provider_commands = None;
                         crate::native_input::command(&self.state_root, &account, mode)
                     }
                 }
@@ -578,6 +595,14 @@ impl App {
             return false;
         }
         let is_new = matches!(cmd, SlashCommand::New);
+        if is_new {
+            if let Err(error) = self.preserve_questions_before_new_task() {
+                self.flash(format!(
+                    "New task paused: {error}; pending clarifications retained"
+                ));
+                return true;
+            }
+        }
         if is_new && !self.save_turn_checkpoint(true) {
             self.keep.turn_recovery_notice = true;
             return true;

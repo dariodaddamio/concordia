@@ -1,7 +1,230 @@
 # Verification
 
-The current source candidate is **2026-11-15a**, based on audit repair `3239abe`. This qualification
-does not install or publish it. Local runtime logs confirm the earlier **14p** installation succeeded.
+## 2026-11-18b takeover qualification
+
+Debug candidate: **2026-11-18b, 40897e1+2214**, SHA-256
+`39ccf69428382cd99e6c1d6d7eb86b784a06a637ccb19abcdc73bc22a91d0cf1`.
+Installed 15c remains unchanged. No provider-home registration, trust or authentication changed.
+
+Codex app-server steering is bound to the active thread and expected turn. First Enter arms the
+choice, second Enter steers, Tab queues. Only plain text is steered. Acceptance clears only that
+draft; refusal, a mismatched acknowledgement, connection loss and late completion retain it without
+automatic retry. Key hints stay in the footer. The pre-prompt fallback also covers a failed
+`initialized` notification; account/workspace/policy refusals still stop the turn.
+
+Checks on this source: 11 existing `tui::ux_tests` cases and six `cursor_usage`-filtered cases passed;
+existing `fake_provider` (23), `images` (one) and `provider_runner` (two) integration cases passed.
+The existing ignored native-window workspace/send-now journey passed with added steering scenarios:
+Tab queues, Enter arms, accepted steering clears, refusal retains, and exactly one steer/start is
+recorded. All providers in that journey are synthetic. No live Codex/Claude model turn was run,
+consistent with the owner's Cursor-only live qualification preference. No new test case functions
+were added. The original full 18a receipts below remain dated evidence, not an 18b full-suite run.
+
+Cursor 2026.11.17-f532c45 accepted CSI-u Return and returned a parsed local usage table without a
+model prompt. A preceding LF probe timed out; it is not counted as successful. The temporary probe
+source was removed. Changed/unresponsive screens now explicitly report usage unavailable. Existing
+raw-input fixture checks cover table parsing, timeout, missing program and process cleanup.
+
+The focused qualification windows closed. Distribution remains at the owner's requested end of
+the combined work, after the eight Habena protected fixes receive separate human approval/application.
+Native Habena pending-pause execution/trust review remains open. No universal parity claim is made.
+
+## 2026-11-18 mid-turn question default WIP
+
+Earlier debug snapshot reports **2026-11-18a, 40897e1+0832**. Installed 15c is unchanged.
+Claude defaults to its existing question-capable stdio adapter; explicit saved off remains
+respected. Owned launches declare bounded host/provider/question capability for opt-in Habena
+context; ownerless launches clear inherited declarations. The declaration is not native hook proof.
+No fresh Codex delay was reproduced; its ordinary owned app-server route was already present.
+
+Checks run on this source: `cargo test --locked -p concordia --lib provider::standing_context::tests`
+(one existing case) and `cargo test --locked -p concordia --test images` (one existing integration
+case), both passed. These qualify deterministic context/protocol fixtures, not a live Claude/Codex
+turn or the changed default UI flow. Those tiny live checks and Habena distribution/native review
+remain pending. Do not transfer the following 17b hash or live proof to the newer candidate.
+
+Owner decisions on 2026-11-18: an open question pauses queued prompts, and no question is dismissed
+by a typed instruction. `on_turn_done` pauses the queue again; the journey asserting the old dismissal
+now asserts the question stays open. Restored questions match earlier notifications by turn identity,
+so `outstanding_attention_is_not_notified_again_after_restart` passes again. `ask_user` results add
+`structuredContent.questionState` with a declared output schema. Checks on this source: full library
+1,022 passed; 14 integration suites passed (install skipped, unchanged); default journeys 3 passed;
+live Cursor `question_tool_reaches_the_popup_broker` and `every_provider_asks_through_the_popup` passed.
+A palette case now uses a non-colliding `/audit` fixture, since 17a resolves provider collisions on submit.
+
+Afternoon additions on 2026-11-18, same uncommitted tree: header model/effort dropdown (written by a
+Haiku subagent, then made compact and extended to the effort follow-up), Codex `/fork` adoption, Codex
+update fallback (protocol failures before the prompt only; identity and policy refusals stand), and Claude
+slash-command catalogs from the stdio init event. Checks: full library 1,022 passed; `images`,
+`provider_runner` and `fake_provider` suites passed; 177 picker/draw/input cases passed; throwaway probes
+(deleted) proved fork, fallback and the Claude catalog against the fake providers; the dropdown, toggle,
+outside click, Escape and effort follow-up were checked in the dev window. The full native journey run on
+this source was 41/50; the nine failures were the journey setup not pinning Claude's print transport after
+the 18a default changed (fixed in setup) plus one window-lookup flake while the dev window was open; all
+nine pass on rerun. Cursor usage readings time out on Cursor 2026.11.17 (plan C13).
+
+The interrupted `doctor.rs` account-count edit is now complete. Its proof is dated 2026-11-16
+(Claude session, 15:37 UTC): 30 existing `doctor` library cases passed and the native window showed
+`4 of 6 account(s) signed in`. `doctor.rs` and `accounts.rs` are unchanged since, so that proof is reused.
+
+Changed-document and scoped portable/citations/file-catalog/prose checks passed. The process check
+used the locally built Habena CLI; this Cargo-only checkout has no local `scripts/check-process.mjs`.
+Whitespace and exact stale-current-candidate sweeps were clean.
+
+## 2026-11-18 durable clarification qualification
+
+Previously qualified source candidate: **2026-11-17b**, `40897e1+0642`, SHA-256
+`d848e8101c104d12b2c7cb1575283102d73a3de4e3b6df62c669ccac38a36d22`.
+Installed 15c is unchanged. The original doctor edit remains unmodified.
+
+The owner chose task-level clarification ownership: explicitly selecting another agent/account
+transfers pending questions and eventual answers, retaining original provenance. Native approvals
+remain live/run-bound. The source uses the existing pane recovery record and FIFO reply queue;
+it adds no global plugin registration, hook-trust grant or authentication change.
+
+Observed in the native Windows app with isolated synthetic accounts and the existing fixture:
+
+- Cursor Standard prepares a local plugin; two bundles receive a saved acknowledgement only
+  after the question snapshot is durable. Both remain after the provider finishes.
+- Mouse multi-select, a four-question bundle, completed partial answers and an unfinished note
+  survive a forced owned-process exit/restart and tab switching. An independent follow-up
+  preserves the pending questions.
+- Explicit Cursor-to-Codex selection supplies pending clarification context to the replacement.
+  The completed original bundle reaches that replacement once through FIFO while the second
+  bundle remains visible. This observes enqueue/delivery in the fixture, not exactly-once native
+  tool execution after every possible crash.
+- An oversized recovery record makes reply submission fail visibly without removing the
+  question or dispatching the reply. A separate bridge probe receives two explicit not-saved
+  acknowledgements and admits no unsaved question. The synthetic oversized file was restored.
+- A question record with an empty task identity stays byte-identical through startup and a dirty
+  persistence tick. Source review also verified that failed adoption clears/suppresses its panic
+  mirror, preventing that path from overwriting the rejected original.
+- Starting a new conversation archives its old pending question in recoverable task state and
+  retains the clean file pane. It does not display that question in the unrelated new chat.
+
+The main recovery/handoff journey first ran on 17b+0628; the save-failure, invalid-identity and
+file-pane checks ran on the later candidates carrying their respective fixes. Existing checks:
+13 question cases, five persistence cases, six recovery cases and eight launch cases pass. The
+question permission case now also exercises conversational suspension and approval exclusion;
+the existing launch case covers a plugin path with spaces/metacharacters and exactly one
+PowerShell adapter. No new unit/integration cases were added. A window-session test filter
+matched zero cases and provides no evidence.
+
+The real native-app check first needed **native Cursor workspace review**. The first launch
+attempt exposed an unsafe-option batch refusal, fixed through the existing beside-script
+PowerShell adapter. The next candidate reaches Cursor, which refuses the untrusted scratch
+directory before model inference and keeps the draft. The owner explicitly approved that exact
+scratch workspace. Its native trust option was then applied through `/terminal native`; no trust
+file, hook approval or authentication was edited by the agent. Cursor's UI remained at Trusting
+workspace, so the owned native shell was closed and a fresh normal launch checked the saved
+provider state. That launch called the local question tool and rendered the durable question in
+the actual app. Two tiny Auto turns passed: the first called `ask_user` and completed while the
+question remained; the answer was submitted more than 90 seconds after durable observation.
+The second turn acknowledged option A and completed. The task's native session identity stayed
+unchanged, the completed question cleared, and the app returned to idle. This qualifies the
+named default-Cursor native-window question/follow-up journey, not every native provider flow.
+One driver attempt reached the local shell instead of the composer after closing the native
+pane; it produced command-not-found and consumed no model turn. The corrected driver verifies
+chat focus before submission. Earlier fixture/save failures and native trust refusals remain
+separate from the eventual live result.
+
+Remaining limits: no universal all-provider or release qualification; pending-question read-only
+guidance is not Habena's proposed mutation hook. Persistence and routing do not establish model
+obedience. The installed Habena package still lacks its separately verified source gate fix.
+
+## 2026-11-17 ACP discovery qualification
+
+ACP qualification candidate: **2026-11-17a**, `40897e1+0239` (dirty debug build).
+The installed application remains **2026-11-15c**. No installation, publication, authentication
+or hook-trust change occurred. The interrupted `doctor.rs` account-count edit is preserved.
+
+Candidate executable SHA-256:
+`7be5a681149009d6e1ceea6dd412335bc95027e8c2e865a98dc4465724d36128`.
+
+Existing palette checks pass: seven cases, zero failures. The native Windows control channel
+drove the actual candidate with isolated synthetic accounts and the existing fake-provider
+engine. Observed scenarios: advertisements before session response, idle retention, foreign
+session exclusion, authoritative empty/removal, static fallback suppression, native/custom
+collision, exact command and argument delivery, builtin alias ownership, rejected session load,
+reconnect and actual account switching. A gated owner transition showed the local suggestion,
+dismissed it on an ownership change, then exposed the provider action only after fresh input.
+The stale shared-choice probe selected Cursor by its displayed identity before removal and
+observed refusal with nothing sent from that choice.
+
+Early probes assumed a fixed header row, sufficient fixed delays and a one-account picker.
+Those assumptions failed after tab/account state changed. Corrected observations used the
+provider header and selected account identity; the owner-transition sequence was inspected
+after its gated event. These probe failures are not recorded as product defects or hidden
+behind an aggregate pass count. No new unit/integration cases or E2E framework were added;
+the existing fixture engine gained command advertisements and gated updates.
+
+The existing real Cursor `text_turn_then_resume_the_same_session` check passed with two tiny
+Auto-model turns on the earlier 17a candidate, before final UI-only selection/copy refinements.
+That establishes the named adapter continuity path; it does not prove real-provider catalog
+rendering, native-window questions, every provider transport or the final binary's entire UI.
+No Claude or Codex inference ran for this slice.
+
+Build, changed-source rustfmt, documentation, applicable process checks and the OSS privacy
+gate are scoped separately. Workspace-wide rustfmt still reports differences in untouched
+`cursor_usage.rs` and `tui/queue_tests.rs`. The installed process file-catalog check fails because
+this host-only Cargo project has no catalog. Habena's canonical root and packaged-preset source
+now respect explicit `tooling.packageTooling: false`; ten bounded profile/catalog probes and the
+canonical preset's full portable/citations/file-catalog/prose run against Concordia pass.
+The installed package has not received that source fix. No duplicate catalog or package tooling
+was added to conceal the mismatch.
+
+The original native-window startup blocker was the audit fixture: its first launch persisted
+inherited `CODEX_HOME`, and subsequent launches reused that selection. Clean seeded synthetic
+state opens successfully with the real-state guard enabled. Keep the guard and seed or isolate
+the selection before first launch; no product startup fix was necessary.
+
+## 2026-11-17 evidence reconciliation
+
+At the read-only audit's start, source was `40897e1`, stamp **2026-11-16a**, with an existing
+uncommitted doctor account-count change. Those read-only executable probes returned:
+
+| Candidate | Reported identity |
+| --- | --- |
+| Installed application | `2026-11-15c` |
+| Existing debug binary | `2026-11-16a, 40897e1+1536` |
+| Existing release binary | `2026-11-16a, df17303` |
+
+The interrupted Claude campaign's retained evidence is under
+`target/overnight/2026-11-15-ui-logic/`. The recovered native session also contains later command
+results. Its private session identity and bounded read commands are retained in the requesting
+Claude project's existing `project-harness-single-source` memory. These are inspected dated
+receipts, not checks rerun for this reconciliation:
+
+- `journeys-all-final.log`: 50 passed, zero failed, three filtered, 2026-11-16.
+- `all-tests-final.log`: successful library/integration results. A later session tool result at
+  2026-11-16 15:33:46 UTC reports 1,022 library tests passed, four ignored, zero failed.
+- `live-cursor-final.log`: three passed and the question case failed. The session records a
+  later focused question-case pass in 14 seconds on 2026-11-16 at 14:48:30 UTC, followed by three passing
+  `live_providers` cases at 14:49:18 UTC. Preserve the failed aggregate and the narrower rerun;
+  the manifest's shorthand `live_cursor 4/4` is not a fresh clean four-case suite receipt.
+
+No new library/integration suite, live provider turn, rebuild, installation or trust change
+was performed in that read-only audit. CLI metadata observed locally: Codex 0.166.0, Claude Code 2.1.326,
+Cursor `2026.11.13-eacade1`. Current Codex source still qualifies exactly CLI 0.166.0;
+current Claude source accepts its supported minimum version or newer.
+
+The initial isolated launches stopped on a real-profile selection retained in reused audit
+state. The clean-state qualification above resolves that fixture blocker without disabling the
+guard. This was not an ordinary startup crash or proof credentials were read. Broader visual,
+focus, latency and default-provider interaction qualification remains open.
+
+The synthetic `%TEMP%/concordia-parity-audit-smy35u7h` directory remains after automatic policy
+review rejected its recursive cleanup. No user application was killed.
+The next agent should inspect ownership before any cleanup retry.
+
+See the [current completion-depth obligations](../PLAN.md#completion-depth-audit-and-claude-resume---2026-11-17).
+Later dated checks do not automatically qualify every byte of the current dirty source or
+installed executable. The qualification below applies to its stated historical candidates.
+
+## Historical 15a qualification
+
+The **2026-11-15a** candidate was based on audit repair `3239abe`. That qualification
+did not install or publish it. Local runtime logs confirmed the earlier **14p** installation.
 
 ## Model, effort and update feedback qualification
 

@@ -15,6 +15,8 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_provider: Option<Rect>,
     pub(in crate::tui) header_model: Option<Rect>,
     pub(in crate::tui) header_effort: Option<Rect>,
+    /// Drawn rectangle of the header dropdown, set each frame it is shown.
+    pub(in crate::tui) header_dropdown: Option<Rect>,
     pub(in crate::tui) header_credits: Option<Rect>,
     pub(in crate::tui) header_email: Option<Rect>,
     pub(in crate::tui) header_attention: Option<Rect>,
@@ -313,6 +315,12 @@ pub(in crate::tui) struct BusySendConfirmation {
     pub(in crate::tui) armed: Instant,
 }
 
+pub(in crate::tui) struct PendingSteer {
+    pub prompt: String,
+    pub conversation: String,
+    pub response: tokio::sync::oneshot::Receiver<Result<(), String>>,
+}
+
 /// One tab as the strip draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::tui) struct TabChip {
@@ -347,6 +355,8 @@ pub(crate) struct App {
     pub(in crate::tui) header_provider_pressed: bool,
     pub(in crate::tui) header_model_pressed: bool,
     pub(in crate::tui) header_effort_pressed: bool,
+    /// Kind and header chip of the picker opened as a dropdown under that chip.
+    pub(in crate::tui) header_dropdown: Option<(PickerKind, Rect)>,
     pub(in crate::tui) header_attention_pressed: bool,
     pub(in crate::tui) home_documentation_pressed: bool,
     pub(in crate::tui) permissions_pressed: bool,
@@ -379,6 +389,7 @@ pub(crate) struct App {
     pub(in crate::tui) tab_request: Option<tabs::TabAction>,
     pub(in crate::tui) quit_armed: Option<Instant>,
     pub(in crate::tui) busy_send_confirmation: Option<BusySendConfirmation>,
+    pub(in crate::tui) pending_steer: Option<PendingSteer>,
     pub(in crate::tui) full_mode_confirmed: bool,
     pub(in crate::tui) input_scroll: usize,
     pub(in crate::tui) input_scroll_anchor: Option<(u64, usize, usize, usize)>,
@@ -506,6 +517,7 @@ pub(crate) struct App {
     pub(in crate::tui) role_editing: Option<String>,
     pub(in crate::tui) shared_command: Option<String>,
     pub(in crate::tui) provider_command: Option<String>,
+    pub(in crate::tui) provider_commands: Option<palette::SessionCommands>,
 }
 
 impl App {
@@ -542,6 +554,7 @@ impl App {
                     != sel.home_path
             {
                 self.session_ui.invalidate();
+                self.provider_commands = None;
                 self.header_email_revealed = false;
                 self.header_email_pressed = false;
             }
@@ -826,7 +839,40 @@ impl App {
             };
             return palette::matching_arguments(&input, &accounts, &models);
         }
-        palette::matching_for_provider(&input, &self.user_cmds, Some(self.provider))
+        palette::matching_for_session(
+            &input,
+            &self.user_cmds,
+            Some(self.provider),
+            self.available_provider_commands(),
+        )
+    }
+
+    pub(in crate::tui) fn available_provider_commands(
+        &self,
+    ) -> Option<&[crate::provider::AvailableCommand]> {
+        self.provider_commands
+            .as_ref()
+            .filter(|catalog| {
+                catalog.owner.provider == self.provider
+                    && catalog.owner.account == self.account
+                    && catalog.home_path == self.home_path
+                    && catalog.cwd == self.cwd
+                    && catalog.owner.conversation_id == self.deleg.d.conversation_id()
+                    && self.native_session_id.as_deref() == Some(catalog.session_id.as_str())
+            })
+            .map(|catalog| catalog.commands.as_slice())
+    }
+
+    fn expand_user_command(&self, line: &str) -> Result<Option<String>, String> {
+        let name = line.split_whitespace().next().unwrap_or_default();
+        if self.available_provider_commands().is_some_and(|commands| {
+            commands
+                .iter()
+                .any(|command| command.name.eq_ignore_ascii_case(name))
+        }) {
+            return Ok(None);
+        }
+        crate::user_commands::expand(&self.user_cmds, line)
     }
 
     /// Put the chosen command in the prompt.
@@ -1415,7 +1461,8 @@ impl App {
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
-        self.footer_left = "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+        self.footer_left =
+            "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
         true
     }
 
@@ -1594,6 +1641,10 @@ impl App {
     }
 
     pub(in crate::tui) fn submit_input(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
+        if self.pending_steer.is_some() {
+            self.flash("Waiting for Codex to confirm steering; your draft is kept");
+            return;
+        }
         if self.images.importing() {
             self.flash("Wait for the attachment to finish importing");
             return;
@@ -1611,7 +1662,7 @@ impl App {
             return;
         }
         let provider_passthrough = crate::commands::is_provider_passthrough(&line);
-        let user_prompt = match crate::user_commands::expand(&self.user_cmds, &line) {
+        let user_prompt = match self.expand_user_command(&line) {
             Ok(prompt) => prompt,
             Err(error) => {
                 self.flash(error);
@@ -1620,6 +1671,35 @@ impl App {
         };
         if self.session_ui.loading() && (!line.starts_with('/') || user_prompt.is_some()) {
             self.flash("recent messages are loading; your draft is kept");
+            return;
+        }
+        if self.can_steer_draft() {
+            let confirmed = self.busy_send_confirmation.take().is_some_and(|armed| {
+                armed.prompt == original_prompt
+                    && armed.conversation == self.deleg.d.conversation_id()
+                    && armed.turn_started == self.turn_started
+                    && armed.armed.elapsed() <= Duration::from_secs(5)
+            });
+            if !confirmed {
+                self.busy_send_confirmation = Some(BusySendConfirmation {
+                    prompt: original_prompt,
+                    conversation: self.deleg.d.conversation_id().to_owned(),
+                    turn_started: self.turn_started,
+                    armed: Instant::now(),
+                });
+                self.flash("Enter again steers this turn; Tab queues the message");
+                return;
+            }
+            match self.cancel_handle.as_ref().unwrap().steer(line) {
+                Ok(response) => {
+                    self.pending_steer = Some(PendingSteer {
+                        prompt: original_prompt,
+                        conversation: self.deleg.d.conversation_id().to_owned(),
+                        response,
+                    })
+                }
+                Err(error) => self.flash(format!("{error}; your draft is kept")),
+            }
             return;
         }
         if self.busy
@@ -1767,9 +1847,6 @@ impl App {
             self.image_command(arg);
             return;
         }
-        if !line.starts_with('/') {
-            self.questions.clear();
-        }
         if self.session_ui.loading() && !line.starts_with('/') {
             self.flash("recent messages are loading; wait before sending");
             if self.editor.text().is_empty() {
@@ -1780,7 +1857,7 @@ impl App {
         self.view.follow_tail();
         // A user command shows as typed and sends its rendered template as an ordinary turn.
         let mut send = line.clone();
-        match crate::user_commands::expand(&self.user_cmds, &line) {
+        match self.expand_user_command(&line) {
             Ok(Some(prompt)) => send = prompt,
             Ok(None) => {
                 if self.handle_slash(&line) {
@@ -1962,6 +2039,7 @@ impl App {
             header_provider_pressed: false,
             header_model_pressed: false,
             header_effort_pressed: false,
+            header_dropdown: None,
             header_attention_pressed: false,
             home_documentation_pressed: false,
             permissions_pressed: false,
@@ -2006,6 +2084,7 @@ impl App {
             tab_request: None,
             quit_armed: None,
             busy_send_confirmation: None,
+            pending_steer: None,
             full_mode_confirmed: false,
             input_scroll: 0,
             input_scroll_anchor: None,
@@ -2129,6 +2208,7 @@ impl App {
             role_editing: None,
             shared_command: None,
             provider_command: None,
+            provider_commands: None,
         }
     }
 }

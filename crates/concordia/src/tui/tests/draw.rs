@@ -1130,10 +1130,11 @@ fn tips_hide_when_busy_or_typing_and_wait_20s_after_a_chat() {
 #[test]
 fn a_user_command_shows_as_typed_and_submits_the_rendered_prompt() {
     let mut h = Harness::new(80, 20);
+    // A name no provider advertises; provider collisions have their own cases.
     let cmds = crate::user_commands::commands_dir(&h.app.state_root);
     std::fs::create_dir_all(&cmds).unwrap();
     std::fs::write(
-        cmds.join("review.md"),
+        cmds.join("audit.md"),
         "---
 description: review the diff
 ---
@@ -1143,7 +1144,7 @@ Review for bugs. Focus: $ARGS",
     std::fs::write(cmds.join("doctor.md"), "shadowed").unwrap();
     h.app.user_cmds = crate::user_commands::scan(&h.app.state_root).commands;
 
-    h.type_str("/rev");
+    h.type_str("/aud");
     h.draw();
     let shown: String = h
         .term
@@ -1153,10 +1154,10 @@ Review for bugs. Focus: $ARGS",
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(shown.contains("/review") && shown.contains("custom"));
+    assert!(shown.contains("/audit") && shown.contains("custom"));
 
     h.app.editor.clear();
-    h.type_str("/review the parser");
+    h.type_str("/audit the parser");
     let (tx, mut rx) = mpsc::unbounded_channel();
     h.app.submit_input(&tx);
     assert_eq!(rx.try_recv().unwrap(), "Review for bugs. Focus: the parser");
@@ -1168,7 +1169,7 @@ Review for bugs. Focus: $ARGS",
         .rev()
         .find(|m| m.role == MsgRole::User)
         .unwrap();
-    assert_eq!(last_user.text, "/review the parser");
+    assert_eq!(last_user.text, "/audit the parser");
 
     // A built-in name is never shadowed: /doctor stays the built-in and sends no turn.
     h.type_str("/doctor");

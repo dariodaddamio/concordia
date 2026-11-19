@@ -7,6 +7,15 @@ use crate::commands::command_registry;
 use crate::store::ProviderKind;
 use crate::user_commands::UserCommand;
 
+pub(super) struct SessionCommands {
+    pub owner: crate::provider::interaction::InteractionOwner,
+    // Keep the UI's original paths for cheap lookup; the launch owner uses canonical paths.
+    pub home_path: Option<std::path::PathBuf>,
+    pub cwd: std::path::PathBuf,
+    pub session_id: String,
+    pub commands: Vec<crate::provider::AvailableCommand>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub command: String,
@@ -37,10 +46,30 @@ pub fn matching_for_provider(
     user: &[UserCommand],
     provider: Option<ProviderKind>,
 ) -> Vec<Entry> {
+    matching_for_session(input, user, provider, None)
+}
+
+pub(super) fn matching_for_session(
+    input: &str,
+    user: &[UserCommand],
+    provider: Option<ProviderKind>,
+    advertised: Option<&[crate::provider::AvailableCommand]>,
+) -> Vec<Entry> {
     if !input.starts_with('/') || input.contains('\n') {
         return Vec::new();
     }
     let typed = input.to_ascii_lowercase();
+    let specs: Vec<(&str, &str)> = match advertised {
+        Some(commands) => commands
+            .iter()
+            .map(|command| (command.name.as_str(), command.description.as_str()))
+            .collect(),
+        None => provider
+            .into_iter()
+            .flat_map(crate::provider::command_specs)
+            .map(|command| (command.name, command.description))
+            .collect(),
+    };
     let builtin = command_registry()
         .iter()
         .filter(|c| c.name.starts_with(&typed))
@@ -50,41 +79,57 @@ pub fn matching_for_provider(
             help: c.description.to_string(),
             custom: false,
             provider: false,
-            shared: provider.is_some_and(|p| {
-                crate::provider::command_specs(p)
-                    .iter()
-                    .any(|command| command.name.eq_ignore_ascii_case(c.name))
-            }),
+            shared: specs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(c.name)),
             disabled: false,
         });
-    let provider_commands = provider
-        .into_iter()
-        .flat_map(crate::provider::command_specs)
-        .filter(|c| c.name.starts_with(&typed))
-        .filter(|c| {
+    let provider_commands = specs
+        .iter()
+        .filter(|(name, _)| name.to_ascii_lowercase().starts_with(&typed))
+        .filter(|(name, _)| {
             !command_registry()
                 .iter()
-                .any(|builtin| builtin.name.eq_ignore_ascii_case(c.name))
+                .any(|builtin| builtin.name.eq_ignore_ascii_case(name))
         })
-        .map(|c| Entry {
-            command: c.name.to_string(),
-            help: if crate::provider::command_supported(provider.unwrap(), c.name) {
-                format!("{} (provider transport)", c.description)
+        .map(|(name, description)| Entry {
+            command: name.to_string(),
+            help: if advertised.is_none()
+                && matches!(
+                    provider,
+                    Some(ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode)
+                ) {
+                format!("{description} (availability not yet reported)")
+            } else if advertised.is_some()
+                || provider
+                    .is_some_and(|provider| crate::provider::command_supported(provider, name))
+            {
+                format!("{description} (provider transport)")
             } else {
                 format!(
                     "{} (native terminal: {})",
-                    c.description,
-                    crate::provider::command_unavailable_reason(provider.unwrap(), c.name)
+                    description,
+                    crate::provider::command_unavailable_reason(provider.unwrap(), name)
                 )
             },
             custom: false,
             provider: true,
-            shared: false,
+            shared: command_registry().iter().any(|builtin| {
+                builtin
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(name))
+            }),
             disabled: false,
         });
     let custom = user
         .iter()
         .filter(|c| c.command.starts_with(&typed))
+        .filter(|c| {
+            !specs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&c.command))
+        })
         .map(|c| Entry {
             command: c.command.to_string(),
             help: c.description.to_string(),
@@ -220,7 +265,7 @@ go",
             .unwrap();
         assert!(entry.provider);
         assert!(!entry.disabled);
-        assert!(entry.help.contains("provider transport"));
+        assert!(entry.help.contains("availability not yet reported"));
         let entries = matching_for_provider("/", &[], Some(ProviderKind::Codex));
         let entry = entries
             .iter()

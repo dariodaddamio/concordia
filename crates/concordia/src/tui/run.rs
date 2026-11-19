@@ -649,12 +649,14 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             .filter(|item| item.is_actionable())
                             .find(|item| {
                                 !crate::store::attention_notification_seen(&state_root, &item.id)
-                                    && !(item.kind
-                                        == crate::needs_you::ItemKind::InterruptedRequest
-                                        && crate::store::interrupted_attention_notification_seen(
-                                            &state_root,
-                                            &item.id,
-                                        ))
+                                    && !(matches!(
+                                        item.kind,
+                                        crate::needs_you::ItemKind::InterruptedRequest
+                                            | crate::needs_you::ItemKind::Question
+                                    ) && crate::store::turn_attention_notification_seen(
+                                        &state_root,
+                                        &item.id,
+                                    ))
                             })
                             .map(|item| (item.id.clone(), item.notification_text()));
                     }
@@ -1161,6 +1163,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let cwd = owner.execution_cwd.clone();
                     let launch_home = owner.home.clone();
                     app.questions.cancel_native();
+                    app.provider_commands = None;
                     app.native_owner = Some(owner.clone());
                     app.native_accounting_owner = Some(owner.clone());
                     let original_reference_prompt =
@@ -1209,6 +1212,15 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     app.preparing_cancel = Some(preparing_cancel.clone());
                     let need_pack_hint = app.need_context_pack;
+                    let pending_questions = if need_pack_hint
+                        || session.is_none()
+                        || prior_prov != app.provider
+                        || prior_account != app.account
+                    {
+                        app.questions.handoff_context()
+                    } else {
+                        None
+                    };
                     let thread_id = app.thread_id().map(str::to_string);
                     let done_tx = done_tx.clone();
                     let handle_tx = handle_tx.clone();
@@ -1370,6 +1382,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         } else {
                             None
                         };
+                        if let Some(questions) = pending_questions {
+                            prefix
+                                .get_or_insert_with(String::new)
+                                .push_str(&format!("\n{questions}\n"));
+                        }
                         if let Some(map) = repair_map {
                             prefix = Some(match prefix {
                                 Some(prefix) => format!("{prefix}\n\n[repair handoff map]\n{map}"),

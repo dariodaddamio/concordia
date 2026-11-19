@@ -1575,7 +1575,11 @@ fn apply_progress(j: &mut Job, p: TurnProgress) {
         TurnProgress::Idle { minutes, .. } => {
             j.snippet = format!("silent {minutes} min");
         }
-        TurnProgress::ChatReferences { .. } => {}
+        TurnProgress::Question(request) => request.acknowledge(Err(
+            "this worker has no durable question panel; return the clarification to the lead"
+                .into(),
+        )),
+        TurnProgress::ChatReferences { .. } | TurnProgress::Commands { .. } => {}
     }
 }
 

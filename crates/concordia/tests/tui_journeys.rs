@@ -173,6 +173,9 @@ fn setup(root: &Path, provider: ProviderKind) {
     save_store(root, &store).unwrap();
     // Journeys script Cursor's print-mode fake; ACP journeys attach images or opt in explicitly.
     concordia::native_input::command(root, "cursor", "off").unwrap();
+    // The interaction-mode fake speaks Claude's print transport only; Claude's default stdio
+    // adapter has its own native cases, so these UI journeys keep the print transport.
+    concordia::native_input::command(root, "claude", "off").unwrap();
 }
 
 impl Session {
@@ -1333,6 +1336,73 @@ fn question_choices_select_a_reply_without_losing_the_unsent_draft() {
 #[ignore = "isolated workspace completion and explicit queue send journey; fake provider only"]
 fn workspace_files_complete_without_mentions_and_send_now_interrupts_then_sends_once() {
     let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for refused in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        setup(dir.path(), ProviderKind::Codex);
+        concordia::native_input::command(dir.path(), "codex", "on").unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::write(
+            workspace.join("appserver-fixture.json"),
+            serde_json::json!({
+                "steer":true,"steer_refused":refused,"finish_wait_for":"../gate"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut s = Session::launch(dir.path());
+        s.submit("Original native turn");
+        s.paste("queued instead");
+        s.until("live steering is offered", |s| {
+            s.screen().contains("Enter choose steer")
+        });
+        s.send("\t");
+        s.until("Tab explicitly queues", |s| s.queue() == ["queued instead"]);
+        s.paste("Synthetic steering message");
+        s.until("steering draft ready", |s| {
+            s.draft() == "Synthetic steering message"
+        });
+        s.enter();
+        s.until("Enter arms steering", |s| {
+            s.screen().contains("Enter again steer")
+        });
+        assert_eq!(s.draft(), "Synthetic steering message");
+        let calls = || {
+            std::fs::read_to_string(workspace.join("appserver-calls.jsonl"))
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>()
+        };
+        assert!(!calls().iter().any(|call| call["method"] == "turn/steer"));
+        s.enter();
+        if refused {
+            s.until("native refusal keeps the draft", |s| {
+                s.screen().contains("Codex refused steering")
+                    && s.draft() == "Synthetic steering message"
+            });
+        } else {
+            s.until("accepted steering clears only its draft", |s| {
+                s.draft().is_empty() && s.screen().contains("Synthetic steering message")
+            });
+        }
+        let calls = calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "turn/steer")
+                .count(),
+            1
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "turn/start")
+                .count(),
+            1
+        );
+        assert_eq!(s.queue(), ["queued instead"]);
+        s.exit();
+    }
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
     std::fs::create_dir(dir.path().join("workspace/src")).unwrap();

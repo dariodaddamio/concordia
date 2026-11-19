@@ -860,6 +860,10 @@ pub(super) fn handle_key(
             false
         }
         KeyCode::Tab => {
+            if app.pending_steer.is_some() {
+                app.flash("Waiting for Codex to confirm steering; your draft is kept");
+                return false;
+            }
             if !queue::tab(app) {
                 app.tab_complete_slash();
             }
@@ -1067,6 +1071,17 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     {
         app.dismiss_picker();
     }
+    if app.header_dropdown.is_some()
+        && m.kind == MouseEventKind::Down(MouseButton::Left)
+        && !app
+            .areas
+            .header_dropdown
+            .is_some_and(|rect| contains(rect, m.column, m.row))
+    {
+        // The closing click is consumed so it does not also act on what is underneath.
+        app.dismiss_picker();
+        return;
+    }
     if app
         .picker
         .as_ref()
@@ -1159,16 +1174,16 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_model_pressed)
     {
-        if model_hit {
-            app.open_model_picker();
+        if let Some(chip) = app.areas.header_model.filter(|_| model_hit) {
+            app.toggle_header_dropdown(PickerKind::Model, chip);
         }
         return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_effort_pressed)
     {
-        if effort_hit {
-            app.open_effort_picker();
+        if let Some(chip) = app.areas.header_effort.filter(|_| effort_hit) {
+            app.toggle_header_dropdown(PickerKind::Effort, chip);
         }
         return;
     }

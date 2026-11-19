@@ -299,19 +299,32 @@ const REUSES_PROVIDER: &[&str] = &["/model", "/effort"];
 
 /// Returns the command name when the typed slash command is registered by both Concordia and
 /// the selected provider. Arguments remain in the original line and are routed by the caller.
-pub fn shared_command_name(line: &str, provider: ProviderKind) -> Option<String> {
+pub fn shared_command_name(
+    line: &str,
+    provider: ProviderKind,
+    advertised: Option<&[crate::provider::AvailableCommand]>,
+) -> Option<String> {
     let name = line.split_whitespace().next()?.to_ascii_lowercase();
     // Concordia's `/model` already lists and sets the active provider's own models, so asking
     // who runs it would only add a step before the list the owner expects.
     if !name.starts_with('/') || REUSES_PROVIDER.contains(&name.as_str()) {
         return None;
     }
-    let concordia = COMMAND_REGISTRY
-        .iter()
-        .any(|command| command.name.eq_ignore_ascii_case(&name));
-    let provider = crate::provider::command_specs(provider)
-        .iter()
-        .any(|command| command.name.eq_ignore_ascii_case(&name));
+    let concordia = COMMAND_REGISTRY.iter().any(|command| {
+        command.name.eq_ignore_ascii_case(&name)
+            || command
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(&name))
+    });
+    let provider = match advertised {
+        Some(commands) => commands
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(&name)),
+        None => crate::provider::command_specs(provider)
+            .iter()
+            .any(|command| command.name.eq_ignore_ascii_case(&name)),
+    };
     concordia.then_some(name).filter(|_| provider)
 }
 

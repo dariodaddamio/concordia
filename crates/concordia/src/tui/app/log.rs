@@ -211,7 +211,9 @@ impl App {
             && (name.contains("request_user_input") || name.contains("askuserquestion"))
         {
             if let Some(detail) = &card.detail {
-                self.questions.offer_tool(detail);
+                let origin = self.question_origin();
+                let id = self.question_identity(&card.id);
+                let _ = self.questions.offer_owned(detail, true, origin, id);
             }
         }
         self.related_files.invalidate();

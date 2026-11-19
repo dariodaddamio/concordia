@@ -773,8 +773,10 @@ fn check_store(root: &Path) -> Check {
             Level::Ok,
             "store",
             format!(
-                "{} account(s) registered, trust {}{}",
-                s.accounts.len(),
+                "{} of {} account(s) signed in, trust {}{}",
+                // Counted as /use counts them: provider default homes included.
+                crate::accounts::accounts_with_auth(root).len(),
+                crate::accounts::list_all_accounts(root).len(),
                 s.settings.trust.as_str(),
                 if s.settings.trust == crate::store::TrustMode::Full {
                     " (provider approvals and sandboxing are bypassed; /mode changes this)"

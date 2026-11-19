@@ -59,7 +59,8 @@ fn default_for(provider: ProviderKind) -> Mode {
         ProviderKind::Cursor => Mode::Standard,
         ProviderKind::Grok => Mode::GrokAcp,
         ProviderKind::Opencode => Mode::OpencodeAcp,
-        ProviderKind::Codex | ProviderKind::Claude => Mode::Standard,
+        ProviderKind::Claude => Mode::ClaudeStdio,
+        ProviderKind::Codex => Mode::Standard,
     }
 }
 

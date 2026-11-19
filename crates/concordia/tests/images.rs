@@ -342,6 +342,10 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         json!({"wrong_thread":true}),
         json!({"wrong_turn":true}),
         json!({"closed":true}),
+        json!({"steer":true}),
+        json!({"steer":true,"steer_refused":true}),
+        json!({"steer":true,"steer_wrong_turn":true}),
+        json!({"steer":true,"steer_closed":true}),
     ] {
         use concordia::provider::interaction::InteractionOwner;
         let work = tempfile::tempdir().unwrap();
@@ -447,13 +451,38 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             local_time: None,
             compaction: Default::default(),
         };
+        let (started, mut handles) =
+            tokio::sync::mpsc::unbounded_channel::<std::sync::Arc<provider::RunningTurn>>();
+        let steering = fixture["steer"] == true;
+        let expected_accept = fixture["steer_refused"] != true
+            && fixture["steer_wrong_turn"] != true
+            && fixture["steer_closed"] != true;
+        let steer_task = tokio::spawn(async move {
+            if !steering {
+                return;
+            }
+            let handle = handles.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while !handle.can_steer() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = handle
+                .steer("Synthetic steering message".into())
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(result.is_ok(), expected_accept, "{result:?}");
+        });
         let out = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             provider::turn::run_provider_turn_with_transport(
                 &request,
                 owner,
                 concordia::native_input::Mode::CodexAppServer,
-                None,
+                steering.then_some(started),
                 Some(tx),
                 None,
             ),
@@ -462,10 +491,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         .unwrap()
         .unwrap();
         let offered = answers.await.unwrap();
+        steer_task.await.unwrap();
         let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
         assert_eq!(records.len(), usize::from(artifact));
         let expected_failed = fixture["wrong_thread"] == true
             || fixture["closed"] == true
+            || fixture["steer_closed"] == true
             || fixture["frame_over_limit"] == true;
         assert_eq!(out.failed, expected_failed, "{fixture}: {out:?}");
         if !expected_failed {
@@ -496,6 +527,24 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if steering {
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|v| v["method"] == "turn/steer")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|v| v["method"] == "turn/start")
+                    .count(),
+                1
+            );
+            assert_eq!(offered, 0);
+            continue;
+        }
         if fixture["wrong_thread"] == true {
             assert!(!calls.contains("turn/start"));
             assert_eq!(offered, 0);

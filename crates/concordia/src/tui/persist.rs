@@ -21,6 +21,7 @@ type DraftSlot = Mutex<
         Vec<String>,
         Option<super::recovery::RecoveryEdit>,
         Option<String>,
+        super::questions::Saved,
     )>,
 >;
 static PANIC_DRAFT: DraftSlot = Mutex::new(None);
@@ -31,9 +32,17 @@ fn mirror_snapshot(
     queue: Vec<String>,
     pending: Option<super::recovery::RecoveryEdit>,
     alternate: Option<String>,
+    questions: super::questions::Saved,
 ) {
     if let Ok(mut g) = PANIC_DRAFT.lock() {
-        *g = Some((Arc::downgrade(&lease), text, queue, pending, alternate));
+        *g = Some((
+            Arc::downgrade(&lease),
+            text,
+            queue,
+            pending,
+            alternate,
+            questions,
+        ));
     }
 }
 
@@ -44,10 +53,15 @@ pub fn flush_on_panic() {
 
 fn flush_from(slot: &DraftSlot) {
     if let Ok(g) = slot.try_lock() {
-        if let Some((lease, text, queue, pending, alternate)) = g.as_ref() {
+        if let Some((lease, text, queue, pending, alternate, questions)) = g.as_ref() {
             if let Some(lease) = lease.upgrade() {
-                let _ =
-                    lease.save_with_alternate(text, queue, pending.as_ref(), alternate.as_deref());
+                let _ = lease.save_with_questions(
+                    text,
+                    queue,
+                    pending.as_ref(),
+                    alternate.as_deref(),
+                    questions,
+                );
             }
         }
     }
@@ -76,6 +90,7 @@ pub(super) struct Keep {
     retries: u8,
     force_dirty: bool,
     warning: Option<String>,
+    questions_recovery_failed: bool,
     pub lease: Option<Arc<super::recovery::RecoveryLease>>,
     pub recovery_root: Option<PathBuf>,
     pub recovery_choices: Vec<super::recovery::RecoveryChoice>,
@@ -96,6 +111,7 @@ impl Keep {
             retries: 0,
             force_dirty: true,
             warning: None,
+            questions_recovery_failed: false,
             lease: None,
             recovery_root: None,
             recovery_choices: Vec::new(),
@@ -126,6 +142,7 @@ fn edit_signature(app: &super::App) -> u64 {
     } else {
         false.hash(&mut h);
     }
+    app.questions.revision().hash(&mut h);
     h.finish()
 }
 
@@ -149,6 +166,52 @@ impl super::App {
                 let _ = self.workspace.set_file_recovery(lease, &self.cwd);
             }
         }
+    }
+
+    pub(super) fn preserve_questions_before_new_task(&mut self) -> io::Result<()> {
+        let saved = self.questions.saved(self.deleg.d.conversation_id());
+        if !saved.waiting() {
+            return Ok(());
+        }
+        self.persist_draft_checked()?;
+        let root = self
+            .keep
+            .recovery_root
+            .as_ref()
+            .ok_or_else(|| io::Error::other("recovery root unavailable"))?;
+        let next = Arc::new(super::recovery::create(root)?);
+        next.save_with_questions(
+            &self.draft_text(),
+            &self.queue.items,
+            pending_edit(self).as_ref(),
+            self.alternate_draft().as_deref(),
+            &super::questions::Saved::default(),
+        )?;
+        let previous = self
+            .keep
+            .lease
+            .clone()
+            .ok_or_else(|| io::Error::other("recovery lease unavailable"))?;
+        if let Err(error) = self
+            .workspace
+            .transfer_file_recovery(next.clone(), &self.cwd)
+        {
+            let _ = next.dismiss_current();
+            return Err(io::Error::other(error));
+        }
+        if let Err(error) = previous.save_with_questions("", &[], None, None, &saved) {
+            let restored = self.workspace.transfer_file_recovery(previous, &self.cwd);
+            let _ = next.dismiss_current();
+            return Err(io::Error::other(format!(
+                "{error}; file recovery rollback: {}",
+                restored.err().unwrap_or_else(|| "restored".into())
+            )));
+        }
+        self.keep.lease = Some(next);
+        self.questions.clear();
+        self.mirror_recovery_snapshot();
+        self.push_system("Pending clarifications were kept in recovery for the previous task.");
+        Ok(())
     }
 
     fn alternate_draft(&self) -> Option<String> {
@@ -177,6 +240,7 @@ impl super::App {
     }
 
     pub(super) fn restore_state_for_record(&mut self, record: Option<&str>) {
+        let mut restored_questions = None;
         if self.keep.history {
             self.reference_journal.load(self.state_root.clone());
         }
@@ -203,7 +267,9 @@ impl super::App {
                     if let Some(data) = restored {
                         let had_content = !data.draft.trim().is_empty()
                             || !data.queue.is_empty()
-                            || data.pending_edit.is_some();
+                            || data.pending_edit.is_some()
+                            || data.questions.waiting();
+                        restored_questions = Some(data.questions);
                         self.restore_composer(&data.draft);
                         self.parked_draft = data.alternate_draft;
                         // Restored prompts wait for the user; a pause with nothing queued
@@ -224,6 +290,7 @@ impl super::App {
             }
         }
         self.restore_turn_checkpoint();
+        self.restore_questions(restored_questions);
         self.restore_workers();
         if let Some(lease) = self.keep.lease.clone() {
             if let Err(error) = self.workspace.set_file_recovery(lease, &self.cwd) {
@@ -252,15 +319,7 @@ impl super::App {
             self.keep.retries = 0;
         }
         if draft_changed || edit_changed {
-            if let Some(lease) = self.keep.lease.clone() {
-                mirror_snapshot(
-                    lease,
-                    self.draft_text(),
-                    self.queue.items.clone(),
-                    pending_edit(self),
-                    self.alternate_draft(),
-                );
-            }
+            self.mirror_recovery_snapshot();
         }
         if self.keep.lease.is_none()
             && self.keep.retries < MAX_RETRIES
@@ -310,6 +369,21 @@ impl super::App {
 
     /// Write the draft immediately (send, exit).
     pub(super) fn persist_draft_now(&mut self) {
+        let _ = self.persist_draft_checked();
+    }
+
+    pub(super) fn mirror_recovery_snapshot(&self) {
+        if self.keep.questions_recovery_failed {
+            if let (Some(lease), Ok(mut slot)) = (&self.keep.lease, PANIC_DRAFT.lock()) {
+                if slot.as_ref().is_some_and(|(weak, ..)| {
+                    weak.upgrade()
+                        .is_some_and(|saved| Arc::ptr_eq(&saved, lease))
+                }) {
+                    *slot = None;
+                }
+            }
+            return;
+        }
         if let Some(lease) = self.keep.lease.clone() {
             mirror_snapshot(
                 lease,
@@ -317,14 +391,26 @@ impl super::App {
                 self.queue.items.clone(),
                 pending_edit(self),
                 self.alternate_draft(),
+                self.questions.saved(self.deleg.d.conversation_id()),
             );
         }
+    }
+
+    pub(super) fn persist_draft_checked(&mut self) -> io::Result<()> {
+        if self.keep.questions_recovery_failed {
+            return Err(io::Error::other(
+                "saved clarification recovery needs review; original record kept",
+            ));
+        }
+        self.ensure_recovery_lease();
+        self.mirror_recovery_snapshot();
         if let Some(lease) = &self.keep.lease {
-            match lease.save_with_alternate(
+            match lease.save_with_questions(
                 &self.draft_text(),
                 &self.queue.items,
                 pending_edit(self).as_ref(),
                 self.alternate_draft().as_deref(),
+                &self.questions.saved(self.deleg.d.conversation_id()),
             ) {
                 Ok(()) => {
                     self.keep.rev_saved = self.editor.revision();
@@ -333,14 +419,47 @@ impl super::App {
                     self.keep.warning = None;
                     self.keep.retries = 0;
                     self.keep.retry_at = 0;
+                    return Ok(());
                 }
-                Err(error) => self.retry_failed(error),
+                Err(error) => {
+                    let message = error.to_string();
+                    self.retry_failed(error);
+                    return Err(io::Error::other(message));
+                }
             }
         } else if self.keep.retries < MAX_RETRIES {
             self.retry_failed(io::Error::new(
                 io::ErrorKind::NotFound,
                 "recovery lease unavailable",
             ));
+        }
+        Err(io::Error::other("recovery lease unavailable"))
+    }
+
+    fn restore_questions(&mut self, saved: Option<super::questions::Saved>) {
+        let Some(saved) = saved.filter(|saved| saved.waiting()) else {
+            return;
+        };
+        if !self.keep.restored_conversation {
+            if let Err(error) = self
+                .deleg
+                .d
+                .restore_conversation_identity(&saved.conversation)
+            {
+                self.keep.questions_recovery_failed = true;
+                self.mirror_recovery_snapshot();
+                self.push_system(error);
+                return;
+            }
+            self.keep.restored_conversation = true;
+        }
+        if let Err(error) = self
+            .questions
+            .restore(saved, self.deleg.d.conversation_id())
+        {
+            self.keep.questions_recovery_failed = true;
+            self.mirror_recovery_snapshot();
+            self.push_system(error);
         }
     }
 
@@ -409,6 +528,7 @@ impl super::App {
             })?;
         let lease = super::recovery::claim(root, id)?;
         let data = lease.data()?;
+        let questions = data.questions.clone();
         let lease = Arc::new(lease);
         self.workspace
             .set_file_recovery(lease.clone(), &self.cwd)
@@ -427,6 +547,7 @@ impl super::App {
         self.keep.lease = Some(lease);
         self.keep.recovery_choices.clear();
         self.restore_turn_checkpoint();
+        self.restore_questions(Some(questions));
         self.restore_workers();
         self.persist_draft_now();
         self.push_system("restored selected unsent draft and queued prompts");
@@ -480,6 +601,7 @@ mod tests {
                 attachments: None,
             }),
             Some("other unsent draft".into()),
+            super::super::questions::Saved::default(),
         )));
         flush_from(&slot);
         assert_eq!(lease.data().unwrap().draft, "typed before the crash");
@@ -498,6 +620,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            super::super::questions::Saved::default(),
         ));
         flush_from(&slot);
         assert_eq!(lease.data().unwrap().draft, "");

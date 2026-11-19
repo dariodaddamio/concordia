@@ -760,7 +760,7 @@ impl App {
         let item = self.queue.items.remove(index);
         self.queue.items.insert(0, item);
         self.queue.dispatch.set_explicit();
-        self.questions.clear();
+        self.questions.cancel_native();
         self.queue_changed();
         self.continuation.invalidate();
         if self.busy {
@@ -853,6 +853,9 @@ impl App {
         self.pulse_on = false;
         self.cancel_handle = None;
         self.questions.cancel_native();
+        if outcome.failed || outcome.cancelled {
+            self.provider_commands = None;
+        }
         self.native_owner = None;
         let automatic_target = if self.queue.dispatch.is_explicit() || !scope_closed {
             None
@@ -882,11 +885,9 @@ impl App {
             self.reference_journal.prevent_close();
             self.save_turn_checkpoint(turn_closed && scope_closed);
         }
-        if self.questions.waiting() {
-            self.pause_queue();
-            self.queue.dispatch.clear_automatic();
-        }
-        if self.continuation.waiting() {
+        self.persist_draft_now();
+        // An open question holds queued prompts until the user answers it (owner, 2026-11-18).
+        if self.continuation.waiting() || self.questions.waiting() {
             self.queue.dispatch.clear_automatic();
             self.pause_queue();
         }
@@ -911,7 +912,7 @@ impl App {
                 }
             }
         }
-        if self.questions.waiting() {
+        if self.questions.native_waiting() {
             return;
         }
         if self.queue.dispatch.is_explicit() {

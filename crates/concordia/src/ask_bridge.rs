@@ -23,6 +23,7 @@ const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60)
 /// before that and the agent calls again; the popup stays up and a repeat call reattaches to it.
 const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 pub const DISMISSED: &str = "The user dismissed the question without answering.";
+pub const DEFERRED_SAVED: &str = "Clarification saved in Concordia; the user has not answered yet. The answer will arrive as a later user message and follows the task if the user chooses another agent. Continue only independent read-only investigation; wait before edits or dependent actions. Do not answer for the user or repeat this question.";
 pub const STILL_OPEN: &str = "The question is still open in Concordia and the user has not answered yet. Call ask_user again with exactly the same questions to keep waiting for the answer. Do not answer for the user.";
 
 /// Turns a native question answer (selected option ids) back into the labels the agent offered.
@@ -64,6 +65,84 @@ pub fn answer_text(questions: &[Value], answer: &Value) -> String {
 pub struct BridgeRequest {
     pub questions: Value,
     pub answer: oneshot::Sender<Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeferredQuestion {
+    pub owner: crate::provider::interaction::InteractionOwner,
+    pub session_id: String,
+    pub questions: Value,
+    acknowledgement: std::sync::Arc<std::sync::Mutex<Option<oneshot::Sender<Value>>>>,
+}
+
+impl DeferredQuestion {
+    pub fn new(
+        owner: crate::provider::interaction::InteractionOwner,
+        session_id: String,
+        request: BridgeRequest,
+    ) -> Self {
+        Self {
+            owner,
+            session_id,
+            questions: request.questions,
+            acknowledgement: std::sync::Arc::new(std::sync::Mutex::new(Some(request.answer))),
+        }
+    }
+
+    pub fn acknowledge(&self, result: Result<(), String>) {
+        if let Ok(mut slot) = self.acknowledgement.lock() {
+            if let Some(reply) = slot.take() {
+                let text = match result {
+                    Ok(()) => DEFERRED_SAVED.to_owned(),
+                    Err(error) => format!("Clarification was not saved: {error}. No user answer or authorization was received."),
+                };
+                let _ = reply.send(json!(text));
+            }
+        }
+    }
+}
+
+pub struct SessionPlugin {
+    directory: tempfile::TempDir,
+    listener: tokio::task::JoinHandle<()>,
+}
+
+impl SessionPlugin {
+    pub async fn start(
+        executable: &std::path::Path,
+        tx: tokio::sync::mpsc::UnboundedSender<BridgeRequest>,
+    ) -> std::io::Result<Self> {
+        let directory = tempfile::Builder::new()
+            .prefix("concordia-questions-")
+            .tempdir()?;
+        std::fs::create_dir(directory.path().join(".cursor-plugin"))?;
+        std::fs::write(
+            directory.path().join(".cursor-plugin/plugin.json"),
+            r#"{"name":"concordia-questions","version":"1.0.0"}"#,
+        )?;
+        let token = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        let (endpoint, listener) = spawn_listener(token.clone(), tx).await?;
+        let plugin = Self {
+            directory,
+            listener,
+        };
+        let config = json!({"mcpServers":{"concordia-ask":{
+            "command":executable,"args":["ask-mcp"],
+            "env":{"CONCORDIA_ASK_ENDPOINT":endpoint,"CONCORDIA_ASK_TOKEN":token,"CONCORDIA_ASK_DEFERRED":"1"}
+        }}});
+        std::fs::write(plugin.path().join("mcp.json"), config.to_string())?;
+        Ok(plugin)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        self.directory.path()
+    }
+}
+
+impl Drop for SessionPlugin {
+    fn drop(&mut self) {
+        self.listener.abort();
+    }
 }
 
 /// A question shown to the user whose answer no call is waiting for right now.
@@ -167,7 +246,12 @@ fn error(id: Value, code: i64, message: &str) -> String {
 }
 
 fn tool() -> Value {
-    json!({"name":"ask_user","description":"Use this whenever you need a decision or clarification from the user. Concordia will show the questions in its question popup and return the selected answers. If it reports that the question is still open, call it again with the same questions.","inputSchema":{"type":"object","properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","maxLength":2000},"options":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"string","maxLength":2000}},"multiple":{"type":"boolean"}},"required":["question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}})
+    let description = if std::env::var_os("CONCORDIA_ASK_DEFERRED").is_some() {
+        "Ask whenever you need a user decision or clarification. Concordia saves the question and returns a pending acknowledgement, not an answer. The user answers later in a follow-up message. Continue only independent read-only investigation while waiting; pause edits and dependent actions."
+    } else {
+        "Use this whenever you need a decision or clarification from the user. Concordia shows the question popup and returns the selected answers. If the question is still open, call again with the same questions."
+    };
+    json!({"name":"ask_user","description":description,"inputSchema":{"type":"object","properties":{"questions":{"type":"array","minItems":1,"maxItems":4,"items":{"type":"object","properties":{"question":{"type":"string","maxLength":2000},"options":{"type":"array","minItems":2,"maxItems":8,"items":{"type":"string","maxLength":2000}},"multiple":{"type":"boolean"}},"required":["question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false},"outputSchema":{"type":"object","properties":{"questionState":{"type":"string","enum":["pending","answered"]}},"required":["questionState"]}})
 }
 
 fn validate(args: &Value) -> Result<(), &'static str> {
@@ -183,7 +267,7 @@ fn validate(args: &Value) -> Result<(), &'static str> {
             .get("question")
             .and_then(Value::as_str)
             .ok_or("question must be text")?;
-        if text.is_empty() || text.chars().count() > MAX_TEXT {
+        if text.trim().is_empty() || text.chars().count() > MAX_TEXT {
             return Err("question length is invalid");
         }
         let options = q
@@ -196,7 +280,7 @@ fn validate(args: &Value) -> Result<(), &'static str> {
         for option in options {
             if option
                 .as_str()
-                .is_none_or(|s| s.is_empty() || s.chars().count() > MAX_TEXT)
+                .is_none_or(|s| s.trim().is_empty() || s.chars().count() > MAX_TEXT)
             {
                 return Err("option length is invalid");
             }
@@ -264,7 +348,19 @@ pub fn handle_line(line: &str) -> Option<String> {
                 error(id, -32601, "unknown tool")
             } else {
                 match forward(params.get("arguments").unwrap_or(&Value::Null)) {
-                    Ok(text) => reply(id, json!({"content":[{"type":"text","text":text}]})),
+                    Ok(text) => {
+                        // Hooks such as Habena's read this marker to pause edits while the
+                        // user has not answered; it is not shown to the user.
+                        let state = if text == STILL_OPEN || text == DEFERRED_SAVED {
+                            "pending"
+                        } else {
+                            "answered"
+                        };
+                        reply(
+                            id,
+                            json!({"content":[{"type":"text","text":text}],"structuredContent":{"questionState":state}}),
+                        )
+                    }
                     Err(message) => reply(
                         id,
                         json!({"isError":true,"content":[{"type":"text","text":message}]}),

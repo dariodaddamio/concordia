@@ -1,6 +1,6 @@
 # Concordia work plan
 
-Current phase: parity and polish (2026-11-14).
+Current phase: parity and polish; completion-depth reconciliation (2026-11-17).
 
 ## Current instruction
 
@@ -10,7 +10,179 @@ provider does natively must stay reachable from Concordia. Work the plan below i
 per task, each proven in the running app and with a live turn where a provider is involved.
 Publication remains on hold.
 
-## Parity and polish plan (2026-11-14)
+## Completion-depth audit and Claude resume - 2026-11-17
+
+Owner instruction: inspect how thoroughly existing capabilities work, benchmark current
+competitors, and leave the interrupted agent an accessible continuation. Table stakes cover
+complete expected workflows and their interaction details. Feature names, source presence,
+passing unrelated tests and terminal escape hatches do not establish that completeness.
+This is an audit and proposed repair order, not approved new product copy or permission to
+publish, change authentication, grant hook trust or implement unresolved product choices.
+
+### Resume the interrupted work
+
+Latest source WIP: `2026-11-18b`. Codex app-server now offers steer-or-queue for a plain-text draft
+during an active turn. Steering binds to the exact thread/turn, preserves the draft until acceptance
+and never automatically retries uncertain input. Cursor 2026.11.17 usage now submits with CSI-u
+Return; a real local-only fetch passed. Habena's eight sealed lock fixes were approved by the owner.
+
+Installed 2026-11-19 at the owner's request (`2026-11-18b, 40897e1+0723`, uncommitted tree). A live
+Cursor test of the installed build ran on an isolated state copy. The header chip opened the model
+and effort dropdowns. On the Haiku API quota error, Concordia showed the error, kept the prompt and
+retried on the same session with Auto. A turn completed, and a Tab-queued message was sent after
+the running turn. A restart reopened the chat with its history, and the model recalled the first
+prompt. Doctor lists 15 unopenable old chats (moved Codex 3 home, missing handoff maps); see
+`concordia chat repair --dry-run`.
+Claude defaults to the existing stdio adapter
+that handles `AskUserQuestion`; an explicit saved off choice remains respected. Standing context
+names Concordia and the question tool. Owned launches supply a bounded client/provider/tool/timing
+declaration for Habena; ownerless launches remove inherited declarations. Ordinary owned Codex
+turns already route through app-server; no fresh Codex delay was reproduced or separately fixed.
+The existing standing-context and `images` integration cases pass. Live Claude/Codex mid-turn
+question/answer verification remains open; deterministic fixtures do not close it. Installed 15c
+and global Habena are unchanged. Continue with the related existing Habena preference plan for
+personal opt-in, native lifecycle review/distribution and context-cost measurement; never grant
+native trust automatically. Prefer deterministic mechanics and compact context over model work.
+
+Implementation continuation: `2026-11-17a` fixes ACP discovery within C3; other providers'
+catalog discovery remains open. Current scoped qualification is recorded in
+[verification](docs/e2e-status.md). The audit baseline identities below are historical observations.
+Candidate `2026-11-17b` implements C1/C2's local plugin and durable clarification/FIFO flow.
+Synthetic native-window checks and 32 existing scoped cases pass. After explicit approval of
+the scratch workspace through Cursor's native prompt, two tiny Auto turns passed the live
+question/delayed-answer flow on one exact session. Installed copies remain unchanged.
+The earlier isolated-startup failure was reused synthetic state containing the inherited Codex
+home. Clean seeded state starts with the guard enabled; no product startup fix was required.
+
+- Branch `campaign/ui-logic-1115`, HEAD `40897e1`; source stamp `2026-11-16a`.
+  The uncommitted `doctor.rs` change counts signed-in and total accounts using the same account
+  owners as `/use`. It is complete; its reused proof is in [verification](docs/e2e-status.md).
+- The installed executable still reports `2026-11-15c`. Existing debug output reports
+  `2026-11-16a, 40897e1+1536`; release output reports `2026-11-16a, df17303`.
+  These are distinct candidates. Do not rebuild or install merely to update this audit.
+- The interrupted campaign's receipts remain in `target/overnight/2026-11-15-ui-logic/`.
+  Its manifest and the recovered Claude session contain later evidence than the historical
+  15a status below. The reconciled results and their limits are in
+  [verification](docs/e2e-status.md#2026-11-17-evidence-reconciliation).
+- Preserve the separate Habena checkout's dirty anti-slop integration and preference-program
+  changes. Its current completion/enforcement findings belong in its existing preference plan.
+  Do not infer that an identical package version means identical installed policy bytes.
+
+### Audit method and completion condition
+
+For each row below, trace entry point, state owner, provider transport and return path. Inspect
+initial, loading, empty, successful, failed, cancelled and recovered states, plus keyboard,
+focus, resizing, background operation and simultaneous chats where applicable. A non-applicable
+state needs a concrete reason. A passing happy path does not close the other states.
+
+Each result must name the candidate, provider version, transport, account/home binding and
+specific scenario where relevant. Classify evidence as source inspection, dated execution,
+fresh execution or unavailable. A fixture is not a live provider turn; a live adapter test is
+not native-window proof; a focused rerun does not erase an earlier suite failure.
+
+Use existing owners, fixtures and journeys. Run the smallest relevant check after a change;
+reuse it while its relevant inputs are unchanged. Follow AGENTS.md for live-turn scope and
+release qualification. Do not add per-component hooks, duplicate reports or a new test suite.
+For an existing broken capability, bring the observed impact to the owner before continuing
+enhancements. Material product choices use the interactive question tool; independent reads
+can continue while dependent mutations wait.
+
+### Source-confirmed gaps and finite acceptance
+
+Paths in this table are under `crates/concordia/src/`. These are inspected implementation
+limits, not fresh claims that every corresponding installed interaction is broken.
+
+| ID | Gap and owner | Required acceptance |
+| --- | --- | --- |
+| C1 | Candidate 17b adds a session-local question plugin to Cursor Standard. Native-window and real-provider qualification are tracked below. | Fresh chat and exact-session resume expose questions without changing default transport or native session identity. |
+| C2 | Candidate 17b persists conversational question data through existing pane recovery and FIFO replies. Native approvals remain live/run-bound. | Delayed/partial replies, multiple bundles, restart, account handoff and save failure preserve decisions without replaying approvals. |
+| C3 | ACP metadata reaches the session-bound picker (17a). Claude stdio now announces its slash commands and descriptions per session (2026-11-18, fake-proven). Codex app-server 0.166.0 has no command-list RPC, so Codex keeps its static list. | Advertise before the first prompt, change availability and switch accounts. Discovery and invocation must retain exact session ownership. |
+| C4 | 2026-11-18: `/fork` calls `thread/fork` from the installed 0.166.0 schema and adopts the new thread after workspace and approval checks; proven against the fake app-server (Concordia live testing is Cursor-only). | Fork preserves the original; subsequent prompts, history, approvals and native terminal bind to the selected new thread only. |
+| C5 | 18b adds Codex app-server steering with explicit Enter confirmation or Tab queue, exact thread/turn IDs and acceptance-bound draft clearing. Other transports and attachments retain existing behavior. | Qualify acceptance, refusal, late completion and queue choice separately; never replay uncertain input. |
+| C6 | `native_history.rs` bounds the display to 200 messages/1 MiB; Cursor restoration is text-only. Native sources remain separate. | Long and truncated chats explain the limit and offer exact older-source access; resume preserves native identity and tool-history limitations are visible. |
+| C7 | `tui/managed_workspaces.rs` has an action handler with no caller found; lifecycle library code alone does not prove reachability. | Reach creation, inspection and reviewed integration from the product. Changed heads, conflicts, dirty files and active ownership invalidate unsafe actions. |
+| C8 | Native diffs and Codex `review/start` exist; a connected result-to-review/check/PR flow was not traced. | Follow one delegated change through precise feedback, review, explicit integration, applicable checks and PR readiness; retain task/file/revision identity. |
+| C9 | Public cross-provider `agents` in `mcp.rs` exposes list/start/status/result, without follow-up/cancel/watch actions. Native tools differ. | The lead can inspect and control its worker, receive completion and distinguish quota, crash, cancellation and success without rerunning uncertain work. |
+| C10 | `tui/settings.rs` inventories local skill/hook sources and explicitly disclaims full enumeration or active execution. | Distinguish configured, discovered, enabled, actually exposed and freshly proven for the current provider/project; opening a source proves none of the latter. |
+| C11 | Owner, 2026-11-18: providers stay current and nothing should break. A Codex newer than the qualified 0.166.0 is tried on the app-server; a failure before the prompt is sent reruns that turn on the standard transport with one notice (fake-proven). Owner: `provider/turn_appserver.rs`, `provider/turn.rs`. | Capability decisions use the qualified installed protocol. An upgrade produces an explicit compatibility result and preserves the draft/session on refusal. |
+| C12 | Guided provider installation remains incomplete in `connect.rs`; login and diagnostics exist. | A missing CLI has an actionable setup path; cancel, failed install, native login and unverified versions retain user control. |
+| C13 | 18b uses CSI-u Return for Cursor 2026.11.17. One real local-only usage fetch returned a parsed table; LF failed before that correction. Owner: `cursor_usage.rs`. | Preserve no-model-prompt behavior, owned process cleanup and explicit usage-unavailable errors when the screen changes. |
+
+C1 must preserve the default native-terminal resume contract while making questions dependable.
+An earlier tiny native Cursor print-mode prototype loaded a session-local plugin, called `ask_user` and
+received the synthetic callback answer. This qualifies that transport route, not product UI
+integration or pending-question persistence. Candidate 17b's scoped implementation evidence is
+recorded in verification. No global plugin registration or blanket MCP approval
+was used. The ordinary `mcp list` subcommand did not enumerate the session plugin, so that list
+alone is not a readiness check for this route.
+Changing the default transport still requires an owner decision; do not silently switch to ACP.
+C2's timeout bridge is a real improvement; it is not proof that a model cannot end the turn
+while a question is unanswered. Native approvals and conversational replies remain different.
+Owner decision (2026-11-17): unanswered clarifications and eventual answers follow the task
+when the user selects a replacement agent/account. Preserve the original provider, account and
+session as visible provenance. Native file, command and plan approvals remain bound to their
+original live run; never restore or transfer them as grants. Implement this through the existing
+question panel, pane recovery record and FIFO reply queue, without changing the default transport.
+C5 first needs installed-protocol capability evidence and any remaining parity decision;
+upstream main alone does not establish CLI 0.166.0 support.
+
+C7/C8 preserve the existing owner decision: multi-agent review follows the provider/harness;
+code review uses provider change views and the user's Git/editor tools. The journey may cross
+those surfaces. It does not authorize the rejected unified Concordia changes panel or a new
+PR subsystem. Trace and repair Concordia's responsibility for identity, reachability and return.
+
+### Remaining surfaces to qualify
+
+These obligations stay open; they are not newly reproduced defects or a silently reduced scope.
+
+| Surface and existing owner | Specific outstanding qualification |
+| --- | --- |
+| Home, tabs, settings; `tui/landing.rs`, `tui/tabs.rs`, `tui/settings.rs` | Repeated navigation, draft retention, selected-tab visibility, keyboard/mouse agreement, narrow layouts and stale footer state. |
+| Composer and recovery; `tui/editor.rs`, `tui/persist.rs`, `tui/recovery.rs` | Unicode selection, large/multiline paste, undo/redo, prompt history, attachments and queued edits across close/restart. Benchmark external-editor/draft-stash behavior explicitly. |
+| Transcript; `tui/markdown.rs`, `tui/transcript.rs`, `provider/stream_cards.rs` | Long streaming/tool output, expansion, selection/copy, scroll anchoring, errors and resumed event fidelity. |
+| Inputs and previews; `attachments.rs`, `attachment_documents.rs`, `tui/document_preview.rs` | Unsupported provider/transport, corrupt/oversized input, changed file, mixed attachments and cancel/retry. PDF preview exists; native PDF submission is Claude-only. |
+| Models, effort, usage; `models.rs`, `usage.rs`, `tui/app/pickers.rs` | Unknown/stale catalogs, disappearing model, unsupported effort, per-model quotas, same snapshot across surfaces and failure without draft loss. |
+| Permissions and attention; `tui/questions.rs`, `tui/worker_input.rs`, `provider/interaction.rs` | Queued requests, free text, multi-select, stale/foreign answers, concurrent chats, dismissal, background notification and explicit cancellation. |
+| Terminal and editor; `tui/local_terminal.rs`, `tui/workspace_edit.rs`, `file_document.rs` | Native fallback cold/warm startup, correct session, returning history, busy turns, shell lifetime, external file conflict and unsaved-close behavior. |
+| Memory and handoff; `memory_retrieval.rs`, `provider/standing_context.rs`, `tui/reference_journal.rs` | Exact source readback, stale/missing source, bounded context, account handoff, compaction and quota recovery; no token-saving claim without measurements. |
+| Integrations; `tui/integrations.rs`, `mcp_registry.rs` | Disabled/unavailable server, config changes, tool exposure by transport, reconnect, ownership and bounded failure; preserve native settings. |
+| Accessibility and input; `tui/native_window.rs`, `config.rs` | Full keyboard path, focus restoration, scaling/contrast, screen-reader interoperability, notification delivery and shortcut configuration. |
+| Update, restart and cleanup; `update.rs`, `tui/update_ui.rs`, `install_watch.rs` | Running turn, unsaved edits, multiple windows, failed download/hash, interrupted install, current-build identity and owned-process cleanup. |
+| Wider competitive coverage | Keep cloud/SSH/mobile, scheduling, collaboration, export and data-retention expectations visible. Map to an existing native/external route or an explicit owner decision. |
+
+Current benchmarks, checked 2026-11-17: [Claude Desktop](https://code.claude.com/docs/en/desktop.md),
+[Claude interaction](https://code.claude.com/docs/en/interactive-mode.md),
+[checkpoint recovery](https://code.claude.com/docs/en/checkpointing.md),
+[Cursor CLI](https://cursor.com/docs/cli/using), [Cursor ACP](https://cursor.com/docs/cli/acp),
+[OpenCode interactions](https://opencode.ai/docs/cli/tui),
+[Conductor review](https://www.conductor.build/docs/reference/diff-viewer) and
+[checks](https://www.conductor.build/docs/reference/checks).
+Use [ACP v1 command advertisements](https://agentclientprotocol.com/protocol/v1/slash-commands)
+for the actual integration contract; v2 is a draft.
+Current [Codex app-server source](https://github.com/openai/codex/blob/67d8266e06e469e5aef78a23881c7e19c37030b0/codex-rs/app-server/README.md)
+and [method registry](https://github.com/openai/codex/blob/67d8266e06e469e5aef78a23881c7e19c37030b0/codex-rs/app-server-protocol/src/protocol/common.rs)
+include fork/steer and replace removed `thread/rollback` with `thread/revert`.
+Upstream main is a research reference, not the qualified schema of installed CLI 0.166.0.
+
+### Proposed execution order
+
+1. The doctor edit is complete (uncommitted); preserve exact candidate identities. Use clean seeded synthetic
+   state for native-window checks; the reused-state startup blocker is resolved without guard changes.
+2. C1/C2's scoped default-Cursor question/FIFO qualification is complete in candidate 17b;
+   retain its installed/source distinction and native approval boundary. Wider provider and
+   surface obligations remain open; the checks do not establish a mutation hook.
+3. Close C3/C4/C11 using versioned provider capability discovery and exact-session return paths.
+4. Close the delegated-change acceptance journey across C7/C8/C9, then run the remaining
+   surface obligations. Preserve earlier fixes; do not restart the campaign from stale bugs.
+5. Bind the resulting accepted obligations and evidence to Habena's proposed task guard.
+   Its implementation and native activation are separate work, not established by this plan.
+
+## Historical parity and polish observations (2026-11-14)
+
+Recheck these observations against the checkpoint above before treating them as open defects.
+Current source already has same-session terminal resume/fallback, PDF/SVG preview and a
+minimum-version Claude check. The historical exact-version and raw-preview descriptions below
+must not trigger duplicate implementations. The old `_work/audit/out/` source is absent locally.
 
 Source: the audit in `_work/audit/out/` (lanes U1 to U6, CL, CX, CU, OR), run on build
 2026-11-14b. Grok and opencode are out of testing scope because they are not installed.
@@ -91,8 +263,8 @@ The audited implementation and its previous documentation are preserved in local
 
 - One worktree remains. The current work branch and `main` are retained. No obsolete build cache,
   disposable repository archives or unused installer images were found in the final inventory.
-- The installed build is 2026-11-09g. Its executable identity and scoped checks are recorded in
-  [verification status](docs/e2e-status.md).
+- The 2026-11-09g executable identity and scoped checks are historical. Current installed/source
+  observations and later campaign evidence are in [verification status](docs/e2e-status.md).
 - The owner completed manual removal of the older executable, matching receipt and four synthetic
   Temp folders. Their absence was verified on 2026-11-09; those cleanup exceptions are closed.
 - Native histories, credentials, drafts, queues and unique recovery records are preserved.

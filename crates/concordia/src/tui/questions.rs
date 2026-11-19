@@ -3,13 +3,52 @@
 //! Single questions require trailing choices; explicit bundles may include descriptions and
 //! a trailing progress note. The note row accepts a choice with a note, or a note alone.
 use super::*;
+use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Question {
     prompt: String,
     options: Vec<String>,
+    #[serde(default)]
+    multiple: bool,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct Origin {
+    pub provider: ProviderKind,
+    pub account: String,
+    pub session: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct Snapshot {
+    id: String,
+    origin: Option<Origin>,
+    questions: Vec<Question>,
+    current: usize,
+    selected: usize,
+    answers: Vec<String>,
+    selections: Vec<Vec<usize>>,
+    selected_options: Vec<usize>,
+    texts: Vec<Option<String>>,
+    note: String,
+    source: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub(super) struct Saved {
+    pub conversation: String,
+    bundles: Vec<Snapshot>,
+    completed: Vec<String>,
+}
+
+impl Saved {
+    pub fn waiting(&self) -> bool {
+        !self.bundles.is_empty()
+    }
+}
+
 #[derive(Default)]
 pub(super) struct State {
     questions: Vec<Question>,
@@ -31,13 +70,262 @@ pub(super) struct State {
     /// First visible line of the scrolled list, and rows per page, both set by `draw`.
     scroll: usize,
     page: usize,
+    origin: Option<Origin>,
+    id: String,
+    pending: std::collections::VecDeque<Snapshot>,
+    completed: std::collections::VecDeque<String>,
+    revision: u64,
 }
 
 fn native_attention_identity(native_session_id: &str, request_id: &serde_json::Value) -> String {
     format!("native:{native_session_id}:{request_id}")
 }
 
+fn pending_native_snapshot(request: &crate::provider::turn::NativeRequest) -> Option<Snapshot> {
+    if !matches!(
+        request.kind(),
+        crate::provider::interaction::NativeInteraction::Questions(_)
+            | crate::provider::interaction::NativeInteraction::CodexQuestions(_)
+    ) {
+        return None;
+    }
+    let envelope = request.envelope();
+    Some(Snapshot {
+        id: format!("native:{}:{}", envelope.connection_id, envelope.request_id),
+        origin: envelope.owner.as_ref().map(|owner| Origin {
+            provider: owner.provider,
+            account: owner.account.clone(),
+            session: Some(envelope.native_session_id.clone()),
+        }),
+        questions: native_questions(request)
+            .into_iter()
+            .enumerate()
+            .map(|(index, (prompt, options))| Question {
+                prompt,
+                options,
+                multiple: request.allows_multiple(index),
+            })
+            .collect(),
+        current: 0,
+        selected: 0,
+        answers: Vec::new(),
+        selections: Vec::new(),
+        selected_options: Vec::new(),
+        texts: Vec::new(),
+        note: String::new(),
+        source: String::new(),
+    })
+}
+
 impl State {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+    fn snapshot(&self) -> Option<Snapshot> {
+        if !self.waiting()
+            || self.native.as_ref().is_some_and(|request| {
+                matches!(
+                    request.kind(),
+                    crate::provider::interaction::NativeInteraction::Permission { .. }
+                        | crate::provider::interaction::NativeInteraction::CodexPermission { .. }
+                        | crate::provider::interaction::NativeInteraction::PlanApproval { .. }
+                )
+            })
+        {
+            return None;
+        }
+        let mut questions = self.questions.clone();
+        if let Some(native) = &self.native {
+            for (index, question) in questions.iter_mut().enumerate() {
+                question.multiple = native.allows_multiple(index);
+            }
+        }
+        Some(Snapshot {
+            id: self.id.clone(),
+            origin: self.origin.clone(),
+            questions,
+            current: self.current,
+            selected: self.selected,
+            answers: self.answers.clone(),
+            selections: self.native_selections.clone(),
+            selected_options: self.native_selected.clone(),
+            texts: self.native_texts.clone(),
+            note: self.note.clone(),
+            source: self.last_source.clone(),
+        })
+    }
+
+    fn load(&mut self, snapshot: Snapshot) {
+        self.changed();
+        self.id = snapshot.id;
+        self.origin = snapshot.origin;
+        self.questions = snapshot.questions;
+        self.current = snapshot.current;
+        self.selected = snapshot.selected;
+        self.answers = snapshot.answers;
+        self.native_selections = snapshot.selections;
+        self.native_selected = snapshot.selected_options;
+        self.native_texts = snapshot.texts;
+        self.note = snapshot.note;
+        self.last_source = snapshot.source;
+        self.focused = false;
+        self.auto_focused = false;
+        self.scroll = 0;
+    }
+
+    pub fn saved(&self, conversation: &str) -> Saved {
+        Saved {
+            conversation: conversation.into(),
+            bundles: self
+                .snapshot()
+                .into_iter()
+                .chain(self.pending.iter().cloned())
+                .chain(
+                    self.pending_native
+                        .iter()
+                        .filter_map(pending_native_snapshot),
+                )
+                .collect(),
+            completed: self.completed.iter().cloned().collect(),
+        }
+    }
+
+    pub fn handoff_context(&self) -> Option<String> {
+        let saved = self.saved("");
+        if !saved.waiting() {
+            return None;
+        }
+        let mut text = String::from("[Pending task clarifications]\nThese questions follow this task from the original agent. No answer has been received for the pending parts. Continue only independent read-only investigation; wait before edits or dependent actions. This is not a native approval.\n");
+        for bundle in saved.bundles {
+            if let Some(origin) = bundle.origin {
+                text.push_str(&format!(
+                    "Source: {} / {} / session {}\n",
+                    origin.provider.as_str(),
+                    origin.account,
+                    origin.session.as_deref().unwrap_or("unreported")
+                ));
+            }
+            for answer in bundle.answers {
+                text.push_str(&format!("Answered part: {answer}\n"));
+            }
+            for question in bundle.questions.iter().skip(bundle.current) {
+                text.push_str(&format!("Pending: {}\n", question.prompt));
+            }
+        }
+        if text.chars().count() > 4000 {
+            text = text.chars().take(4000).collect();
+            text.push_str(
+                "\n[Additional clarification text remains in Concordia's question panel.]",
+            );
+        }
+        Some(text)
+    }
+
+    pub fn restore(&mut self, saved: Saved, conversation: &str) -> Result<(), String> {
+        if saved.conversation != conversation {
+            return Err("saved clarifications belong to another task".into());
+        }
+        if saved.bundles.len() > 16
+            || saved.completed.len() > 128
+            || saved.bundles.iter().any(|s| {
+                s.questions.is_empty()
+                    || s.questions.len() > 4
+                    || s.current >= s.questions.len()
+                    || s.answers.len() != s.current
+                    || s.note.len() > 4096
+                    || s.source.len() > 128 * 1024
+                    || s.id.len() > 128 * 1024
+                    || s.answers.iter().any(|answer| answer.len() > 48 * 1024)
+                    || s.questions.iter().any(|q| {
+                        q.prompt.is_empty()
+                            || q.prompt.len() > 8192
+                            || q.options.len() > 9
+                            || q.options.iter().any(|o| o.len() > 8192)
+                    })
+            })
+        {
+            return Err("saved clarifications are invalid; original recovery kept".into());
+        }
+        self.clear();
+        self.pending = saved.bundles.into();
+        self.completed = saved.completed.into();
+        if let Some(snapshot) = self.pending.pop_front() {
+            self.load(snapshot);
+        }
+        Ok(())
+    }
+
+    pub fn offer_owned(
+        &mut self,
+        text: &str,
+        structured: bool,
+        origin: Origin,
+        id: String,
+    ) -> Result<bool, String> {
+        if text.len() > 128 * 1024 {
+            return Err("question payload exceeds 128 KiB".into());
+        }
+        if self.completed.contains(&id) || self.id == id || self.pending.iter().any(|s| s.id == id)
+        {
+            return Ok(false);
+        }
+        let questions = if structured {
+            parse_tool(text)
+        } else {
+            parse(text)
+        };
+        if questions.is_empty() {
+            return Err("question payload could not be displayed".into());
+        }
+        if self.pending.len() + usize::from(self.waiting()) >= 8 {
+            return Err("this task already has eight pending question bundles".into());
+        }
+        let snapshot = Snapshot {
+            id,
+            origin: Some(origin),
+            questions,
+            current: 0,
+            selected: 0,
+            answers: Vec::new(),
+            selections: Vec::new(),
+            selected_options: Vec::new(),
+            texts: Vec::new(),
+            note: String::new(),
+            source: text.into(),
+        };
+        if self.waiting() {
+            self.pending.push_back(snapshot);
+        } else {
+            self.load(snapshot);
+        }
+        self.changed();
+        Ok(true)
+    }
+
+    pub fn remove_owned(&mut self, id: &str) {
+        self.pending.retain(|snapshot| snapshot.id != id);
+        if self.native.is_none() && self.id == id {
+            self.reset_visible();
+            if let Some(snapshot) = self.pending.pop_front() {
+                self.load(snapshot);
+            }
+        }
+    }
+
+    fn allows_multiple(&self) -> bool {
+        self.native.as_ref().map_or_else(
+            || self.questions.get(self.current).is_some_and(|q| q.multiple),
+            |request| request.allows_multiple(self.current),
+        )
+    }
+
+    pub fn native_waiting(&self) -> bool {
+        self.native.is_some()
+    }
+
     pub fn waiting(&self) -> bool {
         !self.questions.is_empty()
     }
@@ -88,6 +376,9 @@ impl State {
             .as_ref()
             .is_some_and(|request| !request.is_active())
         {
+            if let Some(snapshot) = self.snapshot() {
+                self.pending.push_front(snapshot);
+            }
             self.advance_native();
             return true;
         }
@@ -97,12 +388,23 @@ impl State {
         for request in self.pending_native.drain(..) {
             request.invalidate();
         }
+        self.pending.clear();
+        self.completed.clear();
+        self.reset_visible();
+    }
+    fn reset_visible(&mut self) {
+        self.changed();
         if let Some(request) = self.native.take() {
             request.invalidate();
         }
         self.native_selections.clear();
         self.native_selected.clear();
         self.native_texts.clear();
+        self.answers.clear();
+        self.current = 0;
+        self.selected = 0;
+        self.origin = None;
+        self.id.clear();
         self.questions.clear();
         self.focused = false;
         self.auto_focused = false;
@@ -113,28 +415,43 @@ impl State {
     }
     pub fn cancel_native(&mut self) {
         if self.native.is_some() {
-            self.clear();
+            if let Some(snapshot) = self.snapshot() {
+                self.pending.push_front(snapshot);
+            }
+            for request in self.pending_native.drain(..) {
+                if let Some(snapshot) = pending_native_snapshot(&request) {
+                    self.pending.push_back(snapshot);
+                }
+                request.invalidate();
+            }
+            self.advance_native();
         }
     }
     fn advance_native(&mut self) {
         let mut pending = std::mem::take(&mut self.pending_native);
-        self.clear();
+        self.reset_visible();
         while let Some(request) = pending.pop_front() {
             if request.is_active() {
                 self.offer_native(request, false);
                 self.pending_native = pending;
-                break;
+                return;
             }
         }
+        if let Some(snapshot) = self.pending.pop_front() {
+            self.load(snapshot);
+        }
     }
+    #[cfg(test)]
     pub fn offer(&mut self, text: &str) {
         self.offer_questions(text, false);
     }
 
+    #[cfg(test)]
     pub fn offer_tool(&mut self, text: &str) {
         self.offer_questions(text, true);
     }
 
+    #[cfg(test)]
     fn offer_questions(&mut self, text: &str, structured: bool) {
         if self.native.is_some() {
             return;
@@ -150,7 +467,28 @@ impl State {
         if questions.is_empty() {
             return;
         }
+        if self.waiting() {
+            if self.pending.iter().any(|s| s.source == text) || self.pending.len() >= 7 {
+                return;
+            }
+            let snapshot = Snapshot {
+                id: text.into(),
+                origin: None,
+                questions,
+                current: 0,
+                selected: 0,
+                answers: Vec::new(),
+                selections: Vec::new(),
+                selected_options: Vec::new(),
+                texts: Vec::new(),
+                note: String::new(),
+                source: text.into(),
+            };
+            self.pending.push_back(snapshot);
+            return;
+        }
         self.last_source = text.into();
+        self.id = text.into();
         self.questions = questions;
         self.current = 0;
         self.selected = 0;
@@ -182,15 +520,23 @@ impl State {
         {
             if self.pending_native.len() < 7 {
                 self.pending_native.push_back(request);
+                self.changed();
             } else {
                 request.cancel();
             }
             return;
         }
-        self.clear();
+        if let Some(snapshot) = self.snapshot() {
+            self.pending.push_front(snapshot);
+        }
+        self.reset_visible();
         self.questions = native_questions(&request)
             .into_iter()
-            .map(|(prompt, options)| Question { prompt, options })
+            .map(|(prompt, options)| Question {
+                prompt,
+                options,
+                multiple: false,
+            })
             .collect();
         if self.questions.is_empty()
             || self
@@ -200,7 +546,7 @@ impl State {
                 .any(|(index, q)| q.options.is_empty() && !request.allows_text(index))
         {
             request.cancel();
-            self.clear();
+            self.advance_native();
             return;
         }
         self.current = 0;
@@ -208,18 +554,24 @@ impl State {
         self.answers.clear();
         self.focused = focus;
         self.auto_focused = false;
+        let envelope = request.envelope();
+        self.id = format!("native:{}:{}", envelope.connection_id, envelope.request_id);
+        self.origin = envelope.owner.as_ref().map(|owner| Origin {
+            provider: owner.provider,
+            account: owner.account.clone(),
+            session: Some(envelope.native_session_id.clone()),
+        });
         self.native = Some(request);
     }
 }
 
 impl State {
     fn append_note(&mut self, value: &str) -> bool {
-        if self.native.is_some() {
-            crate::provider::interaction::append_reply(&mut self.note, value)
-        } else {
-            self.note.push_str(value);
-            true
+        let accepted = crate::provider::interaction::append_reply(&mut self.note, value);
+        if accepted {
+            self.changed();
         }
+        accepted
     }
 }
 
@@ -326,16 +678,18 @@ fn parse_tool(text: &str) -> Vec<Question> {
         {
             let value = value.get("arguments").unwrap_or(&value);
             if let Some(questions) = value.get("questions").and_then(|v| v.as_array()) {
+                if questions.is_empty() || questions.len() > 4 {
+                    return Vec::new();
+                }
                 return questions
                     .iter()
-                    .take(3)
-                    .filter_map(|q| {
+                    .map(|q| {
                         let prompt = q
                             .get("question")
                             .or_else(|| q.get("title"))?
                             .as_str()?
                             .trim();
-                        if prompt.is_empty() || prompt.len() > 4096 {
+                        if prompt.is_empty() || prompt.chars().count() > 2000 {
                             return None;
                         }
                         // Host async prompts use `title` and optional string choices. These
@@ -353,7 +707,7 @@ fn parse_tool(text: &str) -> Vec<Question> {
                                         let label = option.as_str().or_else(|| {
                                             option.get("label").and_then(|label| label.as_str())
                                         })?;
-                                        (!label.trim().is_empty() && label.len() <= 1200)
+                                        (!label.trim().is_empty() && label.chars().count() <= 2000)
                                             .then(|| label.to_owned())
                                     })
                                     .collect::<Option<Vec<_>>>()?
@@ -363,9 +717,14 @@ fn parse_tool(text: &str) -> Vec<Question> {
                         (!options.is_empty() || q.get("title").is_some()).then_some(Question {
                             prompt: prompt.to_owned(),
                             options,
+                            multiple: q
+                                .get("multiple")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false),
                         })
                     })
-                    .collect();
+                    .collect::<Option<Vec<_>>>()
+                    .unwrap_or_default();
             }
         }
     }
@@ -415,6 +774,7 @@ fn parse(text: &str) -> Vec<Question> {
             open = Some(Question {
                 prompt: plain(line.trim().trim_matches(['*', '#', ' '])),
                 options: Vec::new(),
+                multiple: false,
             });
             continue;
         }
@@ -500,6 +860,7 @@ fn parse_bundle(text: &str) -> Option<Vec<Question>> {
         let mut question = Question {
             prompt: prompt.clone(),
             options: Vec::new(),
+            multiple: false,
         };
         let mut after_choices = false;
         for line in &lines[*start + 1..end] {
@@ -547,6 +908,7 @@ fn parse_bundle(text: &str) -> Option<Vec<Question>> {
 }
 /// `index` past the last choice is the note row: the note is sent on its own.
 fn choose(app: &mut App, index: usize) {
+    let previous = app.questions.saved(app.deleg.d.conversation_id());
     if app.questions.native.as_ref().is_some_and(|request| {
         !app.native_owner
             .as_ref()
@@ -561,10 +923,7 @@ fn choose(app: &mut App, index: usize) {
         return;
     };
     let note = s.note.clone();
-    let multiple = s
-        .native
-        .as_ref()
-        .is_some_and(|request| request.allows_multiple(s.current));
+    let multiple = s.allows_multiple();
     let selected = if index >= q.options.len() {
         Vec::new()
     } else if multiple {
@@ -587,9 +946,15 @@ fn choose(app: &mut App, index: usize) {
             s.native_texts.push(Some(s.note.clone()));
         }
     } else {
-        let Some(answer) = q.options.get(index) else {
+        let Some(_) = q.options.get(index) else {
             return;
         };
+        let answer = selected
+            .iter()
+            .filter_map(|index| q.options.get(*index))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         s.answers.push(if note.is_empty() {
             format!("{}\n{answer}", q.prompt)
         } else {
@@ -607,6 +972,7 @@ fn choose(app: &mut App, index: usize) {
         s.selected = 0;
         s.scroll = 0;
         s.native_selected.clear();
+        app.persist_draft_now();
         return;
     }
     if let Some(native) = s.native.take() {
@@ -646,14 +1012,44 @@ fn choose(app: &mut App, index: usize) {
             Err(error) => app.flash(error),
             _ => {}
         }
+        app.persist_draft_now();
         return;
     }
-    let answer = s.answers.join("\n\n");
-    s.clear();
+    let answer = if let Some(origin) = &s.origin {
+        format!(
+            "Clarification reply to {} / {} (original session: {}):\n{}",
+            origin.provider.as_str(),
+            origin.account,
+            origin.session.as_deref().unwrap_or("not reported"),
+            s.answers.join("\n\n")
+        )
+    } else {
+        s.answers.join("\n\n")
+    };
+    if !s.id.is_empty() {
+        s.completed.push_back(s.id.clone());
+    }
+    while s.completed.len() > 128 {
+        s.completed.pop_front();
+    }
+    s.reset_visible();
+    if let Some(snapshot) = s.pending.pop_front() {
+        s.load(snapshot);
+    }
     // An inferred question has no native response channel. Its reply is a normal
     // FIFO follow-up, never an instruction to interrupt or replace the active task.
     app.queue.items.push(answer);
-    app.queue_changed();
+    if let Err(error) = app.persist_draft_checked() {
+        app.queue.items.pop();
+        let _ = app
+            .questions
+            .restore(previous, app.deleg.d.conversation_id());
+        app.mirror_recovery_snapshot();
+        app.push_system(format!(
+            "Reply not queued: {error}. Your question and input are retained."
+        ));
+        return;
+    }
     if !app.busy && !app.queue.paused {
         app.queue.dispatch.set_automatic();
     }
@@ -727,13 +1123,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.questions.selected = choices;
         }
         KeyCode::Char(' ')
-            if native
-                && app
-                    .questions
-                    .native
-                    .as_ref()
-                    .is_some_and(|request| request.allows_multiple(app.questions.current))
-                && app.questions.selected < choices =>
+            if app.questions.allows_multiple() && app.questions.selected < choices =>
         {
             if let Some(position) = app
                 .questions
@@ -779,6 +1169,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         }
         _ => return false,
     }
+    app.questions.changed();
     true
 }
 /// A deliberate paste into the focused reply panel preserves logical line breaks.
@@ -884,10 +1275,23 @@ impl State {
         } else {
             q.prompt.clone()
         };
-        let multiple = self
-            .native
-            .as_ref()
-            .is_some_and(|request| request.allows_multiple(self.current));
+        let title = if let Some(origin) = &self.origin {
+            format!(
+                "{} / {} · session {} · {}{}",
+                origin.provider.as_str(),
+                origin.account,
+                origin.session.as_deref().unwrap_or("unreported"),
+                title,
+                if self.pending.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {} more waiting", self.pending.len())
+                }
+            )
+        } else {
+            title
+        };
+        let multiple = self.allows_multiple();
         let mut rows = Vec::new();
         for (index, choice) in q.options.iter().enumerate() {
             let indent = 2 + format!("{}. ", index + 1).len() + if multiple { 4 } else { 0 };
@@ -1039,10 +1443,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             Rect::new(area.x, y0 + view as u16 - 1, area.width, 1),
         );
     }
-    let multiple = s
-        .native
-        .as_ref()
-        .is_some_and(|request| request.allows_multiple(s.current));
+    let multiple = s.allows_multiple();
     let mut visible: Vec<Option<(u16, u16)>> = vec![None; doc.rows.len()];
     for (position, item) in items.iter().enumerate().take(bottom).skip(top) {
         let y = y0 + (position - off) as u16;
@@ -1123,10 +1524,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
 impl State {
     /// Footer keys for the open question; key hints live only in the footer.
     pub(super) fn footer_hint(&self) -> &'static str {
-        let multiple = self
-            .native
-            .as_ref()
-            .is_some_and(|request| request.allows_multiple(self.current));
+        let multiple = self.allows_multiple();
         match (self.native.is_some(), multiple, self.focused) {
             (true, true, true) => {
                 "↑↓ select · Space toggle · Enter confirm · Esc cancel request · F8 focus"
@@ -1134,6 +1532,10 @@ impl State {
             (true, true, false) => "F8 focus · or click · Space toggle · Enter confirm",
             (true, false, true) => "↑↓ select · Enter choose · Esc cancel request · F8 focus",
             (true, false, false) => "F8 focus, or click an option to answer",
+            (false, true, true) => {
+                "↑↓ select · Space toggle · Enter confirm · Esc close · F8 focus"
+            }
+            (false, true, false) => "F8 focus · or click · Space toggle · Enter confirm",
             (false, _, true) => "↑↓ select · Enter send · Esc close · F8 focus",
             (false, _, false) => "F8 focus, or click an option to reply",
         }
@@ -1164,13 +1566,7 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                         app.questions.focused = true;
                         app.questions.auto_focused = false;
                         app.questions.selected = index;
-                    } else if app
-                        .questions
-                        .native
-                        .as_ref()
-                        .is_some_and(|request| request.allows_multiple(app.questions.current))
-                        && !note_row
-                    {
+                    } else if app.questions.allows_multiple() && !note_row {
                         if let Some(position) = app
                             .questions
                             .native_selected
@@ -1181,6 +1577,7 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                         } else {
                             app.questions.native_selected.push(index);
                         }
+                        app.questions.changed();
                         app.questions.focused = true;
                         app.questions.auto_focused = false;
                         app.questions.selected = index;
@@ -1272,7 +1669,14 @@ mod tests {
             "fixture-session", serde_json::json!(1), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","toolCall":{"title":"Read synthetic file?"},"options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"},{"name":"Reject","kind":"reject_once","optionId":"reject"}]}),
         ).unwrap().unwrap();
+        app.questions
+            .offer("Which fixture route?\n1. Wait\n2. Continue");
         app.questions.offer_native(request, true);
+        assert!(
+            !serde_json::to_string(&app.questions.saved(app.deleg.d.conversation_id()))
+                .unwrap()
+                .contains("allow-once")
+        );
         assert!(handle_key(
             &mut app,
             &KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)
@@ -1281,8 +1685,10 @@ mod tests {
             rx.try_recv().unwrap(),
             serde_json::json!({"outcome":{"outcome":"selected","optionId":"allow-once"}})
         );
-        assert!(!app.questions.waiting());
+        assert!(app.questions.waiting());
+        assert_eq!(app.questions.questions[0].prompt, "Which fixture route?");
         assert!(app.queue.items.is_empty());
+        app.questions.clear();
 
         // Claude AskUserQuestion uses the same foreground broker, including a real multi-select
         // toggle sequence. The draft must remain untouched while native input is answered.
@@ -1711,7 +2117,7 @@ mod tests {
         choose(&mut app, 1);
         assert_eq!(
             app.queue.items[0],
-            "How are you pasting the image?\nCtrl+Shift+V"
+            "Clarification reply to codex / codex (original session: not reported):\nHow are you pasting the image?\nCtrl+Shift+V"
         );
         assert_eq!(app.editor.text(), "keep the current draft");
         assert!(app.questions.native.is_none());
@@ -1775,7 +2181,7 @@ mod tests {
                 active.queue.items,
                 [
                     "earlier queued request",
-                    "How are you pasting the image?\nCtrl+Shift+V"
+                    "Clarification reply to codex / codex (original session: original-session):\nHow are you pasting the image?\nCtrl+Shift+V"
                 ]
             );
             assert_eq!(active.queue.paused, paused);
@@ -2107,7 +2513,9 @@ mod tests {
     }
 
     fn popup_app(dir: &tempfile::TempDir) -> App {
-        App::new(dir.path().join("state"), dir.path().join("workspace"))
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        App::new(dir.path().join("state"), workspace)
     }
     fn popup_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
         let mut terminal =

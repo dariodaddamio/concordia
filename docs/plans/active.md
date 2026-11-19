@@ -2,7 +2,11 @@
 
 | Plan | Slice | Owner/model | Status | Next action |
 | --- | --- | --- | --- | --- |
-| campaign/ui-logic-1115 | Tabbed settings screen, review fixes, build revision (15d) | Claude Fable lead; Luna writer packet R7 | implemented, driven in a sandbox window; awaiting commit | Commit, then remaining campaign queue |
+| campaign/ui-logic-1115 | Codex steering and Cursor usage repair | Codex implementation; independent review | 18b scoped qualification passed; not installed | [Checkpoint](../../PLAN.md#resume-the-interrupted-work): human Habena lock approval, then distribution and native hook proof. |
+
+The former 15d settings slice is committed; HEAD is `40897e1`, source stamp `2026-11-18b`.
+The uncommitted `doctor.rs` account-count edit belongs to the interrupted Claude session.
+The anti-slop records below describe earlier campaign slices, not outstanding commit work.
 
 ## This slice
 

@@ -51,6 +51,24 @@ pub(crate) fn cursor_ps1_beside(shim: &Path) -> Option<PathBuf> {
     ps1.is_file().then_some(ps1)
 }
 
+fn cursor_powershell(launch: &mut Launch, shim: &Path, script: &Path) {
+    let name = shim
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "agent.cmd".into());
+    let mut args = vec![
+        "-NoProfile".into(),
+        "-ExecutionPolicy".into(),
+        "Bypass".into(),
+        "-File".into(),
+        script.to_string_lossy().into_owned(),
+    ];
+    args.append(&mut launch.args);
+    launch.program = "powershell.exe".into();
+    launch.args = args;
+    launch.env.push(("CURSOR_INVOKED_AS".into(), name));
+}
+
 pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
     let batch = is_batch_shim(&plan.command);
     let mut launch = Launch {
@@ -69,6 +87,20 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
         if let Some((node, script)) = super::npm::node_bridge(&launch.program, plan.provider) {
             launch.program = node.to_string_lossy().into_owned();
             launch.args.insert(0, script.to_string_lossy().into_owned());
+        }
+    }
+    if cfg!(windows)
+        && plan.provider == ProviderKind::Cursor
+        && is_batch_shim(&launch.program)
+        && launch
+            .args
+            .iter()
+            .take(launch.args.len().saturating_sub(1))
+            .any(|argument| !batch_safe(argument))
+    {
+        let shim = Path::new(&plan.command);
+        if let Some(script) = cursor_ps1_beside(shim) {
+            cursor_powershell(&mut launch, shim, &script);
         }
     }
     if cfg!(windows)
@@ -110,25 +142,11 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
             // No documented stdin prompt for `agent`; skip the cmd.exe layer instead by running
             // the PowerShell script the shim would have run.
             let shim = Path::new(&plan.command);
-            match batch.then(|| cursor_ps1_beside(shim)).flatten() {
+            match is_batch_shim(&launch.program).then(|| cursor_ps1_beside(shim)).flatten() {
                 Some(ps1) => {
-                    let name = shim
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| "agent.cmd".into());
-                    let mut args = vec![
-                        "-NoProfile".into(),
-                        "-ExecutionPolicy".into(),
-                        "Bypass".into(),
-                        "-File".into(),
-                        ps1.to_string_lossy().into_owned(),
-                    ];
-                    args.append(&mut launch.args);
-                    launch.program = "powershell.exe".into();
-                    launch.args = args;
-                    launch.env.push(("CURSOR_INVOKED_AS".into(), name));
+                    cursor_powershell(&mut launch, shim, &ps1);
                 }
-                None if batch => bail!(
+                None if is_batch_shim(&launch.program) => bail!(
                     "this prompt cannot be passed safely through {} (newlines or special characters); \
                      shorten or simplify it",
                     plan.command
@@ -290,5 +308,17 @@ mod tests {
             [("CURSOR_INVOKED_AS".to_string(), "agent.cmd".to_string())]
         );
         assert_eq!(l.stdin, None);
+        let mut with_plugin = plan(ProviderKind::Cursor, &shim.to_string_lossy(), "two\nlines");
+        with_plugin.argv.splice(
+            1..1,
+            [
+                "--plugin-dir".into(),
+                r"C:\Synthetic user\plugin & input".into(),
+            ],
+        );
+        let launch = prepare(&with_plugin).unwrap();
+        assert_eq!(launch.program, "powershell.exe");
+        assert_eq!(launch.args.iter().filter(|arg| *arg == "-File").count(), 1);
+        assert_eq!(&launch.args[5..], &with_plugin.argv);
     }
 }

@@ -76,6 +76,11 @@ fn fake_acp() {
         println!("{value}");
         std::io::stdout().flush().unwrap();
     };
+    let commands = |session: &str, list: &serde_json::Value| {
+        emit(
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"available_commands_update","availableCommands":list}}}),
+        );
+    };
     let finish = |session_id: &str| {
         emit(
             serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":fixture["reply"].as_str().unwrap_or("Native image received")}}}}),
@@ -99,9 +104,20 @@ fn fake_acp() {
             "initialize" => {
                 serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":fixture["load_session"]!=false,"promptCapabilities":{"image":fixture["image"]!=false}}})
             }
-            "session/new" => serde_json::json!({"sessionId":session_id}),
+            "session/new" => {
+                if let Some(list) = fixture.get("available_commands") {
+                    commands(&session_id, list);
+                }
+                if let Some(list) = fixture.get("foreign_commands") {
+                    commands("foreign-session", list);
+                }
+                serde_json::json!({"sessionId":session_id})
+            }
             "session/load" => {
                 session_id = value["params"]["sessionId"].as_str().unwrap().to_owned();
+                if let Some(list) = fixture.get("available_commands") {
+                    commands(&session_id, list);
+                }
                 if let Some(history) = fixture["history"].as_array() {
                     for entry in history {
                         let update = if entry["role"] == "user" {
@@ -135,7 +151,10 @@ fn fake_acp() {
                         );
                     }
                 }
-                serde_json::json!({})
+                match fixture["load_session_id"].as_str() {
+                    Some(id) => serde_json::json!({"sessionId": id}),
+                    None => serde_json::json!({}),
+                }
             }
             "authenticate"
             | "session/set_mode"
@@ -155,6 +174,25 @@ fn fake_acp() {
                         serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":429,"message":"UsageLimitExceeded"}}),
                     );
                     continue;
+                }
+                if let Some(updates) = fixture["command_updates"].as_array() {
+                    for update in updates {
+                        if let Some(gate) = update["wait_for"].as_str() {
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_secs(30);
+                            while !root.join(gate).exists() {
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "ACP command fixture gate timed out"
+                                );
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                        }
+                        commands(
+                            update["session_id"].as_str().unwrap_or(&session_id),
+                            &update["commands"],
+                        );
+                    }
                 }
                 if fixture["plan"] == true {
                     emit(
@@ -313,6 +351,34 @@ fn fake_appserver() {
                 }
                 json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user"})
             }
+            "thread/fork" => {
+                // A fork returns a new thread and leaves the original as it was.
+                let forked = format!("{thread}-fork");
+                append_history(&forked, "user", "(forked)");
+                thread = forked;
+                json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user","model":"synthetic-model","modelProvider":"openai","sandbox":value["params"]["sandbox"]})
+            }
+            "turn/steer" => {
+                assert_eq!(value["params"]["threadId"], thread);
+                assert_eq!(value["params"]["expectedTurnId"], "native-turn");
+                assert_eq!(
+                    value["params"]["input"][0]["text"],
+                    "Synthetic steering message"
+                );
+                if fixture["steer_refused"] == true {
+                    emit(
+                        json!({"id":value["id"],"error":{"code":-32000,"message":"turn mismatch"}}),
+                    );
+                } else if fixture["steer_closed"] == true {
+                    return;
+                } else {
+                    emit(
+                        json!({"id":value["id"],"result":{"turnId":if fixture["steer_wrong_turn"] == true {"foreign-turn"} else {"native-turn"}}}),
+                    );
+                }
+                finish(&thread, true);
+                continue;
+            }
             "turn/start" => {
                 let prompt = value["params"]["input"]
                     .as_array()
@@ -345,6 +411,9 @@ fn fake_appserver() {
                 }
                 if fixture["closed"] == true {
                     return;
+                }
+                if fixture["steer"] == true {
+                    continue;
                 }
                 if let Some(messages) = fixture["messages"].as_array() {
                     if let Some(bytes) = fixture["wire_bytes"].as_u64() {
@@ -462,7 +531,7 @@ fn fake_claude_control(args: &[String]) {
             let subtype = value["request"]["subtype"].as_str().unwrap();
             let response = match subtype {
                 "initialize" => {
-                    json!({"claude_code_version":"2.1.319","session_state":"idle","capabilities":{}})
+                    json!({"claude_code_version":"2.1.319","session_state":"idle","capabilities":{},"commands":[{"name":"compact","description":"Compact the conversation"},{"name":"review","description":"Review a pull request"}]})
                 }
                 "get_context_usage" => {
                     json!({"totalTokens":fixture["context_used"].as_u64().unwrap_or(120),
@@ -485,7 +554,7 @@ fn fake_claude_control(args: &[String]) {
                     json!({"type":"assistant","sessionId":session,"message":{"role":"assistant","content":[{"type":"text","text":"Completed fixture"}]}}))).unwrap();
             }
             emit(
-                json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
+                json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude","slash_commands":["compact","review","fixture-skill"]}),
             );
             if fixture["background"] == true {
                 emit(
@@ -973,6 +1042,62 @@ fn interaction(args: &[String]) {
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if provider == "cursor" && prompt.contains("[ask]") {
+        if let Ok(path) = std::env::var("FAKE_PROVIDER_ASK") {
+            let fixture: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let directory = args
+                .windows(2)
+                .find(|pair| pair[0] == "--plugin-dir")
+                .expect("question plugin directory");
+            let plugin: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(std::path::Path::new(&directory[1]).join("mcp.json")).unwrap(),
+            )
+            .unwrap();
+            let env = &plugin["mcpServers"]["concordia-ask"]["env"];
+            for questions in fixture["bundles"].as_array().unwrap() {
+                let mut stream =
+                    std::net::TcpStream::connect(env["CONCORDIA_ASK_ENDPOINT"].as_str().unwrap())
+                        .unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+                    .unwrap();
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"token":env["CONCORDIA_ASK_TOKEN"],"questions":questions})
+                )
+                .unwrap();
+                let mut answer = String::new();
+                std::io::BufReader::new(stream)
+                    .read_line(&mut answer)
+                    .unwrap();
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+                    let mut output = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .unwrap();
+                    writeln!(
+                        output,
+                        "{}",
+                        json!({"kind":"question-ack","answer":answer.trim()})
+                    )
+                    .unwrap();
+                }
+            }
+            if let Some(gate) = fixture["wait_for"].as_str() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                while !std::path::Path::new(gate).exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "question fixture gate timed out"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+    }
     if prompt.contains("[compaction]") {
         journal("compaction");
     }

@@ -5,6 +5,20 @@ Concordia allows any supported provider to share context, continue the same task
 Concordia runs official provider CLIs under your accounts. Providers keep ownership of their
 authentication, sessions, approvals and tools. Concordia is independent and unofficial.
 
+Local source candidate `2026-11-18b` adds a steer-or-queue choice for plain text during Codex
+app-server turns. A draft clears only after acceptance. Cursor 2026.11.17 usage works again through
+its local screen without a model prompt. Earlier Claude question and host-context changes remain;
+explicit saved off is respected. Codex verification uses fixtures; installed distribution is pending.
+
+Source candidate `2026-11-17b` exposes `ask_user` in Cursor's default transport through a
+session-local plugin. Questions, partial answers and notes survive turn completion and restart.
+They follow an explicit account/provider handoff with their original source visible; replies
+enter the existing FIFO only after recovery storage succeeds. Native approvals remain run-bound.
+
+The candidate uses each ACP session's advertised slash commands in suggestions
+and shared-command choices. Lists refresh on connection and cannot carry into another account
+or chat. Before discovery, ACP suggestions identify availability as not yet reported.
+
 ## Install
 
 From a source checkout, run this in Windows PowerShell:

@@ -244,7 +244,13 @@ pub fn attach_images(
 pub enum TurnProgress {
     Artifact(Box<crate::artifacts::Record>),
     Interaction(Box<NativeRequest>),
+    Question(crate::ask_bridge::DeferredQuestion),
     Session(String),
+    Commands {
+        owner: InteractionOwner,
+        session_id: String,
+        commands: Vec<super::AvailableCommand>,
+    },
     Text(String),
     TextDelta(String),
     /// The provider finished a distinct assistant message within the active turn.
@@ -473,12 +479,21 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     }
 }
 
+/// Text to add to a running turn. The transport answers on `reply` once the provider accepts or
+/// refuses it; a dropped reply means the turn ended before an answer arrived.
+pub(crate) struct SteerRequest {
+    pub text: String,
+    pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+}
+
 pub struct RunningTurn {
     pub cancel_flag: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
     /// Pid of the spawned process (0 until spawn); used to kill the whole tree.
     pid: Arc<AtomicU32>,
     wake: Arc<Notify>,
+    /// Set only by a transport that can steer the active turn, and only while that turn runs.
+    steering: std::sync::Mutex<Option<mpsc::Sender<SteerRequest>>>,
 }
 
 impl RunningTurn {
@@ -488,7 +503,40 @@ impl RunningTurn {
             child: Arc::new(Mutex::new(None)),
             pid: Arc::new(AtomicU32::new(0)),
             wake: Arc::new(Notify::new()),
+            steering: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(crate) fn set_steering(&self, sender: Option<mpsc::Sender<SteerRequest>>) {
+        if let Ok(mut slot) = self.steering.lock() {
+            *slot = sender;
+        }
+    }
+
+    /// Whether the active turn can take a message mid-run.
+    pub fn can_steer(&self) -> bool {
+        self.steering
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(|tx| !tx.is_closed()))
+    }
+
+    /// Hand `text` to the running turn. The returned receiver resolves with the provider's answer.
+    pub fn steer(
+        &self,
+        text: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        let slot = self
+            .steering
+            .lock()
+            .map_err(|_| "steering is unavailable".to_owned())?;
+        let sender = slot
+            .as_ref()
+            .ok_or_else(|| "this provider cannot steer a running turn".to_owned())?;
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        sender
+            .try_send(SteerRequest { text, reply })
+            .map_err(|_| "steering is pending or the turn has ended".to_owned())?;
+        Ok(answer)
     }
 
     /// Process id of the provider child, once it has been spawned.
@@ -773,6 +821,41 @@ async fn run_provider_turn_inner(
         }
     }
     let mut plan = plan_provider_turn(req)?;
+    plan.env.retain(|(key, _)| key != "HABENA_RUNTIME_CONTEXT");
+    plan.env_remove
+        .retain(|key| key != "HABENA_RUNTIME_CONTEXT");
+    if owner.is_some() {
+        let question_tool = match (req.provider, mode) {
+            (ProviderKind::Claude, crate::native_input::Mode::ClaudeStdio) => "AskUserQuestion",
+            (ProviderKind::Codex, crate::native_input::Mode::CodexAppServer) => "ask_user",
+            (ProviderKind::Codex, crate::native_input::Mode::Standard)
+                if std::env::var_os("CONCORDIA_CODEX_BIN").is_none() =>
+            {
+                "ask_user"
+            }
+            (
+                ProviderKind::Cursor,
+                crate::native_input::Mode::Standard | crate::native_input::Mode::CursorAcp,
+            )
+            | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+            | (ProviderKind::Opencode, crate::native_input::Mode::OpencodeAcp) => "ask_user",
+            _ => "unavailable",
+        };
+        let blocks = !matches!(
+            (req.provider, mode),
+            (ProviderKind::Cursor, crate::native_input::Mode::Standard)
+        );
+        plan.env.push((
+            "HABENA_RUNTIME_CONTEXT".into(),
+            serde_json::json!({
+                "version":1,"client":"concordia","provider":req.provider.as_str(),
+                "question_tool":question_tool,"question_blocks":blocks
+            })
+            .to_string(),
+        ));
+    } else {
+        plan.env_remove.push("HABENA_RUNTIME_CONTEXT".into());
+    }
     // Bind MCP child provenance to the already-validated app owner. Never derive these values
     // from model parameters or allow stale inherited identities on unbound/manual turns.
     const OWNER_ENV: [&str; 3] = [
@@ -861,7 +944,41 @@ async fn run_provider_turn_inner(
             // Keep them on the stream path; real Codex uses the native popup transport.
             && std::env::var_os("CONCORDIA_CODEX_BIN").is_none())
     {
-        return appserver::run(req, &plan, owner, on_started, on_progress, handle).await;
+        let fallback_progress = on_progress.clone();
+        let out = appserver::run(
+            req,
+            &plan,
+            owner.clone(),
+            on_started.clone(),
+            on_progress.clone(),
+            handle.clone(),
+        )
+        .await;
+        // Only a missing or changed app-server falls back; policy and identity refusals stand.
+        let out = match out {
+            Ok(out) => out,
+            Err(error) if format!("{error:#}").contains("Could not start Codex app-server") => {
+                TurnOutcome {
+                    failed: true,
+                    stderr_tail: format!("{}: {error:#}", appserver::UNAVAILABLE),
+                    ..Default::default()
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        if !(out.failed && out.stderr_tail.starts_with(appserver::UNAVAILABLE)) {
+            return Ok(out);
+        }
+        // A Codex update must not stop the chat: run this turn on Codex's standard transport.
+        crate::logging::info(&out.stderr_tail);
+        if let Some(progress) = fallback_progress {
+            let _ = progress
+                .send(TurnProgress::Notice(
+                    "Codex's native protocol did not answer as expected, so this turn runs on Codex's standard transport; questions and approvals use that transport."
+                        .into(),
+                ))
+                .await;
+        }
     }
     if mode == crate::native_input::Mode::ClaudeStdio {
         return claude_native::run(req, &plan, owner, on_started, on_progress, handle).await;
@@ -884,6 +1001,29 @@ async fn run_provider_turn_inner(
         plan.argv.insert(at, "--resume".into());
         plan.new_session_id = Some(id);
     }
+    let (question_tx, mut question_rx) = mpsc::unbounded_channel();
+    let _question_plugin =
+        if plan.provider == ProviderKind::Cursor && owner.is_some() && on_progress.is_some() {
+            let plugin = crate::ask_bridge::SessionPlugin::start(
+                ask_server_executable
+                    .as_deref()
+                    .context("Concordia question executable is unavailable")?,
+                question_tx,
+            )
+            .await
+            .context("Cursor question plugin could not be prepared; the turn was not started")?;
+            let at = plan.argv.len() - 1;
+            plan.argv.splice(
+                at..at,
+                [
+                    "--plugin-dir".into(),
+                    plugin.path().to_string_lossy().into_owned(),
+                ],
+            );
+            Some(plugin)
+        } else {
+            None
+        };
     if plan.provider == ProviderKind::Cursor {
         if let Some(context) = plan.standing_context.as_deref() {
             plan.prompt = format!("{context}\n{}", plan.prompt);
@@ -1036,6 +1176,15 @@ async fn run_provider_turn_inner(
             _ = handle.wake.notified() => {
                 out.cancelled = true;
                 break;
+            }
+            Some(request) = question_rx.recv(), if _question_plugin.is_some() => {
+                if let (Some(owner), Some(session)) = (&owner, req.native_session_id.or(plan.new_session_id.as_deref())) {
+                    let event = crate::ask_bridge::DeferredQuestion::new(owner.clone(), session.into(), request);
+                    if !send_progress(&on_progress, TurnProgress::Question(event.clone()), &handle).await {
+                        event.acknowledge(Err("the owning task is unavailable".into()));
+                    }
+                }
+                continue;
             }
             n = read_line_bounded(&mut reader, &mut line_buf) => {
                 n.map(|n| (n > 0).then(|| decode_line(&line_buf)))
