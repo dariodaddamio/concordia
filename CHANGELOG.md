@@ -1,5 +1,35 @@
 # Changelog
 
+### Fixed (2026-11-20a, local source)
+
+This release comes from qualifying every row of PLAN.md's "Remaining surfaces to qualify" in
+running windows.
+
+- New tabs open Home at once, even with a large provider history, and the chat list refreshes in
+  the background. On a synthetic 1,000-session history, Ctrl+T dropped from 4-6 s to under 1 s.
+  A chat saved during a refresh appears without reopening Home.
+- The active tab and the active Settings section carry a `>` mark, so selection no longer depends
+  on colour. When there are more tabs than fit, the strip scrolls to keep the active tab visible
+  and marks hidden tabs with `…`.
+- Switching tabs no longer briefly shows the previous tab strip. A reopened tab no longer repeats
+  the close warning.
+- The window-close warning appears in full, even while a file pane has focus. A file pane title
+  keeps "changed on disk (Ctrl+R reload)" visible next to `[ Detach ]`.
+- F1 lists Ctrl+N and explains the `>` mark. Ctrl+K with no running turn says why nothing happened.
+- `/terminal native` restarts the provider's own interface on the chat's exact session when the
+  previous one has exited, instead of showing the exited pane.
+- A draft parked with Down comes back with Up after a restart.
+- Prompts with no native record are recalled with Up after a restart. Native-backed history still
+  verifies its source and is never replaced with local text.
+- `/attach` on a document keeps the composer focused; F6 moves into the preview.
+- A saved effort that the selected model does not offer is shown and sent as the nearest
+  supported level, with a one-time notice. The saved preference is kept for models that support
+  it, and an unsupported effort is never sent to a provider.
+- Codex usage for the selected model ignores another model's extra quota bucket, so an exhausted
+  Spark bucket no longer marks every model as out of quota.
+- A background update check no longer leaves the idle footer showing "↑↓ scroll · Esc close", and
+  a failed or cancelled background update clears its in-progress flag.
+
 ### Changed (2026-11-19a, local source)
 
 - The `agents` tool can follow up, cancel and watch a delegated worker. A follow-up starts a new

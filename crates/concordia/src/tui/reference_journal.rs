@@ -41,6 +41,10 @@ struct HistoryEntry {
     unavailable: bool,
     #[serde(default)]
     created: u64,
+    /// Locally retained prompt text is used only when the provider produced no native record.
+    /// It is not a native source and is never used to mask a stale native reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_text: Option<String>,
 }
 
 struct Pending {
@@ -468,10 +472,11 @@ impl State {
                     version: 1,
                     id: active.run,
                     unavailable: original_ref.is_err(),
-                    source: original_ref.ok(),
+                    source: original_ref.as_ref().ok().cloned(),
                     attachments: active.original.attachments,
                     created: active.created,
                     binding,
+                    local_text: no_source.then(|| active.original.text.clone()),
                 };
                 saved &= append_reference(&root, entry).is_ok();
             }
@@ -520,6 +525,11 @@ fn read_entries(root: &Path) -> Result<Vec<HistoryEntry>, String> {
                 || uuid::Uuid::parse_str(&entry.id).is_err()
                 || entry.attachments.len() > crate::attachments::MAX_IMAGES
                 || entry.source.is_some() == entry.unavailable
+                || (entry.source.is_some() && entry.local_text.is_some())
+                || entry
+                    .local_text
+                    .as_ref()
+                    .is_some_and(|text| text.len() > HISTORY_TEXT_BYTES)
                 || entry.source.as_ref().is_some_and(|source| {
                     entry
                         .binding
@@ -590,12 +600,23 @@ fn load_references(root: &Path) -> Loaded {
     let mut result = Loaded::default();
     let mut bytes = 0usize;
     for entry in entries.into_iter().rev().take(super::persist::HISTORY_CAP) {
-        let text = entry
-            .source
-            .as_ref()
-            .filter(|reference| reference.role() == "user")
-            .ok_or("unavailable")
-            .and_then(|reference| native::hydrate_text(root, reference).map_err(|_| "unavailable"));
+        // No native source: recall local prompt text when present. Older no-source rows
+        // without local text were never recallable; skip them without a false unavailable notice.
+        let text = if entry.source.is_none() {
+            match entry.local_text {
+                Some(text) => Ok(text),
+                None => continue,
+            }
+        } else {
+            entry
+                .source
+                .as_ref()
+                .filter(|reference| reference.role() == "user")
+                .ok_or("unavailable")
+                .and_then(|reference| {
+                    native::hydrate_text(root, reference).map_err(|_| "unavailable")
+                })
+        };
         match text {
             Ok(text) => {
                 let message = crate::attachments::Message {
@@ -711,6 +732,7 @@ pub(super) fn fixture_proof() {
             attachments: Vec::new(),
             unavailable: false,
             created: 1,
+            local_text: None,
         },
     )
     .unwrap();

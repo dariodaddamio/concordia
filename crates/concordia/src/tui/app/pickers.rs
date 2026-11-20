@@ -1090,17 +1090,17 @@ impl App {
                 .get(role)
                 .and_then(|role| role.effort.clone())
         });
-        let preferred = model
+        let saved_effort = get_use_selection(&self.state_root).and_then(|sel| sel.effort);
+        let preferred_owned = model
             .efforts
             .iter()
             .find(|effort| effort.model_id.as_deref() == Some(model_id))
-            .map(|effort| effort.name.as_str())
-            .or(role_effort.as_deref())
-            .or(self
-                .effort
-                .as_deref()
-                .filter(|selected| model.efforts.iter().any(|effort| effort.name == *selected)))
-            .or(model.default_effort.as_deref());
+            .map(|effort| effort.name.clone())
+            .or(role_effort)
+            .or_else(|| {
+                model.effort_for_preference(saved_effort.as_deref().or(self.effort.as_deref()))
+            });
+        let preferred = preferred_owned.as_deref();
         let selected = model
             .efforts
             .iter()

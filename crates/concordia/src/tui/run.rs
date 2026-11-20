@@ -159,6 +159,14 @@ impl tabs::TabState for RunTab {
     }
 }
 
+fn tab_labels(tabs: &tabs::TabSet<RunTab>) -> Vec<TabChip> {
+    if tabs.has_multiple() {
+        tabs.tabs.iter().map(|t| t.app.tab_chip()).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     let mut app = App::new(state_root.to_path_buf(), cwd.to_path_buf());
     app.refresh_binding();
@@ -367,6 +375,8 @@ fn confirm_and_close_tab(
         return;
     }
     tabs.active_mut().shut_down();
+    // The close prompt belongs to this close; Ctrl+Shift+T must not bring it back.
+    tabs.active_mut().app.flash = None;
     // The draft was just saved. Closing is the user's decision, so the next start must not
     // reopen this tab as saved work; reopening it here and editing makes it offerable again.
     if tabs.tabs.len() > 1 {
@@ -673,11 +683,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     force_attention_save = true;
                 }
             }
-            let labels: Vec<TabChip> = if tabs.has_multiple() {
-                tabs.tabs.iter().map(|t| t.app.tab_chip()).collect()
-            } else {
-                Vec::new()
-            };
+            let labels = tab_labels(&tabs);
             if labels != previous_labels {
                 dirty = true;
                 previous_labels = labels.clone();
@@ -847,7 +853,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 if any_tab_needs_close_confirmation && !confirmed {
                                     close_armed = Some((active_owner, Instant::now()));
                                     app.flash(
-                                        "This window has a running turn or unsent work. Close again to exit.",
+                                        "Close again to exit \u{b7} a turn is running or work is unsent",
                                     );
                                 } else {
                                     quit = true;
@@ -1123,7 +1129,18 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let provider = app.provider;
                     let account = app.account.clone();
                     let model = app.model.clone();
-                    let effort = app.effort.clone();
+                    // Prefer the saved selection, then coerce against the catalog so an
+                    // unsupported effort is never sent; without a catalog the preference stands.
+                    let preferred = get_use_selection(&state_root)
+                        .and_then(|sel| sel.effort)
+                        .or_else(|| app.effort.clone());
+                    let effort = crate::models::effort_for_turn(
+                        &state_root,
+                        provider,
+                        &account,
+                        &model,
+                        preferred.as_deref(),
+                    );
                     let trust = app.trust;
                     let owner = crate::provider::interaction::InteractionOwner {
                         conversation_id: app.deleg.d.conversation_id().to_owned(),
@@ -1762,7 +1779,13 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             // intentionally after the event and channel drains: a key burst may defer one frame,
             // but must never defer the resulting frame until the next poll timeout.
             if !redraw_always {
-                let app = &mut tabs.tabs[tabs.active].app;
+                // A tab action above may have changed the active tab; its strip must not be the
+                // one it saw when it was last active.
+                let labels = tab_labels(&tabs);
+                let active = tabs.active;
+                let app = &mut tabs.tabs[active].app;
+                app.tab_strip = labels;
+                app.tab_index = active;
                 draw_if_needed!(app, false);
             }
         }

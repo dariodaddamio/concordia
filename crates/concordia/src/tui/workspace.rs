@@ -882,29 +882,63 @@ fn draw_pane(
                 "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
             )
         });
-    let title = format!(
-        " #{} {}{} · {} ",
-        pane.id,
-        if pane.document.as_ref().is_some_and(|d| d.dirty()) {
-            "* "
+    let name = pane
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let title = |name: &str, hint: &str| {
+        format!(
+            " #{} {}{name} · {} {hint}",
+            pane.id,
+            if pane.document.as_ref().is_some_and(|d| d.dirty()) {
+                "* "
+            } else {
+                ""
+            },
+            if pane.raw() && !raster {
+                "raw"
+            } else {
+                "preview"
+            }
+        )
+    };
+    // The title ends before the window button (or the X), and the reload hint outranks the
+    // file name: shorten the name first, then the hint.
+    let room = usize::from(if native_windows && !standalone && rect.width >= 26 {
+        pane.window_button().x.saturating_sub(rect.x + 2)
+    } else {
+        rect.width.saturating_sub(4)
+    });
+    let width = |text: &str| Line::raw(text).width();
+    let mut text = String::new();
+    for hint in if pane.changed {
+        &[" changed on disk (Ctrl+R reload) ", " changed (Ctrl+R) "][..]
+    } else {
+        &[""][..]
+    } {
+        let spare = room.saturating_sub(width(&title("", hint)));
+        text = if width(&name) <= spare {
+            title(&name, hint)
         } else {
-            ""
-        },
-        pane.path.file_name().unwrap_or_default().to_string_lossy(),
-        if pane.raw() && !raster {
-            "raw"
-        } else {
-            "preview"
+            let mut short = String::new();
+            for c in name.chars() {
+                if width(&short) + width(&c.to_string()) + 1 > spare {
+                    break;
+                }
+                short.push(c);
+            }
+            title(&format!("{short}…"), hint)
+        };
+        if width(&text) <= room && spare >= 2 {
+            break;
         }
-    );
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(style)
-        .title(if pane.changed {
-            format!("{title} changed on disk (Ctrl+R reload) ")
-        } else {
-            title
-        });
+        .title(text);
     let mut inner = block.inner(rect);
     f.render_widget(block, rect);
     if native_windows && !standalone && rect.width >= 26 {

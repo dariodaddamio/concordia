@@ -133,7 +133,22 @@ PR subsystem. Trace and repair Concordia's responsibility for identity, reachabi
 
 ### Remaining surfaces to qualify
 
-These obligations stay open; they are not newly reproduced defects or a silently reduced scope.
+Qualified 2026-11-20 (build 2026-11-20a). Every obligation below has a verdict backed by
+captured screen text from fake-provider windows or existing journeys. The lane reports and
+artifacts are in `_work/briefs/runs/qa-A2.md`, `qa-B.md`, `qa-C.md`, `qa-D.md`, `qa-E.md` and
+`qa-F.md`. The defects found are fixed and listed in CHANGELOG 2026-11-20a.
+
+Still open as owner decisions or desktop checks:
+
+- Default-theme contrast: muted text on the selected row is 3.33:1, and the dragged tab chip is
+  2.47:1.
+- No screen-reader (UI Automation) support.
+- No shortcut remapping.
+- The notification toast needs a manual desktop check.
+- No external-editor draft (Claude Code and Codex use Ctrl+G).
+- Cold start with a large history takes 13-21 s.
+- Wider coverage: cloud, SSH, mobile, scheduling, collaboration, export and retention are each
+  mapped to a native or external route in `qa-F.md`.
 
 | Surface and existing owner | Specific outstanding qualification |
 | --- | --- |

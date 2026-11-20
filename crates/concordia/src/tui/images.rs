@@ -211,7 +211,10 @@ impl App {
                 if let Some(id) = self.workspace.focused {
                     self.workspace.preview(id, true);
                 }
-                self.flash("Document snapshot attached; preview shows the included text. Esc returns to the draft");
+                // /attach adds a chip for the next send; keep the composer focused so typing
+                // continues there. F6 still moves into the preview when the user wants it.
+                self.workspace.focused = None;
+                self.flash("Document snapshot attached; preview shows the included text");
             }
         } else if let Attachment::PdfDocument(pdf) = &self.images.draft[self.images.draft.len() - 1]
         {

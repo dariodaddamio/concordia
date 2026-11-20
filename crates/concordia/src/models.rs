@@ -52,10 +52,73 @@ impl ModelEntry {
             .unwrap_or(&self.id)
     }
 
+    /// Effort to show and send for a preference: the preference when supported, otherwise the
+    /// nearest listed level (preferring the next lower), otherwise the provider default.
+    pub fn effort_for_preference(&self, preferred: Option<&str>) -> Option<String> {
+        if self.efforts.is_empty() {
+            return None;
+        }
+        if let Some(preferred) = preferred {
+            if self.efforts.iter().any(|effort| effort.name == preferred) {
+                return Some(preferred.to_owned());
+            }
+            if let Some(near) = nearest_supported_effort(preferred, &self.efforts) {
+                return Some(near.to_owned());
+            }
+        }
+        self.default_effort
+            .clone()
+            .or_else(|| self.efforts.first().map(|effort| effort.name.clone()))
+    }
+
     /// Display name, with the raw id only when it adds information (not a case echo of the label).
     pub fn heading(&self) -> String {
         format_model_heading(&self.display_name, &self.id)
     }
+}
+
+/// Nearest effort this model lists for `wanted`, preferring the next lower level when both sides
+/// exist. Unknown effort words sort above every listed level, so the highest supported wins.
+pub(crate) fn nearest_supported_effort<'a>(
+    wanted: &str,
+    efforts: &'a [ModelEffort],
+) -> Option<&'a str> {
+    if efforts.is_empty() {
+        return None;
+    }
+    let want = effort_rank(wanted);
+    let mut best_lower: Option<(usize, &'a str)> = None;
+    let mut best_higher: Option<(usize, &'a str)> = None;
+    for effort in efforts {
+        let rank = effort_rank(&effort.name);
+        if rank <= want {
+            if best_lower.is_none_or(|(best, _)| rank >= best) {
+                best_lower = Some((rank, effort.name.as_str()));
+            }
+        } else if best_higher.is_none_or(|(best, _)| rank < best) {
+            best_higher = Some((rank, effort.name.as_str()));
+        }
+    }
+    best_lower.or(best_higher).map(|(_, name)| name)
+}
+
+/// Effort a turn may send: coerce against the catalog when the model lists efforts; leave the
+/// preference alone when the catalog is unknown.
+pub(crate) fn effort_for_turn(
+    root: &Path,
+    provider: ProviderKind,
+    account: &str,
+    model_id: &str,
+    preferred: Option<&str>,
+) -> Option<String> {
+    let catalog = available_at(root, provider, account);
+    if catalog.is_empty() {
+        return preferred.map(str::to_owned);
+    }
+    let Some(model) = find_at(root, provider, account, model_id) else {
+        return preferred.map(str::to_owned);
+    };
+    model.effort_for_preference(preferred)
 }
 
 /// `<label> · <second>` for headers and pickers. Drops the second part when it equals the label

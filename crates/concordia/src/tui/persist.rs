@@ -21,6 +21,7 @@ type DraftSlot = Mutex<
         Vec<String>,
         Option<super::recovery::RecoveryEdit>,
         Option<String>,
+        bool,
         super::questions::Saved,
     )>,
 >;
@@ -32,6 +33,7 @@ fn mirror_snapshot(
     queue: Vec<String>,
     pending: Option<super::recovery::RecoveryEdit>,
     alternate: Option<String>,
+    fresh_prompt: bool,
     questions: super::questions::Saved,
 ) {
     if let Ok(mut g) = PANIC_DRAFT.lock() {
@@ -41,6 +43,7 @@ fn mirror_snapshot(
             queue,
             pending,
             alternate,
+            fresh_prompt,
             questions,
         ));
     }
@@ -53,13 +56,15 @@ pub fn flush_on_panic() {
 
 fn flush_from(slot: &DraftSlot) {
     if let Ok(g) = slot.try_lock() {
-        if let Some((lease, text, queue, pending, alternate, questions)) = g.as_ref() {
+        if let Some((lease, text, queue, pending, alternate, fresh_prompt, questions)) = g.as_ref()
+        {
             if let Some(lease) = lease.upgrade() {
                 let _ = lease.save_with_questions(
                     text,
                     queue,
                     pending.as_ref(),
                     alternate.as_deref(),
+                    *fresh_prompt,
                     questions,
                 );
             }
@@ -185,6 +190,7 @@ impl super::App {
             &self.queue.items,
             pending_edit(self).as_ref(),
             self.alternate_draft().as_deref(),
+            self.fresh_draft,
             &super::questions::Saved::default(),
         )?;
         let previous = self
@@ -199,7 +205,7 @@ impl super::App {
             let _ = next.dismiss_current();
             return Err(io::Error::other(error));
         }
-        if let Err(error) = previous.save_with_questions("", &[], None, None, &saved) {
+        if let Err(error) = previous.save_with_questions("", &[], None, None, false, &saved) {
             let restored = self.workspace.transfer_file_recovery(previous, &self.cwd);
             let _ = next.dismiss_current();
             return Err(io::Error::other(format!(
@@ -271,6 +277,9 @@ impl super::App {
                             || data.questions.waiting();
                         restored_questions = Some(data.questions);
                         self.restore_composer(&data.draft);
+                        // A fresh prompt saved over a parked draft comes back as a fresh
+                        // prompt, so Up on the first row still returns to the parked draft.
+                        self.fresh_draft = data.fresh_prompt && data.alternate_draft.is_some();
                         self.parked_draft = data.alternate_draft;
                         // Restored prompts wait for the user; a pause with nothing queued
                         // would silently hold every prompt queued later.
@@ -391,6 +400,7 @@ impl super::App {
                 self.queue.items.clone(),
                 pending_edit(self),
                 self.alternate_draft(),
+                self.fresh_draft,
                 self.questions.saved(self.deleg.d.conversation_id()),
             );
         }
@@ -410,6 +420,7 @@ impl super::App {
                 &self.queue.items,
                 pending_edit(self).as_ref(),
                 self.alternate_draft().as_deref(),
+                self.fresh_draft,
                 &self.questions.saved(self.deleg.d.conversation_id()),
             ) {
                 Ok(()) => {
@@ -540,6 +551,7 @@ impl super::App {
         self.fresh_draft = false;
         self.keep.lease.take();
         self.restore_composer(&data.draft);
+        self.fresh_draft = data.fresh_prompt && data.alternate_draft.is_some();
         self.parked_draft = data.alternate_draft;
         self.queue.paused = !data.queue.is_empty();
         self.queue.items = data.queue;
@@ -601,6 +613,7 @@ mod tests {
                 attachments: None,
             }),
             Some("other unsent draft".into()),
+            false,
             super::super::questions::Saved::default(),
         )));
         flush_from(&slot);
@@ -620,6 +633,7 @@ mod tests {
             Vec::new(),
             None,
             None,
+            false,
             super::super::questions::Saved::default(),
         ));
         flush_from(&slot);

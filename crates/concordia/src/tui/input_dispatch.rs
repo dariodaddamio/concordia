@@ -658,6 +658,15 @@ pub(super) fn handle_key(
         app.open_idle_picker();
         return false;
     }
+    if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('k' | 'K'))
+    {
+        app.flash(if app.busy {
+            "The turn is still active · Ctrl+K options appear once it goes quiet"
+        } else {
+            "No running turn · Ctrl+K options appear when a turn goes quiet"
+        });
+        return false;
+    }
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
     {
         if app.older_history_source_available() {
