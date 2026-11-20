@@ -1147,7 +1147,8 @@ pub fn peek_cached_usage(
 
 /// [`peek_cached_usage`] for one model. Cursor reports separate pools: Auto and Composer models
 /// draw on `Auto`, every other model on `API`, so the other pool running out does not limit this
-/// model.
+/// model. A Codex extra bucket limits only the model it names; without a model, only the
+/// account's main windows count.
 pub fn peek_cached_usage_for_model(
     root: &Path,
     provider: crate::store::ProviderKind,
@@ -1166,10 +1167,28 @@ pub fn peek_cached_usage_for_model(
         }
         _ => None,
     };
+    let bucket_applies = |bucket: &str| {
+        model.is_some_and(|model| {
+            bucket.eq_ignore_ascii_case(model)
+                || cached.codex_limits.as_ref().is_some_and(|limits| {
+                    limits.extra.iter().any(|extra| {
+                        extra.bucket_name() == bucket
+                            && extra
+                                .normal_model_slug
+                                .as_deref()
+                                .is_some_and(|slug| slug.trim().eq_ignore_ascii_case(model))
+                    })
+                })
+        })
+    };
     let windows: Vec<&UsageWindow> = cached
         .windows
         .iter()
         .filter(|window| other_pool != Some(window.label.as_str()))
+        .filter(|window| match window.bucket.as_deref() {
+            Some(bucket) if provider == crate::store::ProviderKind::Codex => bucket_applies(bucket),
+            _ => true,
+        })
         .collect();
     Some(CachedObservation {
         observed_at: cached.fetched_at,
@@ -1181,9 +1200,11 @@ pub fn peek_cached_usage_for_model(
             .iter()
             .find(|window| !window.expired())
             .map(|window| window.left_pct()),
+        // The reset that matters is the one of the window that ran out, when one did.
         reset: windows
             .iter()
-            .find(|window| !window.expired())
+            .find(|window| !window.expired() && window.used_pct >= 100.0)
+            .or_else(|| windows.iter().find(|window| !window.expired()))
             .and_then(|window| window.resets.clone()),
         reset_passed: cached.windows.iter().any(UsageWindow::expired),
     })

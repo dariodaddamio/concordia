@@ -50,6 +50,9 @@ pub struct RecoveryData {
     pub draft: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternate_draft: Option<String>,
+    /// The draft is a fresh prompt and `alternate_draft` is the parked draft Up returns to.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fresh_prompt: bool,
     pub queue: Vec<String>,
     #[serde(default)]
     pub pending_edit: Option<RecoveryEdit>,
@@ -146,6 +149,7 @@ impl RecoveryLease {
             queue,
             pending,
             alternate,
+            false,
             &super::questions::Saved::default(),
         )
     }
@@ -155,6 +159,7 @@ impl RecoveryLease {
         queue: &[String],
         pending: Option<&RecoveryEdit>,
         alternate: Option<&str>,
+        fresh_prompt: bool,
         questions: &super::questions::Saved,
     ) -> io::Result<()> {
         let path = self.directory.join(RECORD_FILE);
@@ -169,6 +174,8 @@ impl RecoveryLease {
             draft: &'a str,
             #[serde(skip_serializing_if = "Option::is_none")]
             alternate_draft: Option<&'a str>,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            fresh_prompt: bool,
             queue: &'a [String],
             pending_edit: Option<&'a RecoveryEdit>,
             questions: &'a super::questions::Saved,
@@ -178,6 +185,7 @@ impl RecoveryLease {
             owner_pid: std::process::id(),
             draft,
             alternate_draft: alternate,
+            fresh_prompt: fresh_prompt && alternate.is_some(),
             queue,
             pending_edit: pending,
             questions,

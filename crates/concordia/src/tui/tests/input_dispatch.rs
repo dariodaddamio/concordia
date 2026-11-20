@@ -1869,7 +1869,7 @@ fn waiting_status_and_the_adjacent_timer_describe_the_current_run() {
 
 #[test]
 fn f1_snapshot_lists_tab_activity_shortcuts_and_the_icon_legend() {
-    let mut h = Harness::new(180, 60);
+    let mut h = Harness::new(180, 64);
     h.key(KeyCode::F(1), KeyModifiers::NONE);
     let screen = h.screen();
     for text in [

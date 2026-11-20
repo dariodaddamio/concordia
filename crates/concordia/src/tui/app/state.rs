@@ -418,6 +418,8 @@ pub(crate) struct App {
     pub(in crate::tui) home_path: Option<PathBuf>,
     pub(in crate::tui) model: String,
     pub(in crate::tui) effort: Option<String>,
+    /// `(model, preferred effort)` already announced when a saved effort was coerced.
+    effort_fallback_notice: Option<(String, String)>,
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
     pub(in crate::tui) task_id: Option<String>,
@@ -579,6 +581,7 @@ impl App {
             if catalog.is_empty() {
                 self.model = stored.or(inspected).unwrap_or_else(|| "?".into());
                 self.effort = sel.effort.clone();
+                self.effort_fallback_notice = None;
             } else {
                 let offered = |candidate: &str| {
                     catalog
@@ -595,24 +598,39 @@ impl App {
                     .find_map(|candidate| offered(&candidate))
                     .unwrap_or_else(|| "?".into());
                 let entry = catalog.iter().find(|entry| entry.id == self.model);
+                let preferred = sel.effort.clone();
                 self.effort = match entry {
-                    Some(model) if !model.efforts.is_empty() => sel
-                        .effort
-                        .as_deref()
-                        .filter(|effort| model.efforts.iter().any(|item| item.name == *effort))
-                        .map(str::to_owned)
-                        .or_else(|| model.default_effort.clone()),
+                    Some(model) if !model.efforts.is_empty() => {
+                        model.effort_for_preference(preferred.as_deref())
+                    }
                     _ => None,
                 };
-                // Drop a foreign or stale model id from the stored selection so the header
-                // cannot keep advertising another provider's model after an account switch.
+                // Keep the saved effort preference even when this model cannot use it, so a
+                // later model that supports it restores it. Only rewrite a foreign model id.
                 let want_model = (self.model != "?").then(|| self.model.clone());
-                if sel.model != want_model || sel.effort != self.effort {
-                    let mut fixed = sel;
+                if sel.model != want_model {
+                    let mut fixed = sel.clone();
                     fixed.model = want_model;
-                    fixed.effort = self.effort.clone();
                     fixed.updated_at = now_stamp();
                     let _ = set_use_selection(&self.state_root, fixed);
+                }
+                if let (Some(wanted), Some(using), Some(model)) =
+                    (preferred.as_deref(), self.effort.as_deref(), entry)
+                {
+                    if wanted != using {
+                        let key = (self.model.clone(), wanted.to_owned());
+                        if self.effort_fallback_notice.as_ref() != Some(&key) {
+                            self.effort_fallback_notice = Some(key);
+                            self.flash(format!(
+                                "{} has no {wanted} effort; using {using}",
+                                model.display_name
+                            ));
+                        }
+                    } else {
+                        self.effort_fallback_notice = None;
+                    }
+                } else {
+                    self.effort_fallback_notice = None;
                 }
             }
         }
@@ -1579,12 +1597,17 @@ impl App {
                     self.should_quit = true;
                 }
             }
-            JobResult::Update(Ok(UpdateOutcome::UpToDate(msg))) => self.push_system(msg),
+            JobResult::Update(Ok(UpdateOutcome::UpToDate(msg))) => {
+                self.background_update = false;
+                self.push_system(msg);
+            }
             JobResult::Update(Err(e)) if cancelled || e.to_string() == "cancelled" => {
+                self.background_update = false;
                 crate::logging::info("update-cancelled");
                 self.push_system("update cancelled");
             }
             JobResult::Update(Err(e)) => {
+                self.background_update = false;
                 crate::logging::error(&format!("update-failed {e:#}"));
                 self.push_system(format!("update failed - {e:#}"));
                 if showing_update {
@@ -1610,12 +1633,16 @@ impl App {
                         self.start_background_update();
                     }
                 }
-                self.footer_left = if preview.install_available {
-                    "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
-                } else {
-                    "\u{2191}\u{2193} scroll \u{b7} Esc close"
+                // Startup checks store the preview without opening the update picker; keep the
+                // normal idle footer unless the picker is actually showing.
+                if showing_update {
+                    self.footer_left = if preview.install_available {
+                        "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
+                    } else {
+                        "\u{2191}\u{2193} scroll \u{b7} Esc close"
+                    }
+                    .into();
                 }
-                .into();
                 self.update_preview = Some(preview);
             }
             JobResult::Check(Err(e)) => {
@@ -2110,6 +2137,7 @@ impl App {
             home_path: None,
             model: "?".into(),
             effort: None,
+            effort_fallback_notice: None,
             trust: TrustMode::Edit,
             native_session_id: None,
             task_id: None,

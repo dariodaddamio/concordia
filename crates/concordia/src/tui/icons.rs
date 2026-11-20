@@ -106,6 +106,7 @@ pub(super) fn legend() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
                     };
                     (glyph, status.name())
                 })
+                .chain([(">".to_owned(), "the current tab")])
                 .collect(),
         ),
         (

@@ -314,6 +314,8 @@ pub struct Landing {
     tokens_partial: bool,
     tokens_error: Option<String>,
     pub(crate) meters: Vec<LandingMeter>,
+    /// The shared chat list this page shows; `None` when the caller supplied the sessions.
+    sessions_generation: Option<u64>,
 }
 
 impl Landing {
@@ -349,9 +351,12 @@ impl Landing {
 
 /// Show the landing page for this folder; with no recorded chats there is nothing to show.
 pub(super) fn open(app: &mut App) {
-    let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
+    let (sessions, generation) = scan_recent_chats(&app.state_root);
     let program = harness_program(&app.state_root);
     open_with(app, sessions, program);
+    if let Some(landing) = app.landing.as_mut() {
+        landing.sessions_generation = Some(generation);
+    }
 }
 
 pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: Option<String>) {
@@ -397,10 +402,232 @@ pub(super) fn can_host_home(app: &App) -> bool {
             .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
 }
 
+/// The newest Home chat list read in this process. Reading provider histories can take seconds,
+/// so a later Home opens with this list at once and picks up a background rescan in `poll`.
+struct RecentChats {
+    state_root: PathBuf,
+    sessions: Vec<SessionSummary>,
+    /// Last list that open Homes may show.
+    generation: u64,
+    /// Monotonic stamp handed to each scan when it starts; only a newer stamp may publish.
+    next_generation: u64,
+    scanning: bool,
+    /// A Home or save asked for another pass while `scanning` was true.
+    rescan_again: bool,
+}
+
+static RECENT_CHAT_CACHE: std::sync::Mutex<Option<RecentChats>> = std::sync::Mutex::new(None);
+
+fn recent_chat_cache() -> std::sync::MutexGuard<'static, Option<RecentChats>> {
+    RECENT_CHAT_CACHE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+fn ensure_recent_chat_cache(
+    state_root: &Path,
+) -> std::sync::MutexGuard<'static, Option<RecentChats>> {
+    let mut cache = recent_chat_cache();
+    let replace = cache
+        .as_ref()
+        .is_none_or(|entry| entry.state_root != state_root);
+    if replace {
+        *cache = Some(RecentChats {
+            state_root: state_root.to_path_buf(),
+            sessions: Vec::new(),
+            generation: 0,
+            next_generation: 0,
+            scanning: false,
+            rescan_again: false,
+        });
+    }
+    cache
+}
+
+/// Take the next start stamp for a scan of this state root.
+fn begin_recent_chat_scan(state_root: &Path) -> u64 {
+    let mut cache = ensure_recent_chat_cache(state_root);
+    let entry = cache.as_mut().expect("ensure_recent_chat_cache");
+    entry.next_generation = entry.next_generation.saturating_add(1);
+    entry.next_generation
+}
+
+/// Publish only when this scan's start stamp is still the newest finished result.
+fn publish_recent_chats(state_root: &Path, generation: u64, sessions: Vec<SessionSummary>) -> bool {
+    let mut cache = ensure_recent_chat_cache(state_root);
+    let entry = cache.as_mut().expect("ensure_recent_chat_cache");
+    if generation <= entry.generation {
+        return false;
+    }
+    entry.sessions = sessions;
+    entry.generation = generation;
+    true
+}
+
+/// Clears `scanning` on every exit (return, panic, or spawn failure follow-up) and starts one
+/// more pass when a request arrived while the finished scan was running.
+struct RecentChatScanGuard {
+    state_root: PathBuf,
+}
+
+impl Drop for RecentChatScanGuard {
+    fn drop(&mut self) {
+        let again = {
+            let mut cache = recent_chat_cache();
+            let Some(entry) = cache
+                .as_mut()
+                .filter(|entry| entry.state_root == self.state_root)
+            else {
+                return;
+            };
+            entry.scanning = false;
+            std::mem::take(&mut entry.rescan_again)
+        };
+        if again {
+            rescan_recent_chats(&self.state_root);
+        }
+    }
+}
+
+/// Read the chat list now and publish it when this scan is still the newest.
+fn scan_recent_chats(state_root: &Path) -> (Vec<SessionSummary>, u64) {
+    let generation = begin_recent_chat_scan(state_root);
+    let sessions = list_recent_sessions(state_root, RECENT_CHATS);
+    if publish_recent_chats(state_root, generation, sessions.clone()) {
+        (sessions, generation)
+    } else {
+        cached_recent_chats(state_root).unwrap_or((sessions, generation))
+    }
+}
+
+fn cached_recent_chats(state_root: &Path) -> Option<(Vec<SessionSummary>, u64)> {
+    recent_chat_cache()
+        .as_ref()
+        .filter(|cache| cache.state_root == state_root && cache.generation > 0)
+        .map(|cache| (cache.sessions.clone(), cache.generation))
+}
+
+/// One background rescan at a time. A request while one is running sets `rescan_again` so another
+/// pass starts when the running one finishes.
+fn rescan_recent_chats(state_root: &Path) {
+    {
+        let mut cache = ensure_recent_chat_cache(state_root);
+        let entry = cache.as_mut().expect("ensure_recent_chat_cache");
+        if entry.scanning {
+            entry.rescan_again = true;
+            return;
+        }
+        entry.scanning = true;
+    }
+    let root = state_root.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("concordia-home-chats".into())
+        .spawn(move || {
+            let _guard = RecentChatScanGuard {
+                state_root: root.clone(),
+            };
+            let generation = begin_recent_chat_scan(&root);
+            let sessions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                list_recent_sessions(&root, RECENT_CHATS)
+            }));
+            match sessions {
+                Ok(sessions) => {
+                    let _ = publish_recent_chats(&root, generation, sessions);
+                }
+                Err(_) => {
+                    // Leave the last good list in place; scanning clears in the guard.
+                }
+            }
+        });
+    if spawned.is_err() {
+        let _guard = RecentChatScanGuard {
+            state_root: state_root.to_path_buf(),
+        };
+    }
+}
+
 pub(super) fn open_home_tab(app: &mut App) {
-    let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
     let program = harness_program(&app.state_root);
+    let cached = cached_recent_chats(&app.state_root);
+    let (sessions, generation) = match cached.clone() {
+        Some(cached) => cached,
+        None => scan_recent_chats(&app.state_root),
+    };
     open_with_mode(app, sessions, program, true);
+    if let Some(landing) = app.landing.as_mut() {
+        landing.sessions_generation = Some(generation);
+    }
+    if cached.is_some() {
+        rescan_recent_chats(&app.state_root);
+    }
+}
+
+/// Take a newer chat list from the shared cache, keeping the selected chat and folder states.
+fn poll_recent_chats(app: &mut App) -> bool {
+    let Some(landing) = app.landing.as_mut() else {
+        return false;
+    };
+    let Some(shown) = landing.sessions_generation else {
+        return false;
+    };
+    let Some((sessions, generation)) =
+        cached_recent_chats(&app.state_root).filter(|(_, generation)| *generation > shown)
+    else {
+        return false;
+    };
+    landing.sessions_generation = Some(generation);
+    let key = |session: &SessionSummary| {
+        (
+            session.provider,
+            session.account.clone(),
+            session.session_id.clone(),
+        )
+    };
+    let selected = match landing.rows().get(landing.chat_sel).copied() {
+        Some(ChatRow::Chat(g, s)) => landing.groups[g].sessions.get(s).map(key),
+        Some(ChatRow::QuickChat(g, s)) => landing.groups[g].quick_sessions.get(s).map(key),
+        _ => None,
+    };
+    let folders: BTreeMap<String, (bool, bool)> = landing
+        .groups
+        .iter()
+        .map(|group| {
+            (
+                group.folder.clone(),
+                (group.expanded, group.quick_questions),
+            )
+        })
+        .collect();
+    landing.welcome &= sessions.is_empty();
+    landing.hidden_total = hidden_count(&sessions, &app.cwd, landing.hidden_temp_root.as_deref());
+    landing.groups = display_groups(
+        landing_sessions(
+            sessions.clone(),
+            &app.cwd,
+            landing.show_all,
+            landing.hidden_temp_root.as_deref(),
+        ),
+        &app.cwd,
+    );
+    for group in &mut landing.groups {
+        if let Some((expanded, quick)) = folders.get(&group.folder) {
+            group.expanded = *expanded;
+            group.quick_questions = *quick;
+        }
+    }
+    landing.all_sessions = sessions;
+    landing.titles_cache = None;
+    let rows = landing.rows();
+    landing.chat_sel = selected
+        .and_then(|wanted| {
+            rows.iter().position(|row| match *row {
+                ChatRow::Chat(g, s) => key(&landing.groups[g].sessions[s]) == wanted,
+                ChatRow::QuickChat(g, s) => key(&landing.groups[g].quick_sessions[s]) == wanted,
+                _ => false,
+            })
+        })
+        .unwrap_or_else(|| landing.chat_sel.min(rows.len().saturating_sub(1)));
+    true
 }
 
 fn open_with_mode(
@@ -506,6 +733,7 @@ fn open_with_mode(
         tokens_partial: false,
         tokens_error: None,
         meters: Vec::new(),
+        sessions_generation: None,
     };
     app.footer_left = landing.hint().into();
     app.landing = Some(landing);
@@ -583,13 +811,13 @@ pub(super) fn poll(app: &mut App) -> bool {
         return false;
     }
     refresh_meters(app);
+    let mut changed = poll_recent_chats(app);
     let Some(landing) = app.landing.as_mut() else {
-        return false;
+        return changed;
     };
     let Some(rx) = landing.work_rx.as_ref() else {
-        return false;
+        return changed;
     };
-    let mut changed = false;
     loop {
         match rx.try_recv() {
             Ok(work) => {

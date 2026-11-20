@@ -522,12 +522,12 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
             .unwrap_or_default(),
         app.native_session_id.as_deref().unwrap_or_default()
     );
-    if app
-        .local_terminal
-        .session
-        .as_ref()
-        .is_some_and(|session| session.owner.as_deref() == Some(expected_owner.as_str()))
-    {
+    // Reuse only a live native session; one that already exited is relaunched on the same
+    // exact binding instead of showing its dead pane again.
+    if app.local_terminal.session.as_ref().is_some_and(|session| {
+        session.owner.as_deref() == Some(expected_owner.as_str())
+            && matches!(session.phase, Phase::Running)
+    }) {
         app.local_terminal.view = View::Shell;
         app.local_terminal.notice = None;
         if let Some(command_line) = initial_input {

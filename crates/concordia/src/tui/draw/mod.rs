@@ -397,7 +397,8 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     }
     for index in first..=last {
         let active = index == view.active && !filtering;
-        let text = format!(" {} ", labels[index]);
+        // The selection mark keeps the active section readable without colour.
+        let text = format!("{}{} ", if active { '>' } else { ' ' }, labels[index]);
         let cells = text.chars().count() as u16;
         let style = if active {
             Style::default()
@@ -511,7 +512,43 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
         &app.tab_strip
     };
     let mut rename = None;
-    for (index, chip) in chips.iter().enumerate() {
+    // Too many tabs for the row: start late enough that the active tab is drawn, and mark the
+    // tabs left out on either side with … as the settings sections do.
+    let widths: Vec<usize> = chips
+        .iter()
+        .enumerate()
+        .map(|(index, chip)| {
+            let prefix = format!(
+                " {} {} {} ",
+                index + 1,
+                icons::provider(chip.provider),
+                chip.status.icon(app.tick_count)
+            );
+            let title = if app.rename_editor.is_some() && index == app.tab_index {
+                24
+            } else {
+                cell_width(&ellipsis(&chip.title, 24))
+            };
+            Line::raw(prefix.as_str()).width() + title + 7
+        })
+        .collect();
+    let active = app.tab_index.min(chips.len().saturating_sub(1));
+    let mut first = 0;
+    while first < active
+        && widths[first..=active].iter().sum::<usize>() + 2 > usize::from(row.width)
+    {
+        first += 1;
+    }
+    for _ in 0..first {
+        app.tab_hits.push(Rect::new(row.x, row.y, 0, 1));
+        app.tab_close_hits.push(Rect::new(row.x, row.y, 0, 1));
+    }
+    if first > 0 {
+        spans.push(Span::styled("… ", Style::default().fg(Color::Gray)));
+        x = x.saturating_add(2);
+    }
+    let mut hidden_right = false;
+    for (index, chip) in chips.iter().enumerate().skip(first) {
         // " 2 ✻ ◐ " : the Ctrl+number, the provider and the status, each one cell wide.
         let prefix = format!(
             " {} {} {} ",
@@ -536,8 +573,10 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
         let text_width = prefix_width + 1 + cell_width(&title) + 5;
         let width = text_width.min(remaining) as u16;
         if width == 0 {
+            hidden_right = true;
             break;
         }
+        hidden_right |= usize::from(width) < text_width;
         let dragged = app.tab_drag.is_some_and(|(source, _)| source == index);
         let style = if dragged {
             Style::default()
@@ -595,7 +634,9 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
                 style.fg(color)
             }
         };
-        spans.push(Span::styled(format!(" {} ", index + 1), style));
+        // The active tab also carries the list-selection mark, so it does not rely on colour.
+        let mark = if index == app.tab_index { '>' } else { ' ' };
+        spans.push(Span::styled(format!("{mark}{} ", index + 1), style));
         spans.push(Span::styled(
             icons::provider(chip.provider),
             icon_style(provider_color(chip.provider)),
@@ -610,6 +651,12 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
         x = x.saturating_add(width + 1);
     }
     f.render_widget(Paragraph::new(Line::from(spans)), row);
+    if hidden_right && row.width > 0 {
+        f.render_widget(
+            Paragraph::new(Span::styled("…", Style::default().fg(Color::Gray))),
+            Rect::new(row.right() - 1, row.y, 1, 1),
+        );
+    }
     // Drop feedback: a bar in the gap where the dragged tab will land.
     if let Some((_, slot)) = app.tab_drag {
         let marker = match slot {
@@ -707,6 +754,10 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
             ("Ctrl+E", "open full activity detail"),
             ("F5", "toggle full activity"),
             ("Ctrl+G", "open the agents view"),
+            (
+                "Ctrl+N",
+                "list the questions, approvals and results that need you",
+            ),
             ("Ctrl+K", "choose what to do when a running turn goes quiet"),
             ("F1 / ?", "open this shortcut sheet"),
         ]),
@@ -2763,7 +2814,6 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             ..area
         },
     ];
-    app.areas.permissions = cols[1];
     let flash = app
         .flash
         .as_ref()
@@ -2950,13 +3000,35 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    let left = if app.workspace.focused.is_some() && app.picker.is_none() {
+    // A warning outranks the file-pane hint, so closing from the pane still explains itself.
+    let left = if app.workspace.focused.is_some() && app.picker.is_none() && flash.is_none() {
         "File pane · Esc chat · F6 change focus · Ctrl+S save · Ctrl+F find"
     } else {
         left
     };
     let focus_hint = queue_focus::focus_hint(app).map(|hint| format!("{left} · {hint}"));
     let left = focus_hint.as_deref().unwrap_or(left);
+    // A warning too long for the row beside the permissions control takes the whole row while
+    // it shows; the control returns when the warning expires.
+    let (cols, rw) = if flash.is_some_and(|m| m == left)
+        && rw > 0
+        && left.chars().count() + 2 > usize::from(cols[0].width)
+    {
+        (
+            [
+                area,
+                Rect {
+                    x: area.x + area.width,
+                    width: 0,
+                    ..area
+                },
+            ],
+            0,
+        )
+    } else {
+        (cols, rw)
+    };
+    app.areas.permissions = cols[1];
     let stats_reserve = app
         .stats
         .as_ref()
