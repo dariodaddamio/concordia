@@ -54,6 +54,7 @@ Ask your question and press Enter
 | `/new` | `` | start a fresh chat | everyday |
 | `/resume` | `` | continue an earlier chat | everyday |
 | `/harness` | `ACTION` | integrations and agent tools | advanced |
+| `/worktree` | `[list\|create BASE\|inspect ID\|delegate ID ACCOUNT TASK\|review ID ACTION\|integrate ID RECEIPT\|reconcile ID\|cancel]` | create, delegate into, review and explicitly integrate managed Git workspaces | advanced |
 | `/skills` | `[list\|install [PATH]\|remove PATH]` | inspect skills and toggle their availability | advanced |
 | `/hooks` | `[list]` | inspect native hooks | advanced |
 | `/mcp` | `[add\|remove\|on\|off\|import] [NAME]` | manage Concordia-wide MCP servers | advanced |

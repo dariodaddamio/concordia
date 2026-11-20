@@ -694,6 +694,40 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
+    /// Start one worker in an explicitly created managed worktree. The worker owner generates
+    /// the run/attempt identities and persists the workspace reservation before launch.
+    pub(super) fn delegate_managed_command(&mut self, argument: &str) {
+        let mut parts = argument.splitn(3, char::is_whitespace);
+        let Some(workspace) = parts.next().filter(|value| !value.is_empty()) else {
+            self.push_system("usage: /worktree delegate WORKSPACE_ID ACCOUNT TASK");
+            return;
+        };
+        let Some(account) = parts.next().filter(|value| !value.is_empty()) else {
+            self.push_system("usage: /worktree delegate WORKSPACE_ID ACCOUNT TASK");
+            return;
+        };
+        let Some(task) = parts
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            self.push_system("usage: /worktree delegate WORKSPACE_ID ACCOUNT TASK");
+            return;
+        };
+        let result = self.start_delegate_workspace(
+            account,
+            task,
+            Origin::User,
+            &[],
+            &[],
+            Some(workspace),
+            None,
+            None,
+            None,
+        );
+        self.push_system(result.unwrap_or_else(|error| format!("delegate failed - {error}")));
+    }
+
     fn dependency_delivery_command(&mut self, arguments: &str) {
         use crate::delegate::delivery::Mode;
         if arguments.trim() == "cancel" {

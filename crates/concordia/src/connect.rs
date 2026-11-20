@@ -86,6 +86,82 @@ pub struct LoginPlan {
     pub bin: &'static str,
 }
 
+/// The provider's documented Windows install command, shown before Concordia can run it.
+/// Concordia never downloads a provider binary itself; this is only a user-confirmed handoff
+/// to the provider's own installer or package manager.
+pub fn official_install_command(provider: ProviderKind) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Codex => Some("npm install -g @openai/codex"),
+        ProviderKind::Claude => Some("irm https://claude.ai/install.ps1 | iex"),
+        ProviderKind::Cursor => Some("irm 'https://cursor.com/install?win32=true' | iex"),
+        ProviderKind::Grok | ProviderKind::Opencode => None,
+    }
+}
+
+/// Open the provider's official installer in a visible PowerShell window.
+/// A successful spawn only means the user has control of the installer window; it does not
+/// claim that installation or version compatibility succeeded.
+pub fn install_provider(provider: ProviderKind) -> Result<(), String> {
+    let command = official_install_command(provider).ok_or_else(|| {
+        format!(
+            "no official installer is configured for {}",
+            capitalized(provider)
+        )
+    })?;
+    // `CONCORDIA_INSTALLER_SHELL` swaps the program `start` opens so the spawn path can be
+    // exercised without running a real installer.
+    // Honoured only in a test-control window, so a stray variable cannot redirect a real install.
+    let shell = std::env::var_os("CONCORDIA_TEST_CONTROL")
+        .and_then(|_| crate::provider::bin_override("CONCORDIA_INSTALLER_SHELL"))
+        .unwrap_or_else(|| "powershell.exe".into());
+    open_console(
+        console_command("Concordia installer", &shell, command),
+        &shell,
+    )
+    .map_err(|error| format!("could not open the installer window: {error}"))
+}
+
+/// The process that opens a visible console running `command` in PowerShell.
+/// PowerShell started directly with null stdio had nothing to show or read and exited at once,
+/// so `cmd /c start` gives it a real console. Every argument is a fixed string from the
+/// install/login mapping; none comes from user input. The hidden `cmd` only launches the window.
+fn console_command(title: &str, shell: &str, command: &str) -> Command {
+    let mut process = crate::process_ui::command("cmd.exe");
+    process.args([
+        "/c",
+        "start",
+        title,
+        shell,
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    ]);
+    process
+}
+
+/// Run the `start` launcher. `start` reports success for a missing program, so the shell is
+/// resolved first and a missing one is refused with nothing opened.
+fn open_console(mut launcher: Command, shell: &str) -> Result<(), String> {
+    which::which(shell).map_err(|_| format!("{shell} was not found"))?;
+    launcher
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("the console window did not open ({status})"))
+            }
+        })
+}
+
 /// Plan the native login. `has_bin` reports whether a CLI is on PATH.
 pub fn plan_login(
     provider: ProviderKind,
@@ -123,31 +199,18 @@ pub fn plan_login(
     })
 }
 
-/// The process to spawn for a plan: a new visible PowerShell console.
+/// The process to spawn for a plan: a new visible PowerShell console with the isolated-home
+/// environment, which `start` passes on to the console it opens.
 pub fn login_command(plan: &LoginPlan) -> Command {
-    let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
-    // Provider login must be visible so the user can complete native authentication.
-    let mut cmd = crate::process_ui::visible_command("powershell.exe");
-    cmd.args(ps);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-        cmd.creation_flags(CREATE_NEW_CONSOLE);
-    }
+    let mut cmd = console_command("Concordia login", "powershell.exe", plan.script);
     for (k, v) in &plan.env {
         cmd.env(k, v);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
     cmd
 }
 
 fn launch_login(plan: &LoginPlan) -> Result<(), String> {
-    login_command(plan)
-        .spawn()
-        .map(drop)
+    open_console(login_command(plan), "powershell.exe")
         .map_err(|e| format!("could not open a login window: {e}"))
 }
 
@@ -311,6 +374,17 @@ fn has_bin_on_path(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
+/// Whether the provider's CLI is missing from PATH, by the same lookup `add_account` uses.
+pub fn cli_missing(provider: ProviderKind) -> bool {
+    match provider {
+        ProviderKind::Cursor => !(has_bin_on_path("agent") || has_bin_on_path("cursor-agent")),
+        ProviderKind::Codex => !has_bin_on_path("codex"),
+        ProviderKind::Claude => !has_bin_on_path("claude"),
+        ProviderKind::Grok => !has_bin_on_path("grok"),
+        ProviderKind::Opencode => !has_bin_on_path("opencode"),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AddResult {
     pub account: String,
@@ -346,6 +420,13 @@ pub fn add_account_with(
     provider: ProviderKind,
     fx: &Effects<'_>,
 ) -> Result<AddResult> {
+    // A missing Cursor CLI is reported before any account slot is touched, so setup can be offered.
+    if provider == ProviderKind::Cursor && !((fx.has_bin)("agent") || (fx.has_bin)("cursor-agent"))
+    {
+        return Err(anyhow::anyhow!(
+            "agent not found on PATH — install the Cursor CLI, then try again"
+        ));
+    }
     // The first Cursor account is the CLI's own global login; extra ones are key files.
     if provider == ProviderKind::Cursor {
         if let Some(main) = crate::accounts::builtin_accounts()
@@ -714,7 +795,7 @@ mod tests {
         let plan = plan_login(ProviderKind::Codex, Some(&home), &all_bins).unwrap();
 
         let cmd = login_command(&plan);
-        assert_eq!(cmd.get_program(), "powershell.exe");
+        assert_eq!(cmd.get_program(), "cmd.exe");
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -722,9 +803,15 @@ mod tests {
         assert_eq!(
             args,
             [
+                "/c",
+                "start",
+                "Concordia login",
+                "powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
                 "-Command",
                 "codex login"
             ]

@@ -70,7 +70,6 @@ pub fn append_visible_text(text: &mut String, fragment: &str) {
         text.push_str(fragment);
     }
 }
-
 pub(crate) async fn send_progress(
     progress: &Option<mpsc::Sender<TurnProgress>>,
     mut event: TurnProgress,
@@ -174,6 +173,21 @@ pub(super) fn planned_options(argv: &[String]) -> impl Iterator<Item = (&str, Op
     })
 }
 
+/// Authoritative terminal state for a provider turn.
+///
+/// This is derived from structured provider terminal events, app-server turn status,
+/// cancellation, and the child process status. It is deliberately independent of
+/// rendered error text so worker control can make a decision without prose parsing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TurnTerminalOutcome {
+    Success,
+    Quota,
+    Crash,
+    Cancelled,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct TurnOutcome {
     /// A terminal failure event, independent of the process exit code.
@@ -185,6 +199,21 @@ pub struct TurnOutcome {
     pub cards: Vec<StreamCard>,
     /// Last lines the provider wrote to stderr (why it failed, when it did).
     pub stderr_tail: String,
+    /// Structured terminal signal for worker orchestration and recovery.
+    pub terminal_outcome: TurnTerminalOutcome,
+}
+
+impl TurnOutcome {
+    /// Stable machine-readable label for worker control and external receipts.
+    pub fn terminal_outcome_label(&self) -> &'static str {
+        match self.terminal_outcome {
+            TurnTerminalOutcome::Success => "success",
+            TurnTerminalOutcome::Quota => "quota",
+            TurnTerminalOutcome::Crash => "crash",
+            TurnTerminalOutcome::Cancelled => "cancelled",
+            TurnTerminalOutcome::Unknown => "unknown",
+        }
+    }
 }
 
 /// Apply native image inputs after normal launch planning; payloads never pass through a shell.
@@ -969,6 +998,23 @@ async fn run_provider_turn_inner(
         if !(out.failed && out.stderr_tail.starts_with(appserver::UNAVAILABLE)) {
             return Ok(out);
         }
+        if out.stderr_tail.contains(appserver::INCOMPATIBLE)
+            || out.stderr_tail.contains(appserver::UNKNOWN_COMPATIBILITY)
+        {
+            if let Some(progress) = on_progress.as_ref() {
+                let detail = out
+                    .stderr_tail
+                    .strip_prefix(appserver::UNAVAILABLE)
+                    .unwrap_or(out.stderr_tail.as_str())
+                    .trim_start_matches(|c| c == ':' || c == ' ');
+                let _ = progress
+                    .send(TurnProgress::Notice(format!(
+                        "Codex app-server refused this turn before prompt delivery: detected {detail}. The prompt and native session were preserved; no fallback was started. Disable Codex native transport with /native, then retry explicitly."
+                    )))
+                    .await;
+            }
+            return Ok(out);
+        }
         // A Codex update must not stop the chat: run this turn on Codex's standard transport.
         crate::logging::info(&out.stderr_tail);
         if let Some(progress) = fallback_progress {
@@ -1159,6 +1205,8 @@ async fn run_provider_turn_inner(
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
     let mut invalid_protocol = false;
+    let mut terminal_seen = None;
+    let mut quota_signal = false;
     let mut completed_events = CompletedEvents::default();
     let mut artifacts = crate::artifacts::Collector::default();
     let mut first_event_ms = None;
@@ -1222,6 +1270,10 @@ async fn run_provider_turn_inner(
                 }
                 if let Some(failed) = terminal_failure(&line) {
                     out.failed = failed;
+                    terminal_seen = Some(failed);
+                }
+                if structured_quota_signal(&line) {
+                    quota_signal = true;
                 }
                 {
                     let mut parts = match json_parser.as_mut() {
@@ -1365,6 +1417,17 @@ async fn run_provider_turn_inner(
         || json_parser
             .as_ref()
             .is_some_and(|parser| parser.invalid_output());
+    out.terminal_outcome = if out.cancelled {
+        TurnTerminalOutcome::Cancelled
+    } else if quota_signal {
+        TurnTerminalOutcome::Quota
+    } else if terminal_seen == Some(false) && out.exit_code == Some(0) && !out.failed {
+        TurnTerminalOutcome::Success
+    } else if out.failed || out.exit_code.is_some_and(|code| code != 0) {
+        TurnTerminalOutcome::Crash
+    } else {
+        TurnTerminalOutcome::Unknown
+    };
     if plan.provider == ProviderKind::Codex
         && !out.cancelled
         && super::edit_display::needs_codex_patch(&out.cards)
@@ -1433,6 +1496,37 @@ fn terminal_failure(line: &str) -> Option<bool> {
         ),
         _ => None,
     }
+}
+
+/// Detect quota/rate-limit terminal signals only from structured provider output.
+fn structured_quota_signal(line: &str) -> bool {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let matched = [
+        event.get("code"),
+        event.get("type"),
+        event.get("subtype"),
+        event.pointer("/error/code"),
+        event.pointer("/error/type"),
+        event.pointer("/error/codexErrorInfo"),
+        event.pointer("/error/codexErrorInfo/code"),
+        event.pointer("/result/code"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|value| value.as_str())
+    .any(|value| {
+        matches!(
+            value,
+            "quota_exceeded"
+                | "rate_limit_exceeded"
+                | "usage_limit_exceeded"
+                | "usage_limit_reached"
+                | "usageLimitExceeded"
+        )
+    });
+    matched
 }
 
 /// Replayed complete snapshots with explicit event/message identity are safe to omit.

@@ -33,6 +33,10 @@ pub struct AvailableCommand {
     pub description: String,
 }
 
+// Codex app-server 0.170.0's generated ClientRequest schema has no command-list RPC.
+// Keep this provider-owned fallback list until the protocol advertises commands explicitly;
+// never invent a discovery request that the server does not define.
+
 const CODEX_COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "/compact",

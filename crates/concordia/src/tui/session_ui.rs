@@ -1,8 +1,68 @@
 //! Session titles and bounded asynchronous resume scrollback. Native session ownership stays explicit.
 use super::*;
 
-pub(super) const HISTORY_OMITTED: &str =
-    "Showing recent conversation history. Earlier messages remain saved in the original chat.";
+pub(super) const HISTORY_OMITTED: &str = "Older messages hidden:";
+
+fn history_limit_notice(
+    hidden: usize,
+    source_truncated: bool,
+    details_shortened: bool,
+    provider: ProviderKind,
+    account: &str,
+    session: &str,
+) -> String {
+    let shortened = if details_shortened {
+        " Some message or tool details were shortened to fit display limits."
+    } else {
+        ""
+    };
+    let mib = |n: u64| n / (1024 * 1024);
+    if hidden > 0 {
+        let beyond = if source_truncated {
+            " The oldest source content also lies beyond the native read limit."
+        } else {
+            ""
+        };
+        return format!(
+            "Older messages hidden: {hidden}; display limit is {} messages / {} MiB, and native source reads stop at {} MiB. Press Ctrl+E to load an older page from this same chat.{beyond}{shortened} Earlier messages remain saved in the original native source.",
+            crate::native_history::HISTORY_MESSAGES,
+            mib(crate::native_history::HISTORY_TEXT_BYTES as u64),
+            mib(crate::native_history::HISTORY_NATIVE_BYTES),
+        );
+    }
+    if source_truncated {
+        return format!(
+            "The oldest messages are beyond the {} MiB native read limit and cannot be loaded here. They remain in the original {}/{account}/{session} native source; `concordia chat read` uses the same bound, so open the chat in the provider's own client to read them.{shortened}",
+            mib(crate::native_history::HISTORY_NATIVE_BYTES),
+            provider.as_str(),
+        );
+    }
+    format!(
+        "All older messages from this chat's native source are loaded (display pages are {} messages / {} MiB).{shortened}",
+        crate::native_history::HISTORY_MESSAGES,
+        mib(crate::native_history::HISTORY_TEXT_BYTES as u64),
+    )
+}
+
+fn history_source_access_notice(
+    account: &str,
+    session: &str,
+    provider: ProviderKind,
+    older: bool,
+) -> String {
+    let provider = provider.as_str();
+    let tool_limit = "Tool history remains bounded by the native tool-card display policy; the original native tool history is unchanged.";
+    let source = if older {
+        format!("Older source messages for {provider}/{account}/{session}: press Ctrl+E to open the bounded native-source reader.")
+    } else {
+        format!("Native source for {provider}/{account}/{session}.")
+    };
+    if provider == "cursor" {
+        format!("{source} Cursor restoration is text-only; tool calls/details are not reconstructed. {tool_limit}")
+    } else {
+        format!("{source} {tool_limit}")
+    }
+}
 
 #[derive(Default)]
 pub(super) struct State {
@@ -14,6 +74,8 @@ pub(super) struct State {
     pub(super) memory_pending: Option<u64>,
     pub(super) memory_screen: Option<u64>,
     memory_jobs: Vec<(u64, std::sync::mpsc::Receiver<Result<String, String>>)>,
+    older_cursor: Option<crate::native_history::Anchor>,
+    older_job: Option<OlderJob>,
 }
 
 pub(super) struct ResumeRequest {
@@ -33,6 +95,16 @@ struct Load {
     rx: std::sync::mpsc::Receiver<Result<crate::chat_cli::History, String>>,
 }
 
+struct OlderJob {
+    generation: u64,
+    provider: ProviderKind,
+    account: String,
+    home: PathBuf,
+    session: String,
+    before: crate::native_history::Anchor,
+    rx: std::sync::mpsc::Receiver<Result<crate::chat_cli::History, String>>,
+}
+
 impl State {
     #[cfg(test)]
     pub fn memory_reading(&self) -> bool {
@@ -46,6 +118,8 @@ impl State {
         self.pending = None;
         self.memory_pending = None;
         self.memory_screen = None;
+        self.older_job = None;
+        self.older_cursor = None;
     }
     #[cfg(test)]
     pub fn reading(&self) -> bool {
@@ -206,6 +280,63 @@ fn file_facts_memory(value: serde_json::Value) -> String {
 
 */
 impl App {
+    pub(super) fn older_history_source_available(&self) -> bool {
+        self.messages.iter().any(|message| {
+            message.role == MsgRole::System
+                && message.text.starts_with(HISTORY_OMITTED)
+                && self.native_session_id.is_some()
+                && self.session_ui.older_cursor.is_some()
+        })
+    }
+
+    pub(super) fn open_older_history_source(&mut self) {
+        let (Some(session), Some(_home)) = (self.native_session_id.clone(), self.home_path.clone())
+        else {
+            self.flash("native source is not bound to this chat");
+            return;
+        };
+        if self.session_ui.older_job.is_some() {
+            self.flash("older native history is still loading");
+            return;
+        }
+        let Some(before) = self.session_ui.older_cursor else {
+            self.flash("no older native history remains in this chat");
+            return;
+        };
+        let root = self.state_root.clone();
+        let account = self.account.clone();
+        let provider = self.provider;
+        let worker_account = account.clone();
+        let worker_session = session.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        if std::thread::Builder::new()
+            .name("concordia-older-history".into())
+            .spawn(move || {
+                let _ = tx.send(crate::chat_cli::read_history_page(
+                    &root,
+                    &worker_account,
+                    provider,
+                    &worker_session,
+                    before,
+                ));
+            })
+            .is_err()
+        {
+            self.flash("could not start older native history reader");
+            return;
+        }
+        self.session_ui.next = self.session_ui.next.wrapping_add(1);
+        self.session_ui.older_job = Some(OlderJob {
+            generation: self.session_ui.next,
+            provider,
+            account,
+            home: self.home_path.clone().unwrap(),
+            session,
+            before,
+            rx,
+        });
+    }
+
     /// Refresh a restored tab's exact native history without changing selection, draft,
     /// conversation ownership or paused unfinished-request state.
     pub(super) fn reload_restored_history(&mut self, session: &str) {
@@ -610,6 +741,108 @@ impl App {
 
     pub(super) fn poll_session_history(&mut self) -> bool {
         let mut changed = false;
+        if let Some(job) = self.session_ui.older_job.take() {
+            if job.generation != self.session_ui.next
+                || self.provider != job.provider
+                || self.account != job.account
+                || self.home_path.as_ref() != Some(&job.home)
+                || self.native_session_id.as_deref() != Some(&job.session)
+            {
+                changed = true;
+            } else {
+                match job.rx.try_recv() {
+                    Ok(Ok(history)) => {
+                        let meta = Some(self.reply_meta());
+                        let cursor = self.provider == ProviderKind::Cursor;
+                        let loaded = history.messages.len();
+                        for message in history.messages.into_iter().rev() {
+                            let text = if cursor
+                                && matches!(message.role.as_str(), "user" | "assistant")
+                            {
+                                format!("[Cursor restored history · text-only; tool history not reconstructed]\n{}", message.text)
+                            } else {
+                                message.text
+                            };
+                            self.messages.insert(
+                                1,
+                                ChatLine {
+                                    role: match message.role.as_str() {
+                                        "user" => MsgRole::User,
+                                        "thinking" => MsgRole::Thinking,
+                                        "card" => MsgRole::Card,
+                                        _ => MsgRole::Assistant,
+                                    },
+                                    text,
+                                    card: message.card,
+                                    meta: if message.role != "user" {
+                                        meta.clone()
+                                    } else {
+                                        None
+                                    },
+                                },
+                            );
+                        }
+                        // Put the newly loaded older page at the visible boundary. The next redraw
+                        // clamps this sentinel to the expanded transcript and keeps the page action
+                        // observable instead of preserving the pre-load bottom anchor.
+                        self.view.scroll = usize::MAX;
+                        self.session_ui.older_cursor = history.next_cursor;
+                        let remaining = history.hidden_messages;
+                        let exhausted = history.next_cursor.is_none();
+                        let (provider, account, session) = (
+                            self.provider,
+                            self.account.clone(),
+                            self.native_session_id.clone().unwrap_or_default(),
+                        );
+                        if let Some(notice) = self.messages.iter_mut().find(|message| {
+                            message.role == MsgRole::System
+                                && message.text.starts_with(HISTORY_OMITTED)
+                        }) {
+                            notice.text = history_limit_notice(
+                                remaining,
+                                history.source_truncated,
+                                history.details_shortened,
+                                provider,
+                                &account,
+                                &session,
+                            );
+                        }
+                        if exhausted {
+                            let notice =
+                                history_source_access_notice(&account, &session, provider, false);
+                            if let Some(line) = self.messages.iter_mut().find(|message| {
+                                message.role == MsgRole::System
+                                    && message.text.starts_with("Older source messages for ")
+                            }) {
+                                line.text = notice;
+                            }
+                        }
+                        let next = if !exhausted {
+                            format!(
+                                "{remaining} hidden messages remain; press Ctrl+E for the next page."
+                            )
+                        } else if history.source_truncated {
+                            "Older content lies beyond the 8 MiB native read limit.".to_string()
+                        } else {
+                            "No older native history remains.".to_string()
+                        };
+                        self.push_system(format!("Loaded {} older native-source messages · same {}/{}/{} binding. {next}", loaded, self.provider.as_str(), self.account, self.native_session_id.as_deref().unwrap_or("unknown")));
+                        changed = true;
+                    }
+                    Ok(Err(error)) => {
+                        self.push_system(format!("Older native history unavailable: {error}"));
+                        changed = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        self.session_ui.older_job = Some(job);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        self.push_system("Older native history reader stopped unexpectedly");
+                        changed = true;
+                    }
+                }
+            }
+        }
         let mut i = 0;
         while i < self.session_ui.jobs.len() {
             let result = match self.session_ui.jobs[i].rx.try_recv() {
@@ -715,13 +948,48 @@ impl App {
                         }
                     }
                     let count = history.messages.len();
+                    self.session_ui.older_cursor = history.next_cursor;
+                    let older = history.next_cursor.is_some();
                     if history.truncated {
-                        self.push_system(HISTORY_OMITTED);
+                        self.push_system(history_limit_notice(
+                            history.hidden_messages,
+                            history.source_truncated,
+                            history.details_shortened,
+                            job.provider,
+                            &job.account,
+                            self.native_session_id.as_deref().unwrap_or_default(),
+                        ));
+                        self.push_system(history_source_access_notice(
+                            &job.account,
+                            self.native_session_id.as_deref().unwrap_or_default(),
+                            job.provider,
+                            older,
+                        ));
+                    } else if job.provider == ProviderKind::Cursor {
+                        self.push_system(history_source_access_notice(
+                            &job.account,
+                            self.native_session_id.as_deref().unwrap_or_default(),
+                            job.provider,
+                            false,
+                        ));
+                        if !job.restoring {
+                            self.push_system(format!(
+                                "Resumed · {count} messages loaded. Scroll up to review the conversation."
+                            ));
+                        }
                     } else if !job.restoring {
                         self.push_system(format!("Resumed · {count} messages loaded. Scroll up to review the conversation."));
                     }
                     let meta = Some(self.reply_meta());
                     for message in history.messages {
+                        let mut text = message.text;
+                        if job.provider == ProviderKind::Cursor
+                            && matches!(message.role.as_str(), "user" | "assistant")
+                        {
+                            text = format!(
+                                "[Cursor restored history · text-only; tool history not reconstructed]\n{text}"
+                            );
+                        }
                         self.messages.push(ChatLine {
                             role: match message.role.as_str() {
                                 "user" => MsgRole::User,
@@ -729,7 +997,7 @@ impl App {
                                 "card" => MsgRole::Card,
                                 _ => MsgRole::Assistant,
                             },
-                            text: message.text,
+                            text,
                             card: message.card,
                             meta: if message.role != "user" {
                                 meta.clone()

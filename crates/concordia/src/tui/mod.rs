@@ -98,6 +98,7 @@ mod session_ui;
 #[cfg(test)]
 mod session_ui_tests;
 mod settings;
+mod source_inventory;
 mod stats_ui;
 mod syntax;
 pub(crate) mod tabs;

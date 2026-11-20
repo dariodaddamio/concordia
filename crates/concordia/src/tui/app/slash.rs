@@ -430,6 +430,26 @@ impl App {
             }
             return true;
         }
+        if trimmed == "/worktree delegate" {
+            self.push_command(line);
+            self.delegate_managed_command("");
+            return true;
+        }
+        if let Some(arguments) = trimmed
+            .strip_prefix("/worktree delegate ")
+            .map(str::trim)
+            .filter(|arguments| !arguments.is_empty())
+        {
+            self.push_command(line);
+            self.delegate_managed_command(arguments);
+            return true;
+        }
+        if trimmed == "/worktree" || trimmed.starts_with("/worktree ") {
+            let arguments = trimmed.strip_prefix("/worktree").unwrap_or_default().trim();
+            self.push_command(line);
+            self.managed_workspace_command(arguments);
+            return true;
+        }
         let Some((cmd, _)) = parse_slash(line) else {
             return false;
         };
@@ -549,7 +569,7 @@ impl App {
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
-            // Catalog titles carry provider and scope (`Skills · codex · local sources`); keep them.
+            // Catalog titles carry provider and scope (`Skills · codex · evidence`); keep them.
             settings::catalog(self, *hooks);
             self.footer_left = "↑↓ choose · Enter open source · Esc close".into();
             return true;

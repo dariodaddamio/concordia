@@ -19,11 +19,84 @@ pub struct HistoryMessage {
     pub card: Option<StreamCard>,
 }
 
+/// Message-identity cursor for the oldest shown message: its position in the bounded read plus a
+/// hash of it and the next two messages. A later page re-finds it by identity, so source growth
+/// (the bounded read is the file's tail and moves) cannot duplicate or skip messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    index: usize,
+    count: usize,
+    key: u64,
+    /// Byte offset where the bounded native read began. A different offset means the read
+    /// window moved (an over-8 MiB source grew), so `index` no longer names the same message.
+    source_offset: u64,
+    /// Messages the bounded read dropped from its front. Like `source_offset`, a change means
+    /// the window moved (a Cursor or in-memory read grew past 8 MiB).
+    dropped_front: u64,
+}
+
+fn anchor_key(messages: &[HistoryMessage], at: usize, count: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for m in &messages[at..at + count] {
+        m.role.hash(&mut hasher);
+        m.text.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn make_anchor(messages: &[HistoryMessage], index: usize, window: (u64, u64)) -> Anchor {
+    let count = 3.min(messages.len() - index);
+    Anchor {
+        index,
+        count,
+        key: anchor_key(messages, index, count),
+        source_offset: window.0,
+        dropped_front: window.1,
+    }
+}
+
+/// Position of the anchored message in the current read, or an error when it cannot be found
+/// uniquely (the source was rewritten or the anchor aged out of the read window).
+fn resolve_anchor(
+    messages: &[HistoryMessage],
+    anchor: Anchor,
+    window: (u64, u64),
+) -> Result<usize, String> {
+    let at = |i: usize| {
+        i + anchor.count <= messages.len() && anchor_key(messages, i, anchor.count) == anchor.key
+    };
+    // The same index is trusted only while the read window is unchanged; after it moves,
+    // repeated content (for example identical short turns) could match at the old index.
+    if (anchor.source_offset, anchor.dropped_front) == window && at(anchor.index) {
+        return Ok(anchor.index);
+    }
+    let mut found = (0..messages.len()).filter(|&i| at(i));
+    match (found.next(), found.next()) {
+        (Some(i), None) => Ok(i),
+        _ => Err("source changed since this chat was restored; reopen it to page again".into()),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct History {
     pub title: Option<String>,
     pub messages: Vec<HistoryMessage>,
     pub truncated: bool,
+    pub total_messages: usize,
+    pub hidden_messages: usize,
+    pub exhausted: bool,
+    pub next_cursor: Option<Anchor>,
+    /// The 8 MiB native read bound dropped older source content.
+    pub source_truncated: bool,
+    /// Byte offset where the bounded native read began (0 for a full read).
+    pub source_offset: u64,
+    /// Messages the bounded read dropped from its front to stay within 8 MiB.
+    pub dropped_front: u64,
+    /// Message text or tool-card detail was shortened for display (not a read-window cut).
+    pub details_shortened: bool,
+    pub start_ordinal: usize,
+    pub end_ordinal: usize,
 }
 
 pub(crate) const HISTORY_MESSAGES: usize = 200;
@@ -61,19 +134,92 @@ pub fn read_bound(
     session_id: &str,
     path: &Path,
 ) -> Result<History, String> {
+    read_bound_page(root, account, provider, session_id, path, None)
+}
+
+/// Read one older page from the same explicitly bound native source. The source read is still
+/// capped at 8 MiB; page expansion only increases the in-memory message window within that cap.
+pub fn read_bound_page(
+    root: &Path,
+    account: &str,
+    provider: ProviderKind,
+    session_id: &str,
+    path: &Path,
+    before: Option<Anchor>,
+) -> Result<History, String> {
+    let message_limit = usize::MAX;
+    let byte_limit = HISTORY_NATIVE_BYTES as usize;
     let history = if provider == ProviderKind::Cursor {
         let home = crate::accounts::get_account(root, account)
             .and_then(|a| a.home_path)
             .ok_or("Cursor account home is unavailable")?;
         let binding = crate::native_memory::Binding::new(provider, account, &home, session_id)?;
-        let mut buffer = HistoryBuffer::new(false);
+        let mut buffer = HistoryBuffer::with_limits(false, message_limit, byte_limit);
         for (role, text) in crate::native_memory::cursor_text(root, &binding)? {
             buffer.push(&role, &text);
         }
         buffer.finish()
     } else {
-        read_history_file(path, provider)?
+        read_history_file_page(path, provider, message_limit, byte_limit)?
     };
+    let total_messages = history.messages.len();
+    // Page backward from a source cursor (an ordinal in the bounded native read), accumulating both
+    // display limits (200 messages and 1 MiB including card detail). The caller advances by the
+    // range actually consumed, so large messages never cause gaps or overlaps.
+    let end = match before {
+        Some(anchor) => resolve_anchor(
+            &history.messages,
+            anchor,
+            (history.source_offset, history.dropped_front),
+        )?,
+        None => total_messages,
+    };
+    let mut start = end;
+    let mut bytes = 0usize;
+    while start > 0 && end - start < HISTORY_MESSAGES {
+        let m = &history.messages[start - 1];
+        let size = m.text.len()
+            + m.card
+                .as_ref()
+                .and_then(|c| c.detail.as_ref())
+                .map_or(0, String::len);
+        if bytes > 0 && bytes.saturating_add(size) > HISTORY_TEXT_BYTES {
+            break;
+        }
+        start -= 1;
+        bytes = bytes.saturating_add(size);
+    }
+    let mut history = history;
+    let next_anchor = (start > 0).then(|| {
+        make_anchor(
+            &history.messages,
+            start,
+            (history.source_offset, history.dropped_front),
+        )
+    });
+    history.messages = history.messages[start..end].to_vec();
+    let mut shown = 0usize;
+    let mut history_shortened = false;
+    for message in &mut history.messages {
+        if shown >= HISTORY_TEXT_BYTES {
+            message.text.clear();
+            continue;
+        }
+        let room = HISTORY_TEXT_BYTES - shown;
+        if message.text.len() > room {
+            message.text.truncate(room);
+            history_shortened = true;
+        }
+        shown = shown.saturating_add(message.text.len());
+    }
+    history.total_messages = total_messages;
+    history.hidden_messages = start;
+    history.exhausted = start == 0;
+    history.next_cursor = next_anchor;
+    history.details_shortened |= history_shortened;
+    history.start_ordinal = start;
+    history.end_ordinal = end;
+    history.truncated = start > 0 || history.truncated;
     Ok(history)
 }
 
@@ -102,6 +248,15 @@ pub fn probe_bound(
 }
 
 pub(crate) fn read_history_file(path: &Path, provider: ProviderKind) -> Result<History, String> {
+    read_history_file_page(path, provider, HISTORY_MESSAGES, HISTORY_TEXT_BYTES)
+}
+
+fn read_history_file_page(
+    path: &Path,
+    provider: ProviderKind,
+    message_limit: usize,
+    byte_limit: usize,
+) -> Result<History, String> {
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let size = file.metadata().map_err(|e| e.to_string())?.len();
     let start = size.saturating_sub(HISTORY_NATIVE_BYTES);
@@ -129,8 +284,8 @@ pub(crate) fn read_history_file(path: &Path, provider: ProviderKind) -> Result<H
     } else {
         0
     };
-    let mut primary = HistoryBuffer::new(start > 0);
-    let mut fallback = HistoryBuffer::new(start > 0);
+    let mut primary = HistoryBuffer::with_limits(start > 0, message_limit, byte_limit);
+    let mut fallback = HistoryBuffer::with_limits(start > 0, message_limit, byte_limit);
     let mut claude = crate::provider::stream_json::StreamParser::new(
         crate::provider::stream_json::Flavor::Claude,
     );
@@ -225,7 +380,7 @@ pub(crate) fn read_history_file(path: &Path, provider: ProviderKind) -> Result<H
             }
         }
     }
-    Ok(if !primary
+    let mut history = if !primary
         .messages
         .iter()
         .any(|message| matches!(message.role.as_str(), "user" | "assistant"))
@@ -234,7 +389,9 @@ pub(crate) fn read_history_file(path: &Path, provider: ProviderKind) -> Result<H
     } else {
         primary
     }
-    .finish())
+    .finish();
+    history.source_offset = start;
+    Ok(history)
 }
 
 fn reported_tool_id(value: &Value, id: &str) -> bool {
@@ -268,14 +425,28 @@ pub(crate) struct HistoryBuffer {
     messages: std::collections::VecDeque<HistoryMessage>,
     bytes: usize,
     truncated: bool,
+    source_cut: bool,
+    shortened: bool,
+    dropped_front: u64,
+    message_limit: usize,
+    byte_limit: usize,
 }
 
 impl HistoryBuffer {
     pub(crate) fn new(truncated: bool) -> Self {
+        Self::with_limits(truncated, HISTORY_MESSAGES, HISTORY_TEXT_BYTES)
+    }
+
+    pub(crate) fn with_limits(truncated: bool, message_limit: usize, byte_limit: usize) -> Self {
         Self {
             messages: std::collections::VecDeque::new(),
             bytes: 0,
             truncated,
+            source_cut: truncated,
+            shortened: false,
+            dropped_front: 0,
+            message_limit,
+            byte_limit,
         }
     }
 
@@ -297,13 +468,14 @@ impl HistoryBuffer {
         {
             return;
         }
-        if text.len() > HISTORY_TEXT_BYTES {
-            let mut start = text.len() - HISTORY_TEXT_BYTES;
+        if text.len() > self.byte_limit {
+            let mut start = text.len() - self.byte_limit;
             while !text.is_char_boundary(start) {
                 start += 1;
             }
             text = text[start..].to_owned();
             self.truncated = true;
+            self.shortened = true;
         }
         self.bytes += text.len();
         self.messages.push_back(HistoryMessage {
@@ -317,7 +489,9 @@ impl HistoryBuffer {
     pub(crate) fn push_card(&mut self, mut card: StreamCard) {
         card.title = terminal_safe(&card.title);
         card.detail = card.detail.as_deref().map(terminal_safe);
-        self.truncated |= bound_history_card(&mut card);
+        let cut = bound_history_card(&mut card);
+        self.truncated |= cut;
+        self.shortened |= cut;
         let start = self
             .messages
             .iter()
@@ -341,7 +515,9 @@ impl HistoryBuffer {
             let mut cards = vec![message.card.take().unwrap()];
             upsert_card(&mut cards, card);
             card = cards.remove(0);
-            self.truncated |= bound_history_card(&mut card);
+            let cut = bound_history_card(&mut card);
+            self.truncated |= cut;
+            self.shortened |= cut;
             message.text = format_card_line(&card);
             self.bytes += message.text.len() + card.detail.as_ref().map_or(0, String::len);
             message.card = Some(card);
@@ -358,7 +534,7 @@ impl HistoryBuffer {
     }
 
     fn enforce_bound(&mut self) {
-        while self.messages.len() > HISTORY_MESSAGES || self.bytes > HISTORY_TEXT_BYTES {
+        while self.messages.len() > self.message_limit || self.bytes > self.byte_limit {
             if let Some(message) = self.messages.pop_front() {
                 self.bytes -= message.text.len()
                     + message
@@ -366,16 +542,29 @@ impl HistoryBuffer {
                         .as_ref()
                         .and_then(|card| card.detail.as_ref())
                         .map_or(0, String::len);
+                self.dropped_front += 1;
             }
             self.truncated = true;
+            self.source_cut = true;
         }
     }
 
     pub(crate) fn finish(self) -> History {
+        let total_messages = self.messages.len();
         History {
             title: None,
             messages: self.messages.into_iter().collect(),
             truncated: self.truncated,
+            total_messages,
+            hidden_messages: 0,
+            exhausted: true,
+            next_cursor: None,
+            source_truncated: self.source_cut,
+            source_offset: 0,
+            dropped_front: self.dropped_front,
+            details_shortened: self.shortened,
+            start_ordinal: 0,
+            end_ordinal: total_messages,
         }
     }
 }

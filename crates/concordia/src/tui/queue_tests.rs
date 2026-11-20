@@ -648,9 +648,11 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     assert_eq!(h.items(), vec!["two", "three\nlines"]);
     assert!(h.app.queue.paused);
     // The in-flight request was recovered too, so its notice covers the draft and queue.
-    assert!(h.app.messages.iter().any(|m| m
-        .text
-        .contains("Your draft and queued messages are kept.")));
+    assert!(h
+        .app
+        .messages
+        .iter()
+        .any(|m| m.text.contains("Your draft and queued messages are kept.")));
     assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);

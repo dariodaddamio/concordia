@@ -165,7 +165,7 @@ pub fn handle_line(root: &Path, line: &str) -> Option<String> {
 
 fn advertised_tools(root: &Path) -> Vec<Value> {
     let mut tools = vec![
-        json!({"name":"agents","description":"Start an agent with role (orchestrator, implementer, reviewer, re-reviewer, general) defaults; explicit provider/model win, or read status/result.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result"]},"agent_id":{"type":"string"},"role":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}),
+        json!({"name":"agents","description":"Start an agent with role defaults; explicit provider/model win. Inspect and control a bounded worker: follow-up creates a new explicitly identified run, cancel is owned by the worker loop, and watch is bounded without retrying uncertain work.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result","followup","cancel","watch"]},"agent_id":{"type":"string"},"role":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}),
     ];
     let selected = std::env::var("CONCORDIA_MCP_SERVER").ok();
     if selected.is_some() {
@@ -376,14 +376,23 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             let task = arg(&args, "task")?;
             let connected = crate::accounts::get_account(root, account)
                 .ok_or_else(|| format!("unknown connected account: {account}"))?;
+            let selected_provider = args
+                .get("provider")
+                .and_then(Value::as_str)
+                .or(role.provider.as_deref());
+            if let Some(provider) = selected_provider {
+                if provider != connected.provider.as_str() {
+                    return Err(format!(
+                        "agent provider override {provider} does not match connected account {account} ({})",
+                        connected.provider.as_str()
+                    ));
+                }
+            }
             let id = uuid::Uuid::new_v4().to_string();
             let record = AgentRecord {
                 agent_id: id.clone(),
                 account: account.into(),
-                provider: args
-                    .get("provider")
-                    .and_then(Value::as_str)
-                    .or(role.provider.as_deref())
+                provider: selected_provider
                     .unwrap_or(connected.provider.as_str())
                     .into(),
                 role: role_name.into(),
@@ -440,13 +449,143 @@ fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
             }
             Ok(json!({"agent_id":id,"status":"queued","role":role_name}).to_string())
         }
-        "status" | "result" => Ok(serde_json::to_string(&read_agent(
-            root,
-            arg(&args, "agent_id")?,
-        )?)
-        .map_err(|e| e.to_string())?),
-        _ => Err("agents action must be list, start, status or result".into()),
+        "status" | "result" | "watch" => {
+            let id = arg(&args, "agent_id")?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            let record = if action == "watch" {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    let current = read_agent(root, id)?;
+                    if current.parent != parent
+                        || current.parent_run_id.as_deref() != Some(parent_run.as_str())
+                        || current.workspace.as_ref() != Some(&workspace)
+                    {
+                        return Err("agent read owner mismatch".into());
+                    }
+                    if matches!(
+                        current.status.as_str(),
+                        "finished"
+                            | "success"
+                            | "quota"
+                            | "crashed"
+                            | "cancelled"
+                            | "uncertain"
+                            | "failed"
+                    ) || Instant::now() >= deadline
+                    {
+                        break current;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            } else {
+                read_agent(root, id)?
+            };
+            if record.parent != parent
+                || record.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || record.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent read owner mismatch".into());
+            }
+            Ok(agent_view(root, record, action == "result")?.to_string())
+        }
+        "cancel" => {
+            let id = arg(&args, "agent_id")?;
+            let _lock = records::ControlLock::acquire(root, id)?;
+            let record = read_agent(root, id)?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            if record.parent != parent
+                || record.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || record.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent cancellation owner mismatch".into());
+            }
+            if matches!(
+                record.status.as_str(),
+                "finished" | "success" | "quota" | "crashed" | "cancelled" | "uncertain" | "failed"
+            ) {
+                return Err("agent is already terminal; no action was replayed".into());
+            }
+            records::write_control(
+                root,
+                &records::AgentControl {
+                    agent_id: id.into(),
+                    action: "cancel".into(),
+                    task: None,
+                },
+            )?;
+            Ok(
+                json!({"agent_id":id,"accepted":true,"status":"cancellation_requested"})
+                    .to_string(),
+            )
+        }
+        "followup" => {
+            let source = read_agent(root, arg(&args, "agent_id")?)?;
+            let task = arg(&args, "task")?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            if source.parent != parent
+                || source.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || source.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent follow-up owner mismatch".into());
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let record = AgentRecord {
+                agent_id: id.clone(),
+                account: source.account.clone(),
+                provider: source.provider.clone(),
+                role: source.role.clone(),
+                model: source.model.clone(),
+                effort: source.effort.clone(),
+                task: task.into(),
+                parent: parent.clone(),
+                workspace: Some(workspace.clone()),
+                parent_run_id: Some(parent_run.clone()),
+                run_id: None,
+                status: "queued".into(),
+                result: None,
+                activity: vec![format!("follow-up of {} requested", source.agent_id)],
+            };
+            write_agent(root, &record)?;
+            if let Err(error) = write_proposal(
+                root,
+                &Proposal {
+                    agent_id: id.clone(),
+                    to: record.account.clone(),
+                    task: record.task.clone(),
+                    role: record.role.clone(),
+                    model: record.model.clone(),
+                    effort: record.effort.clone(),
+                    from_thread: parent,
+                    workspace: Some(workspace),
+                    parent_run_id: Some(parent_run),
+                },
+            ) {
+                records::update_agent_exact(
+                    root,
+                    &id,
+                    "failed",
+                    Some(error.clone()),
+                    "follow-up publication failed",
+                )?;
+                return Err(error);
+            }
+            Ok(json!({"agent_id":id,"status":"queued","followup_of":source.agent_id}).to_string())
+        }
+        _ => Err(
+            "agents action must be list, start, status, result, followup, cancel or watch".into(),
+        ),
     }
+}
+
+fn agent_view(root: &Path, record: AgentRecord, result_only: bool) -> Result<Value, String> {
+    let metadata = records::read_agent_metadata(root, &record.agent_id)?;
+    let outcome = metadata.reason.as_deref().unwrap_or("unknown");
+    let base = json!({"agent_id":record.agent_id,"status":record.status,"outcome":outcome,"result":record.result,"activity":record.activity,"last_event":metadata.last_event,"heartbeat_unix":metadata.heartbeat_unix,"run_id":record.run_id,"process_id":metadata.process_id,"native_session":metadata.native_session});
+    Ok(if result_only {
+        base
+    } else {
+        json!({"agent_id":record.agent_id,"account":record.account,"provider":record.provider,"status":record.status,"outcome":outcome,"run_id":record.run_id,"process_id":metadata.process_id,"native_session":metadata.native_session,"result":record.result,"activity":record.activity,"last_event":metadata.last_event,"heartbeat_unix":metadata.heartbeat_unix})
+    })
 }
 fn write_proposal(root: &Path, proposal: &Proposal) -> Result<(), String> {
     let dir = proposals_dir(root);
@@ -546,10 +685,31 @@ pub fn take_pending_for(
         if record.parent != parent
             || record.workspace.as_ref() != Some(&workspace)
             || record.parent_run_id.as_deref() != Some(parent_run)
-            || record.status != "queued"
             || path.file_name().and_then(|name| name.to_str())
                 != Some(format!("{}.json", proposal.agent_id).as_str())
         {
+            continue;
+        }
+        if record.status != "queued" {
+            continue;
+        }
+        // A queued cancellation is consumed by the proposal owner before the request can
+        // become a live worker. Keep the intent durable if the terminal record cannot persist.
+        if records::peek_control(root, &proposal.agent_id)
+            .is_some_and(|control| control.action == "cancel")
+        {
+            if records::update_agent_exact(
+                root,
+                &proposal.agent_id,
+                "cancelled",
+                None,
+                "queued cancellation accepted before launch",
+            )
+            .is_ok()
+            {
+                let _ = records::ack_control(root, &proposal.agent_id);
+                let _ = std::fs::remove_file(&path);
+            }
             continue;
         }
         let claim = path.with_extension(format!("claim-{}", uuid::Uuid::new_v4()));

@@ -943,7 +943,28 @@ impl App {
                     });
                 }
             }
-            Err(e) => self.push_system(format!("add account failed - {e}")),
+            Err(e) => {
+                if let Some(command) = crate::connect::official_install_command(provider)
+                    .filter(|_| crate::connect::cli_missing(provider))
+                {
+                    self.show_picker(
+                        PickerKind::AddProvider,
+                        format!("install {} CLI?", provider.as_str()),
+                        vec![PickerRow {
+                            id: format!("install:{}", provider.as_str()),
+                            label: format!("Install {} CLI", provider.as_str()),
+                            detail: command.into(),
+                        }],
+                        false,
+                    );
+                    self.footer_left = "Enter run official installer · Esc cancel".into();
+                    self.push_system(format!(
+                        "{e}. Install it with `{command}` in your own terminal, or confirm below to open the installer window."
+                    ));
+                } else {
+                    self.push_system(format!("add account failed - {e}"));
+                }
+            }
         }
     }
     pub(in crate::tui) fn open_model_picker(&mut self) {
@@ -1018,7 +1039,10 @@ impl App {
     /// A second click on the chip that opened it closes it.
     pub(in crate::tui) fn toggle_header_dropdown(&mut self, kind: PickerKind, chip: Rect) {
         let open = self.header_dropdown.is_some_and(|(open, _)| open == kind)
-            && self.picker.as_ref().is_some_and(|picker| picker.kind == kind);
+            && self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == kind);
         if open {
             self.dismiss_picker();
             return;
@@ -1028,7 +1052,11 @@ impl App {
             PickerKind::Effort => self.open_effort_picker(),
             _ => return,
         }
-        if self.picker.as_ref().is_some_and(|picker| picker.kind == kind) {
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == kind)
+        {
             self.header_dropdown = Some((kind, chip));
         }
     }
@@ -2035,6 +2063,23 @@ impl App {
                 }
             }
             PickerKind::AddProvider => {
+                if let Some(provider) = id
+                    .strip_prefix("install:")
+                    .and_then(crate::commands::parse_provider)
+                {
+                    match crate::connect::install_provider(provider) {
+                        Ok(()) => self.push_system(format!(
+                            "{} installer opened. Finish it there, then return and choose + add account again; Concordia will not sign you in automatically or assume the version is compatible.",
+                            provider.as_str()
+                        )),
+                        Err(error) => self.push_system(format!(
+                            "{} installer could not start: {error}. Nothing changed; install it yourself with `{}` and retry.",
+                            provider.as_str(),
+                            crate::connect::official_install_command(provider).unwrap_or_default()
+                        )),
+                    }
+                    return;
+                }
                 if let Some(p) = id
                     .strip_prefix("add:")
                     .and_then(crate::commands::parse_provider)

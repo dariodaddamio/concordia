@@ -35,6 +35,30 @@ pub fn read_history(
     Ok(history)
 }
 
+pub(crate) fn read_history_page(
+    root: &Path,
+    account: &str,
+    provider: ProviderKind,
+    session_id: &str,
+    before: crate::native_history::Anchor,
+) -> Result<History, String> {
+    let (session, path) = sessions::find_native_record(root, account, Some(provider), session_id)?
+        .ok_or_else(|| "session not found in that registered account and provider".to_string())?;
+    let mut history = crate::native_history::read_bound_page(
+        root,
+        account,
+        provider,
+        session_id,
+        &path,
+        Some(before),
+    )?;
+    history.title = session
+        .preview
+        .as_deref()
+        .map(crate::text_safe::terminal_safe);
+    Ok(history)
+}
+
 fn bounded_field(value: &str, max_chars: usize) -> String {
     let safe = terminal_safe(value);
     let mut chars = safe.chars();

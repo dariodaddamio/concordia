@@ -26,7 +26,7 @@ It can mark ready only the exact recorded repository/branch/base and clean execu
 A missing, changed or incomplete worktree stays retained for inspection. Reconciliation never
 recreates, repairs or deletes work. A changed binding revision invalidates old task approval.
 
-`/delegate worktree ID ACCOUNT TASK` approves a worker in that exact managed execution folder.
+`/worktree delegate ID ACCOUNT TASK` approves a worker in that exact managed execution folder.
 The ordinary worker queue, routing, trust and attempt limits still apply. Admission binds owner
 and execution folders separately and verifies the managed record before launching. Git repository,
 branch, base ancestry and directory identities are checked again off-thread before a native turn.

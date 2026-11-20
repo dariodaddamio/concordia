@@ -1,5 +1,36 @@
 # Changelog
 
+### Changed (2026-11-19a, local source)
+
+- The `agents` tool can follow up, cancel and watch a delegated worker. A follow-up starts a new
+  agent with its own identity instead of replaying the original run. Cancellation is an intent that
+  the owning loop carries out. Each finished worker reports one outcome: success, quota, crash,
+  cancelled or uncertain. Quota is now recognised from Codex's `usage_limit_reached` and
+  `usageLimitExceeded` signals, which were previously recorded as unknown.
+- Codex app-server reads its version from `initialize`. A newer Codex continues with a notice. An
+  older or unreadable version is refused before the prompt is sent, so the turn falls back to the
+  standard transport and the draft and session are kept. Codex 0.170 still has no command-list
+  call, so Codex keeps its static command list.
+- `/worktree` makes managed workspaces reachable: `create`, `inspect`, `delegate`, `review` and an
+  explicit `integrate` with the reviewed receipt. After integration, Concordia reports the owner
+  head before and after, the reference hash, the repository's configured checks and PR guidance.
+  Concordia never runs checks, merges, resets or cleans on its own. A stale receipt, dirty owner
+  files, conflicts and active ownership refuse the action. Configured checks now include
+  GitHub `- run:` steps.
+- A long or truncated resumed chat says how many messages are hidden and why. Ctrl+E loads older
+  messages from the same native session, a page at a time within 200 messages and 1 MiB. Paging is
+  anchored to message identity, so a chat that grew meanwhile shows no duplicates, and a rewritten
+  source is refused. Cursor turns are marked as text-only restorations.
+- The skills and hooks inventory shows configured, discovered, enabled, exposed and proven as
+  separate states for each source. Codex exposure comes from a read-only `hooks/list` for the
+  current project, with each native hook's enabled and trust state. Opening a source is stated not
+  to prove any of them.
+- Adding an account whose provider CLI is missing offers that provider's official install command.
+  It runs only after you confirm, and Esc cancels without creating anything. The installer and
+  native login now open a visible console that stays readable and runs with
+  `-ExecutionPolicy Bypass`, so npm's `.ps1` shims work. A missing shell is reported with the
+  command to run by hand. Concordia never claims an install succeeded or signs you in on its own.
+
 ### Changed (2026-11-18b, local source)
 
 - While Codex is running through app-server, Enter offers steering the current turn; a second Enter confirms and Tab queues. Text stays in the composer until acceptance. Refusal or an uncertain connection preserves it without retrying. Attachments and other transports keep their existing behavior.

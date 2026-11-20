@@ -399,7 +399,7 @@ impl TranscriptView {
 
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
             // Keep the viewport still while output streams in below it.
-            self.scroll += self.rows.len() - prev_rows;
+            self.scroll = self.scroll.saturating_add(self.rows.len() - prev_rows);
         }
         self.width = width;
         self.height = height;

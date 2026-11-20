@@ -144,21 +144,6 @@ fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
                     "delegate scoped ACCOUNT read:PATH write:PATH -- TASK".into(),
                 ),
             },
-            "worktree" => {
-                let mut words = tail.splitn(3, char::is_whitespace);
-                match (words.next(), words.next(), words.next()) {
-                    (Some(workspace), Some(account), Some(task)) if !task.trim().is_empty() => {
-                        SlashCommand::DelegateWorktree {
-                            workspace: workspace.into(),
-                            account: account.into(),
-                            task: task.into(),
-                        }
-                    }
-                    _ => {
-                        SlashCommand::Invalid("delegate worktree WORKSPACE_ID ACCOUNT TASK".into())
-                    }
-                }
-            }
             "returns" => match second.as_deref() {
                 Some("auto") => SlashCommand::DelegateReturns(Some(true)),
                 Some("manual") => SlashCommand::DelegateReturns(Some(false)),
@@ -483,6 +468,17 @@ pub const COMMAND_REGISTRY: &[CommandSpec] = &[
         false,
         CommandCategory::Diagnostics,
         Some("F10"),
+        None
+    ),
+    command!(
+        "/worktree",
+        [],
+        "[list|create BASE|inspect ID|delegate ID ACCOUNT TASK|review ID ACTION|integrate ID RECEIPT|reconcile ID|cancel]",
+        "create, delegate into, review and explicitly integrate managed Git workspaces",
+        "Managed worktrees are explicit Git workspaces for delegated changes. create makes one from a clean committed base; delegate runs one worker in it; review ID integrate|pick|retire|delete-branch returns a receipt; integrate ID RECEIPT applies exactly that reviewed change. Receipts expire when heads, files, reservations or references change. Concordia never merges, resets, cleans or runs checks on its own.",
+        false,
+        CommandCategory::Workspace,
+        None,
         None
     ),
     command!(

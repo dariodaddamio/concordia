@@ -660,6 +660,10 @@ pub(super) fn handle_key(
     }
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
     {
+        if app.older_history_source_available() {
+            app.open_older_history_source();
+            return false;
+        }
         if let Some(i) = app.messages.iter().rposition(|m| m.role == MsgRole::Card) {
             app.open_tool_details(i);
         } else {

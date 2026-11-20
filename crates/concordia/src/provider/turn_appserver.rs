@@ -1,4 +1,4 @@
-//! Opt-in native Codex stdio transport, matched to the 0.166.0 generated protocol.
+//! Opt-in native Codex stdio transport, checked against the qualified generated protocol.
 use super::*;
 use crate::provider::{interaction::InteractionConnection, CardStatus};
 use serde_json::{json, Value};
@@ -265,11 +265,29 @@ impl Connection {
                     .await;
             }
             match params["turn"]["status"].as_str() {
-                Some("completed") => {}
-                Some("interrupted") => self.out.cancelled = true,
+                Some("completed") => {
+                    self.out.terminal_outcome = TurnTerminalOutcome::Success;
+                }
+                Some("interrupted") => {
+                    self.out.cancelled = true;
+                    self.out.terminal_outcome = TurnTerminalOutcome::Cancelled;
+                }
                 _ => {
                     self.out.failed = true;
                     let error = &params["turn"]["error"];
+                    let error_kind = error
+                        .get("code")
+                        .or_else(|| error.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    self.out.terminal_outcome = if matches!(
+                        error_kind,
+                        "quota_exceeded" | "rate_limit_exceeded" | "usage_limit_exceeded"
+                    ) {
+                        TurnTerminalOutcome::Quota
+                    } else {
+                        TurnTerminalOutcome::Crash
+                    };
                     self.out.stderr_tail = serde_json::to_string(error)
                         .unwrap_or_else(|_| r#"{"type":"error"}"#.into())
                         .chars()
@@ -497,9 +515,14 @@ impl Connection {
 
 /// The Codex CLI version this transport was qualified against.
 const QUALIFIED_VERSION: &str = "codex-cli 0.166.0";
+const QUALIFIED_CLI_VERSION: &str = "0.166.0";
 /// Start of a failure that happened before the prompt reached Codex; the caller may rerun the
 /// same turn on the standard transport without sending the prompt twice.
 pub(super) const UNAVAILABLE: &str = "Codex native protocol unavailable before the prompt was sent";
+pub(super) const INCOMPATIBLE: &str =
+    "Codex app-server protocol is older than Concordia's qualified minimum";
+pub(super) const UNKNOWN_COMPATIBILITY: &str =
+    "Codex app-server initialize.userAgent was missing or unparseable";
 
 pub(super) async fn run(
     req: &ProviderTurnRequest<'_>,
@@ -638,6 +661,7 @@ pub(super) async fn run(
     if handle.cancel_flag.load(Ordering::SeqCst) {
         return Ok(TurnOutcome {
             cancelled: true,
+            terminal_outcome: TurnTerminalOutcome::Cancelled,
             ..Default::default()
         });
     }
@@ -720,8 +744,30 @@ pub(super) async fn run(
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"clientInfo":{"name":"concordia","title":"Concordia","version":crate::version::VERSION},"capabilities":{"experimentalApi":true}}))).await??;
         protocol_failure = false;
         anyhow::ensure!(init["codexHome"].as_str().and_then(|path|Path::new(path).canonicalize().ok()).as_ref()==Some(&home),"Codex app-server account home mismatch; prompt withheld");
-        conn.interactions.initialized_codex("0.166.0");
+        // Identity is verified above and must never fall back. Compatibility refusal is
+        // different: it is a pre-prompt protocol failure, so the caller may retry this same
+        // draft on Codex's standard transport without replaying it here.
         protocol_failure = true;
+        let protocol_version = init["userAgent"]
+            .as_str()
+            .and_then(crate::provider::compat::version_token);
+        let protocol_version = protocol_version.ok_or_else(|| {
+            anyhow::anyhow!(
+                "{UNKNOWN_COMPATIBILITY}; expected codex-cli <version> >= {QUALIFIED_CLI_VERSION}; the draft and session were preserved"
+            )
+        })?;
+        anyhow::ensure!(
+            crate::provider::compat::version_at_least(&protocol_version, QUALIFIED_CLI_VERSION),
+            "{INCOMPATIBLE}: {protocol_version}; the draft and session were preserved"
+        );
+        conn.interactions.initialized_codex(&protocol_version);
+        if let Some(progress) = conn.progress.as_ref() {
+            let _ = progress
+                .send(TurnProgress::Notice(format!(
+                    "Codex app-server protocol {protocol_version}; Concordia's qualified schema is {QUALIFIED_CLI_VERSION}."
+                )))
+                .await;
+        }
         conn.write(json!({"jsonrpc":"2.0","method":"initialized","params":{}})).await?;
         let mut params=json!({"cwd":plan.cwd,"sandbox":sandbox,"approvalPolicy":approval,"approvalsReviewer":"user"});
         if let Some(model)=req.model {params["model"]=json!(model);}
@@ -777,6 +823,9 @@ pub(super) async fn run(
         let _ = request.reply.send(Err("Steering was not confirmed before the connection ended; check native history before resending".into()));
     }
     conn.out.cancelled |= handle.cancel_flag.load(Ordering::SeqCst);
+    if conn.out.cancelled {
+        conn.out.terminal_outcome = TurnTerminalOutcome::Cancelled;
+    }
     if let Err(error) = result {
         if !conn.out.cancelled && !prompt_sent && protocol_failure {
             // Nothing reached Codex yet: report quietly so the caller can use the standard transport.
@@ -784,6 +833,9 @@ pub(super) async fn run(
             conn.out.stderr_tail = format!("{UNAVAILABLE}: {error:#}");
         } else if !conn.out.cancelled {
             conn.out.failed = true;
+            if conn.out.terminal_outcome == TurnTerminalOutcome::Unknown {
+                conn.out.terminal_outcome = TurnTerminalOutcome::Crash;
+            }
             conn.out.stderr_tail = format!("{error:#}");
             conn.emit(TurnProgress::Error(conn.out.stderr_tail.clone()))
                 .await;

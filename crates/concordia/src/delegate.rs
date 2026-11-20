@@ -20,6 +20,26 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+// Compatibility seam for lanes whose provider crate predates the typed terminal outcome.
+// The integrated provider supplies an inherent method with the same name, which takes
+// precedence; this fallback intentionally exposes only success/cancel/unknown.
+trait TerminalOutcomeLabel {
+    fn terminal_outcome_label(&self) -> &'static str;
+}
+
+impl TerminalOutcomeLabel for TurnOutcome {
+    fn terminal_outcome_label(&self) -> &'static str {
+        if self.cancelled {
+            "cancelled"
+        } else if !self.failed && self.exit_code == Some(0) {
+            "success"
+        } else {
+            "unknown"
+        }
+    }
+}
+
 #[path = "delegate_accounting.rs"]
 mod accounting;
 #[path = "delegate_delivery.rs"]
@@ -547,6 +567,26 @@ impl Delegates {
         agent_id: &str,
         parent_run: &str,
     ) -> Result<u32, String> {
+        let root = self
+            .recovery
+            .as_ref()
+            .ok_or_else(|| "MCP workers require durable ownership".to_string())?
+            .state_root
+            .clone();
+        let _lock = crate::agent_records::ControlLock::acquire(&root, agent_id)?;
+        if crate::agent_records::peek_control(&root, agent_id)
+            .is_some_and(|control| control.action == "cancel")
+        {
+            crate::agent_records::update_agent_exact(
+                &root,
+                agent_id,
+                "cancelled",
+                None,
+                "cancellation accepted at owner pre-spawn boundary",
+            )?;
+            crate::agent_records::ack_control(&root, agent_id)?;
+            return Err("worker cancellation accepted before launch".into());
+        }
         self.submit_workspace_bound(s, now, &[], &[], None, Some((agent_id, parent_run)))
     }
 
@@ -1145,10 +1185,40 @@ impl Delegates {
 
     /// Apply pending events; returns the ids of jobs that finished since the last call.
     pub fn poll(&mut self, now: Instant) -> Vec<u32> {
+        // MCP cancellation is an intent written by the public server.  Only this owner loop
+        // touches the live process, so a stale client cannot kill an unrelated worker.
+        if let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) {
+            let controls: Vec<(u32, String)> = self
+                .jobs
+                .iter()
+                .filter_map(|job| {
+                    job.mcp_agent_id
+                        .as_ref()
+                        .map(|agent| (job.id, agent.clone()))
+                })
+                .collect();
+            for (id, agent_id) in controls {
+                if let Some(control) = crate::agent_records::peek_control(&root, &agent_id) {
+                    if control.action == "cancel" && self.cancel(id, now) {
+                        let persisted = crate::agent_records::update_agent_exact(
+                            &root,
+                            &agent_id,
+                            "running",
+                            None,
+                            "cancellation accepted by owning worker loop",
+                        );
+                        if persisted.is_ok() {
+                            let _ = crate::agent_records::ack_control(&root, &agent_id);
+                        }
+                    }
+                }
+            }
+        }
         for _ in 0..crate::provider::turn::PROGRESS_CAPACITY {
             let Ok(ev) = self.rx.try_recv() else { break };
             match ev {
                 Event::Started(id, h) => {
+                    let pid = h.process_id();
                     if let Some(j) = self.get_mut(id) {
                         if j.cancel_requested {
                             h.cancel();
@@ -1157,6 +1227,18 @@ impl Delegates {
                         if j.state == WorkerState::Starting {
                             j.state = WorkerState::Thinking;
                         }
+                    }
+                    if let (Some(root), Some(agent_id)) = (
+                        self.recovery.as_ref().map(|r| r.state_root.clone()),
+                        self.get(id).and_then(|job| job.mcp_agent_id.clone()),
+                    ) {
+                        let _ = crate::agent_records::update_agent_runtime(
+                            &root,
+                            &agent_id,
+                            (pid != 0).then_some(pid),
+                            None,
+                            "worker process started",
+                        );
                     }
                 }
                 Event::Progress(id, TurnProgress::Interaction(request)) => {
@@ -1186,6 +1268,43 @@ impl Delegates {
                         out.stderr_tail.push_str("\nNative worker input ended without a confirmed response; inspect before retrying.");
                     }
                     self.finish_worker_attempt(id, &out);
+                    if let (Some(root), Some(agent_id)) = (
+                        self.recovery.as_ref().map(|r| r.state_root.clone()),
+                        self.get(id).and_then(|job| job.mcp_agent_id.clone()),
+                    ) {
+                        // A cancellation intent is an owner-loop fact even when the provider
+                        // process is torn down before it can return a typed terminal outcome.
+                        // Preserve that authoritative lifecycle result instead of publishing an
+                        // unknown/failed projection for a deliberately cancelled child.
+                        let reason = if cancelled {
+                            "cancelled"
+                        } else {
+                            out.terminal_outcome_label()
+                        };
+                        let (status, result) = match reason {
+                            "success" => ("finished", Some(out.text.clone())),
+                            "quota" => ("quota", Some(out.text.clone())),
+                            "crash" => ("crashed", Some(out.text.clone())),
+                            "cancelled" => ("cancelled", None),
+                            _ => ("uncertain", Some(out.text.clone())),
+                        };
+                        let _ = crate::agent_records::update_agent_exact(
+                            &root,
+                            &agent_id,
+                            status,
+                            result,
+                            "worker process finished",
+                        );
+                        let _ = crate::agent_records::update_agent_outcome(
+                            &root,
+                            &agent_id,
+                            reason,
+                            out.session_id
+                                .as_deref()
+                                .or_else(|| self.get(id).and_then(|job| job.session_id.as_deref())),
+                            "worker process finished",
+                        );
+                    }
                     let confirmed = !unresolved
                         && out.exit_code.is_some()
                         && (cancelled

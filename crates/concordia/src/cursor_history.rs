@@ -5,7 +5,7 @@ use std::{io::Cursor, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-const WIRE_LIMIT: usize = 16 * 1024 * 1024;
+const WIRE_LIMIT: usize = 8 * 1024 * 1024;
 const FRAME_LIMIT: usize = 1024 * 1024;
 
 /// Print-mode Cursor chats (`create-chat` / `--resume`) are not ACP sessions. `session/load`
