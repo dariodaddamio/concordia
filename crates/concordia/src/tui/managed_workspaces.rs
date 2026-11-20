@@ -28,7 +28,93 @@ fn review(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let preview = managed::lifecycle::preview(root, owner, id, lifecycle_action(action)?, cancel)?;
-    Ok(format!("Managed workspace review: {:?} / {:?}\nOwner: {}\nWorktree: {}\nBase: {}\nOwner head: {} ({})\nWorker head: {}\nUnique worker commits: {}\nChanged paths:\n{}\nOwner status:\n{}\nWorker status:\n{}\nConflicts:\n{}\nWorker/result references:\n{}\nReservations:\n{}\nBlockers:\n{}\nReceipt: {}\nExplicit action: /worktree {action} {id} {}\nPick selects only the reviewed worker HEAD commit. No action is automatic. External Git/processes remain outside cooperative scheduler enforcement.",preview.action,preview.state,preview.record.owner.display(),preview.record.execution.display(),preview.record.base,preview.owner_head,preview.owner_branch,preview.worker_head,preview.unique_commits,preview.changes.join("\n"),preview.owner_status,preview.worker_status,preview.conflicts.join("\n"),preview.references.join("\n"),preview.reservations.join("\n"),preview.blockers.join("\n"),preview.receipt,preview.receipt))
+    let configured_checks = repository_checks(&preview.record.owner);
+    Ok(format!("Managed workspace review: {:?} / {:?}\nOwner: {}\nWorktree: {}\nBase: {}\nOwner head: {} ({})\nWorker head: {}\nUnique worker commits: {}\nChanged paths:\n{}\nPath object identities (old/new/path):\n{}\nOwner status:\n{}\nWorker status:\n{}\nConflicts:\n{}\nWorker/result references:\n{}\nReference hash: {}\nRepository-configured checks (not run by Concordia):\n{}\nReservations:\n{}\nBlockers:\n{}\nReceipt: {}\nExact integration action: /worktree {action} {id} {}\nReview the provider's change view and the user's Git/editor before accepting. PR readiness remains in the user's Git workflow. No action is automatic. External Git/processes remain outside cooperative scheduler enforcement.",preview.action,preview.state,preview.record.owner.display(),preview.record.execution.display(),preview.record.base,preview.owner_head,preview.owner_branch,preview.worker_head,preview.unique_commits,preview.changes.join("\n"),preview.path_objects.join("\n"),preview.owner_status,preview.worker_status,preview.conflicts.join("\n"),preview.references.join("\n"),preview.reference_hash,configured_checks,preview.reservations.join("\n"),preview.blockers.join("\n"),preview.receipt,preview.receipt))
+}
+
+/// Render the lifecycle owner's success record: exact heads, reference identity, the
+/// repository-configured checks (never run by Concordia) and PR guidance.
+fn finished_summary(action: &str, id: &str, json: &str, owner: &Path) -> String {
+    let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+    let field = |name: &str| {
+        value
+            .get(name)
+            .and_then(|item| item.as_str())
+            .unwrap_or("unavailable")
+    };
+    format!(
+        "Managed {action} finished for {id}.\nOwner head before: {}\nOwner head after: {}\nReviewed worker head: {}\nReference hash: {}\nRepository-configured checks (not run by Concordia):\n{}\nChecks: {}\nPR readiness: {}\nInspect the saved workspace record for exact provenance.",
+        field("owner_before"),
+        field("owner_after"),
+        field("worker_head"),
+        field("reference_hash"),
+        repository_checks(owner),
+        field("checks"),
+        field("pr_readiness"),
+    )
+}
+
+fn repository_checks(owner: &Path) -> String {
+    let workflows = owner.join(".github").join("workflows");
+    let mut checks = Vec::new();
+    let Ok(entries) = std::fs::read_dir(workflows) else {
+        return "none discovered in repository configuration".into();
+    };
+    for entry in entries.flatten().take(32) {
+        let path = entry.path();
+        if !path.is_file()
+            || !matches!(
+                path.extension().and_then(|ext| ext.to_str()),
+                Some("yml" | "yaml")
+            )
+        {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let relative = path
+            .strip_prefix(owner)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        for (index, line) in lines.iter().enumerate() {
+            // Workflow steps are written both as `run: cmd` and as the list item `- run: cmd`.
+            let trimmed = line.trim_start();
+            let Some(value) = trimmed
+                .strip_prefix("- run:")
+                .or_else(|| trimmed.strip_prefix("run:"))
+            else {
+                continue;
+            };
+            let value = value.trim();
+            let indent = line.len() - trimmed.len();
+            if matches!(value, "|" | ">" | "|-" | ">-") {
+                // Block scalar: every following line indented deeper than the `run` key.
+                for next in lines[index + 1..].iter().take(16) {
+                    let body = next.trim();
+                    let deeper = next.len() - next.trim_start().len() > indent;
+                    if body.is_empty() {
+                        continue;
+                    }
+                    if !deeper {
+                        break;
+                    }
+                    if body.len() <= 512 {
+                        checks.push(format!("{relative}: {body}"));
+                    }
+                }
+            } else if !value.is_empty() && value.len() <= 512 {
+                checks.push(format!("{relative}: {value}"));
+            }
+        }
+    }
+    if checks.is_empty() {
+        "none discovered in repository configuration".into()
+    } else {
+        checks.join("\n")
+    }
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -100,7 +186,7 @@ impl App {
             let result = match parts.as_slice() {
                 ["stopped", id] => managed::lifecycle::stopped(&root,&owner,id),
                 ["review", id, action] => review(&root,&owner,id,action,&flag),
-                [action @ ("integrate" | "pick" | "retire" | "delete-branch"), id, receipt] => lifecycle_action(action).and_then(|kind| managed::lifecycle::execute(&root,&owner,id,kind,receipt,&flag)).map(|_| format!("Managed {action} finished for {id}. Inspect the saved workspace record for exact heads and provenance.")),
+                [action @ ("integrate" | "pick" | "retire" | "delete-branch"), id, receipt] => lifecycle_action(action).and_then(|kind| managed::lifecycle::execute(&root,&owner,id,kind,receipt,&flag)).map(|json| finished_summary(action, id, &json, &owner)),
                 ["create", base] => managed::create(&root, &owner, base, &flag).map(|record| describe(&record)),
                 ["reconcile", id] => managed::reconcile(&root, &owner, id, &flag).map(|record| describe(&record)),
                 ["inspect", id] => managed::load(&root).and_then(|registry| {
@@ -135,9 +221,9 @@ impl App {
         );
     }
 
-    pub(super) fn poll_managed_workspaces(&mut self) {
+    pub(super) fn poll_managed_workspaces(&mut self) -> bool {
         let Some((conversation, cancel, rx)) = &self.managed_workspaces.pending else {
-            return;
+            return false;
         };
         let current = conversation == self.deleg.d.conversation_id();
         if !current {
@@ -145,12 +231,13 @@ impl App {
         }
         let result = match rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("managed workspace operation stopped; inspect any reserved creation before reconciliation".into()),
         };
         self.managed_workspaces.pending = None;
         if current {
             self.push_system(result.unwrap_or_else(|error| error));
         }
+        current
     }
 }

@@ -4,22 +4,14 @@ Build `2026-11-02r` implements orchestration W1. This is scheduler admission acr
 panes sharing one state root, not a filesystem sandbox. External editors, older app versions and
 native tools can write outside declarations. Managed Git worktrees and their lifecycle remain W2/W3.
 
-## User controls
+## Admission behavior
 
 - Ordinary foreground chats record their workspace ownership without blocking another foreground
   chat in the same folder. This applies across instances and providers. Worker admission continues
   to coordinate intersecting write claims.
-- `/scope set read:src write:notes.txt` sets declarations for future main tasks in this pane;
-  `/scope default` restores concurrent foreground admission. Explicit path scopes retain conflict
-  checks. The current task retains its approved scope.
-- `/delegate scoped ACCOUNT read:src write:"notes file.txt" -- TASK` approves explicit worker
-  declarations. Paths are relative, with no globs or shell evaluation. Read paths must exist;
-  a missing write leaf is allowed only beneath an existing directory. Directory claims cover subtrees.
-- `/scope leases` reads a bounded page of durable reservations. A returned offset/revision pair
-  continues the same snapshot. `/delegate scope [ID]` shows worker bindings and admission status.
-- Inspect an uncertain native process before `/scope stopped [RUN_UUID]` or
-  `/delegate scope stopped ID`. This explicit acknowledgment permits later admission; it does not
-  prove native process ownership for retirement. It never retries a provider turn.
+Main-turn admission and delegated-agent admission use the same cooperative registry internally.
+There is no public command for editing or inspecting reservations. An uncertain native process is
+reconciled by the owning recovery flow; acknowledgment never retries a provider turn.
 
 Read/read and disjoint claims can coexist. A write intersecting another read or write waits
 for workers and pauses explicitly scoped main dispatch before provider launch. Default foreground

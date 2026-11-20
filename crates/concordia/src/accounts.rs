@@ -32,12 +32,19 @@ pub fn normalize_account_id(id: &str) -> String {
     }
 }
 
-pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
-    let cap = match provider {
+/// Provider name shown next to accounts (`Codex`, `Claude`, `Grok Build`).
+pub fn display_provider_name(provider: ProviderKind) -> &'static str {
+    match provider {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
-    };
+        ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
+    }
+}
+
+pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
+    let cap = display_provider_name(provider);
     let id = normalize_account_id(account);
     if id == provider.as_str() {
         return cap.to_string();
@@ -48,6 +55,26 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
         }
     }
     id
+}
+
+/// Header, settings Accounts row, and `/use` share this label: account alone when it already
+/// names the provider (`Codex 2`), otherwise `Claude · Work`.
+pub fn format_account_heading(
+    provider: ProviderKind,
+    account: &str,
+    nickname: Option<&str>,
+) -> String {
+    let provider_name = display_provider_name(provider);
+    let account_name = nickname
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| display_account_name(provider, account));
+    if account_name.starts_with(provider_name) {
+        account_name
+    } else {
+        format!("{provider_name} · {account_name}")
+    }
 }
 
 /// A nickname changes display only, never account ids, credential homes or removal ownership.
@@ -90,6 +117,10 @@ fn dir_logged_in(provider: ProviderKind, home: &Path) -> bool {
                 .unwrap_or(false)
         }
         ProviderKind::Cursor => cursor_home_ready(home),
+        ProviderKind::Grok => {
+            home.join("config.toml").is_file() && home.join("auth.json").is_file()
+        }
+        ProviderKind::Opencode => crate::provider::opencode::home_ready(home),
     }
 }
 
@@ -97,7 +128,7 @@ fn cursor_home_ready(home: &Path) -> bool {
     for name in ["concordia-api-key", "api-key"] {
         let p = home.join(name);
         if p.is_file()
-            && fs::read_to_string(&p)
+            && crate::fs_safe::read_text_bounded(&p, 16 * 1024)
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false)
         {
@@ -108,8 +139,7 @@ fn cursor_home_ready(home: &Path) -> bool {
     if !cfg.is_file() {
         return false;
     }
-    fs::read_to_string(&cfg)
-        .ok()
+    crate::fs_safe::read_text_bounded(&cfg, 1024 * 1024)
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|j| {
             j.get("authInfo")
@@ -169,83 +199,44 @@ pub fn builtin_accounts() -> Vec<AccountDef> {
             label: "Cursor".into(),
             custom: false,
         },
+        AccountDef {
+            provider: ProviderKind::Grok,
+            account: "grok".into(),
+            home_path: Some(
+                std::env::var("AO_GROK_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| home.join(".grok")),
+            ),
+            label: "Grok Build".into(),
+            custom: false,
+        },
+        AccountDef {
+            provider: ProviderKind::Opencode,
+            account: "opencode".into(),
+            home_path: Some(
+                std::env::var("AO_OPENCODE_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| home.join(".opencode")),
+            ),
+            label: "opencode".into(),
+            custom: false,
+        },
     ]
 }
 
-fn discover_numbered_homes(
-    provider: ProviderKind,
-    prefix: &str,
-    skip_ids: &[&str],
-) -> Vec<AccountDef> {
-    let home = profile_home();
-    let Ok(entries) = fs::read_dir(&home) else {
-        return Vec::new();
-    };
-    let mut found = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
-            continue;
-        };
-        if !ft.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == prefix {
-            continue;
-        }
-        let pattern = format!("{prefix}-");
-        let Some(suffix) = name.strip_prefix(&pattern) else {
-            continue;
-        };
-        if !suffix.chars().all(|c| c.is_ascii_digit()) {
-            continue;
-        }
-        let id = if provider == ProviderKind::Codex && suffix == "2" {
-            "codex-2".to_string()
-        } else {
-            format!("{}-{}", provider.as_str(), suffix)
-        };
-        if skip_ids.contains(&id.as_str()) {
-            continue;
-        }
-        let home_path = entry.path();
-        if !dir_logged_in(provider, &home_path) {
-            continue;
-        }
-        let label = format!(
-            "{}{}",
-            match provider {
-                ProviderKind::Codex => "Codex",
-                ProviderKind::Claude => "Claude",
-                ProviderKind::Cursor => "Cursor",
-            },
-            suffix
-        );
-        found.push(AccountDef {
-            provider,
-            account: id,
-            home_path: Some(home_path),
-            label,
-            custom: false,
-        });
-    }
-    found.sort_by(|a, b| a.account.cmp(&b.account));
-    found
+pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
+    list_accounts(state_root, false)
 }
 
-pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
+/// Setup/removal must also cover logged-out and hidden registered homes.
+pub fn setup_accounts(state_root: &Path) -> Vec<AccountDef> {
+    list_accounts(state_root, true)
+}
+
+fn list_accounts(state_root: &Path, include_hidden: bool) -> Vec<AccountDef> {
     let mut by_id: HashMap<String, AccountDef> = HashMap::new();
     for a in builtin_accounts() {
         by_id.insert(a.account.clone(), a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Codex, ".codex", &["codex-2"]) {
-        by_id.entry(a.account.clone()).or_insert(a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Claude, ".claude", &[]) {
-        by_id.entry(a.account.clone()).or_insert(a);
-    }
-    for a in discover_numbered_homes(ProviderKind::Cursor, ".cursor", &[]) {
-        by_id.entry(a.account.clone()).or_insert(a);
     }
     for s in list_stored_accounts(state_root) {
         merge_stored(&mut by_id, s);
@@ -254,7 +245,7 @@ pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
     let hidden = store.hidden_accounts;
     let mut out: Vec<_> = by_id
         .into_values()
-        .filter(|a| !hidden.contains(&a.account))
+        .filter(|a| include_hidden || !hidden.contains(&a.account))
         .collect();
     for a in &mut out {
         if !a.custom {

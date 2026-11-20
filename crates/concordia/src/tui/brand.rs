@@ -16,7 +16,7 @@ pub(super) fn portrait() -> Option<Arc<image::RgbaImage>> {
         .clone()
 }
 
-pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) -> Rect {
+pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     if area.width < 76 || area.height < 24 {
         return area;
     }
@@ -29,23 +29,82 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) -> Rect {
         hero.right() + 2,
         area.y + 1,
         area.width.saturating_sub(18),
-        4,
+        7,
     );
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Concordia",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Continue a chat or start a new one.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]),
-        text,
+    let mut lines = vec![Line::from(Span::styled(
+        "Concordia",
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))];
+    lines.push(Line::from(Span::styled(
+        "What's new",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.extend(
+        whats_new(3, text.width as usize)
+            .into_iter()
+            .map(|line| Line::styled(line, Style::default().fg(Color::Gray))),
     );
-    Rect::new(area.x, area.y + 7, area.width, area.height - 7)
+    lines.push(Line::from(Span::styled(
+        "Documentation",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED),
+    )));
+    lines.push(Line::from("F1  Shortcuts"));
+    f.render_widget(Paragraph::new(lines), text);
+    app.areas.home_documentation = Some(Rect::new(
+        text.x,
+        text.y + 5,
+        "Documentation".len() as u16,
+        1,
+    ));
+    Rect::new(
+        area.x,
+        area.y + 8,
+        area.width,
+        area.height.saturating_sub(8),
+    )
+}
+
+/// The newest changes, one short line each: the first bullet of each changelog entry, not the
+/// entry heading (headings are only a kind and a build stamp).
+pub(super) fn whats_new(count: usize, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_entry = false;
+    for line in include_str!("../../../../CHANGELOG.md").lines() {
+        if line.starts_with("### ") {
+            in_entry = true;
+            continue;
+        }
+        if in_entry {
+            if let Some(text) = line.strip_prefix("- ") {
+                let text = text.replace('`', "");
+                let first = text
+                    .split(". ")
+                    .next()
+                    .unwrap_or(&text)
+                    .trim_end_matches('.');
+                let max = width.saturating_sub(2).max(8);
+                let short: String = if first.chars().count() > max {
+                    first
+                        .chars()
+                        .take(max.saturating_sub(1))
+                        .collect::<String>()
+                        + "…"
+                } else {
+                    first.to_string()
+                };
+                out.push(format!("· {short}"));
+                in_entry = false;
+                if out.len() == count {
+                    break;
+                }
+            }
+        }
+    }
+    out
 }

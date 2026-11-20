@@ -2,6 +2,18 @@
 use super::*;
 use std::io::Write;
 
+/// Where inside its cell row the mouse is, in eighths from the top. The native window knows
+/// the pixel; a terminal host reports whole cells and leaves this at the middle.
+static SUB_ROW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(4);
+
+pub(super) fn set_sub_row(eighths: u8) {
+    SUB_ROW.store(eighths.min(7), std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(super) fn sub_row() -> usize {
+    usize::from(SUB_ROW.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 #[derive(Default)]
 pub(super) struct Pointer {
     shape: Option<&'static str>,
@@ -35,10 +47,28 @@ pub(super) fn reset(out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
-    if app.project_search.active() {
-        return "default";
+    if app
+        .tab_hits
+        .get(app.tab_index)
+        .is_some_and(|rect| contains(*rect, x, y))
+        && !app.tab_close_hits.iter().any(|rect| contains(*rect, x, y))
+    {
+        return "text";
+    }
+    if app.tab_hits.iter().any(|rect| contains(*rect, x, y)) {
+        return "pointer";
+    }
+    if app.local_terminal.visible() {
+        return "text";
     }
     if contains(app.areas.run_cancel, x, y) {
+        return "pointer";
+    }
+    if app
+        .areas
+        .header_attention
+        .is_some_and(|rect| contains(rect, x, y))
+    {
         return "pointer";
     }
     if contains(app.areas.permissions, x, y)
@@ -93,7 +123,22 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     if app.picker.is_some() || app.activity.detail.is_some() || workers::overlay_open(app) {
         return "default";
     }
+    if [
+        app.areas.header_home,
+        app.areas.header_provider,
+        app.areas.header_model,
+        app.areas.header_effort,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|rect| contains(rect, x, y))
+    {
+        return "pointer";
+    }
     if chatref::clickable(app, x, y) {
+        return "pointer";
+    }
+    if contains(app.areas.transcript_rail, x, y) || matches!(app.drag, Drag::Scrollbar(_)) {
         return "pointer";
     }
     if images::clickable(app, x, y) || questions::clickable(app, x, y) {

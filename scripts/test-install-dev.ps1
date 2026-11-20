@@ -25,11 +25,11 @@ function New-Items {
 }
 $missing = New-Items -Missing 'rustup','toolchain','MSVC','Windows SDK','WezTerm (optional)'
 $plan = @(Get-InstallPlan $missing)
-Check ($plan.Count -eq 4) 'missing everything yields four ordered steps'
+Check ($plan.Count -eq 3) 'missing required prerequisites yields three ordered steps'
 Check ($plan[0].File -eq 'winget.exe' -and $plan[0].Arguments -contains 'Rustlang.Rustup' -and $plan[0].Arguments -notcontains '--override') 'rustup winget step has no VS override'
 Check ($plan[1].File -eq 'rustup.exe' -and ($plan[1].Arguments -join ' ') -eq "toolchain install $version --component rustfmt,clippy") 'toolchain step is rustup with pinned components'
 Check ($plan[2].Arguments -contains 'Microsoft.VisualStudio.2022.BuildTools' -and $plan[2].Arguments -contains '--override') 'one Build Tools step carries the VS override'
-Check ($plan[3].Arguments -contains 'wez.wezterm' -and $plan[3].Arguments -notcontains '--override') 'WezTerm step has no VS override'
+Check (@($plan | Where-Object { $_.Arguments -contains 'wez.wezterm' }).Count -eq 0) 'optional WezTerm is reported without an automatic installation step'
 
 $onlyToolchain = New-Items -Missing 'toolchain'
 $toolchainPlan = @(Get-InstallPlan $onlyToolchain)

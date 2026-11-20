@@ -21,7 +21,9 @@ pub(crate) fn package_for_shim(
     let (name, package_name, entrypoint) = match provider {
         crate::store::ProviderKind::Codex => ("codex", "@openai/codex", "bin/codex.js"),
         crate::store::ProviderKind::Claude => ("claude", "@anthropic-ai/claude-code", "cli.js"),
-        crate::store::ProviderKind::Cursor => return None,
+        crate::store::ProviderKind::Cursor
+        | crate::store::ProviderKind::Grok
+        | crate::store::ProviderKind::Opencode => return None,
     };
     if !shim
         .file_name()?
@@ -63,7 +65,9 @@ pub(crate) fn node_bridge(
     let (name, package_name, entrypoint) = match provider {
         crate::store::ProviderKind::Codex => ("codex", "@openai/codex", "bin/codex.js"),
         crate::store::ProviderKind::Claude => ("claude", "@anthropic-ai/claude-code", "cli.js"),
-        crate::store::ProviderKind::Cursor => return None,
+        crate::store::ProviderKind::Cursor
+        | crate::store::ProviderKind::Grok
+        | crate::store::ProviderKind::Opencode => return None,
     };
     if !shim
         .file_name()?
@@ -208,6 +212,7 @@ mod tests {
                 env: vec![],
                 cwd: ".".into(),
                 provider: crate::store::ProviderKind::Codex,
+                standing_context: None,
             };
             let launch = crate::provider::launch::prepare(&plan).unwrap();
             assert_eq!(launch.program, node.to_string_lossy());

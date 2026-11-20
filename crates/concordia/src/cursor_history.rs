@@ -5,8 +5,13 @@ use std::{io::Cursor, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
-const WIRE_LIMIT: usize = 16 * 1024 * 1024;
+const WIRE_LIMIT: usize = 8 * 1024 * 1024;
 const FRAME_LIMIT: usize = 1024 * 1024;
+
+/// Print-mode Cursor chats (`create-chat` / `--resume`) are not ACP sessions. `session/load`
+/// rejects those ids with JSON-RPC −32602 (invalid params). Concordia cannot replay that
+/// transcript over ACP; earlier turns remain in Cursor's own chat.
+pub(crate) const PRINT_MODE_HISTORY: &str = "Earlier messages stay in Cursor's own chat.";
 
 struct Replay {
     child: Child,
@@ -96,7 +101,14 @@ impl Replay {
                 return Err("Cursor history response identity mismatch".into());
             }
             if value.get("error").is_some() {
-                return Err(format!("Cursor native history request failed (code {}); use the provider's own login/diagnostics", value["error"]["code"].as_i64().unwrap_or(-1)));
+                let code = value["error"]["code"].as_i64().unwrap_or(-1);
+                // −32602 on session/load: print-mode chat id is not a valid ACP session.
+                if code == -32602 {
+                    return Err(PRINT_MODE_HISTORY.into());
+                }
+                return Err(format!(
+                    "Cursor native history request failed (code {code})"
+                ));
             }
             return value
                 .get("result")
@@ -122,7 +134,10 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
     let cwd = session
         .cwd
         .ok_or("Cursor session has no explicit workspace")?;
-    let cwd = std::fs::canonicalize(cwd).map_err(|_| "Cursor history workspace is unavailable")?;
+    // Cursor rejects a verbatim `\\?\C:\...` workspace with invalid params, so pass the plain form.
+    let cwd = crate::workspace_paths::display_path(
+        &std::fs::canonicalize(cwd).map_err(|_| "Cursor history workspace is unavailable")?,
+    );
     let sid = binding.session_id.clone();
     // The public API is synchronous (CLI/MCP and blocking TUI source preparation). A private
     // bounded runtime thread also works when a caller already owns a Tokio runtime.
@@ -133,7 +148,7 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
             let command = crate::provider::cursor::find_agent_bin()?;
             let plan = crate::provider::PlannedTurn {
                 command, argv: vec!["acp".into()], env: Vec::new(), env_remove: Vec::new(), cwd: cwd.to_string_lossy().into_owned(),
-                prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor,
+                prompt: "acp".into(), new_session_id: None, provider: crate::store::ProviderKind::Cursor, standing_context: None,
             };
             let launch = crate::provider::launch::prepare(&plan).map_err(|e|e.to_string())?;
         let mut command = crate::process_ui::tokio_command(&launch.program);
@@ -143,7 +158,10 @@ pub(super) fn open(root: &std::path::Path, binding: &Binding) -> Result<Source, 
                 .env_remove("CURSOR_API_KEY").env_remove("CURSOR_AUTH_TOKEN")
                 .current_dir(&cwd).stdin(Stdio::piped()).stdout(Stdio::piped())
                 .stderr(Stdio::null()).kill_on_drop(true);
+            #[cfg(unix)]
+            command.process_group(0);
             let mut child = command.spawn().map_err(|_|"could not start the native Cursor history interface")?;
+            let _tree = crate::process_lifetime::own_tokio_process(&child)?;
             let input = child.stdin.take().ok_or("Cursor history input unavailable")?;
             let output = BufReader::new(child.stdout.take().ok_or("Cursor history output unavailable")?);
             let mut replay = Replay { child, input: Some(input), output, session: sid.clone(), wire_bytes: 0, records: Vec::new() };

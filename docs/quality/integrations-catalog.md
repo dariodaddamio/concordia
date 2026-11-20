@@ -1,7 +1,7 @@
 # Integration catalog
 
 Build `2026-11-03m`. F10 opens **Integrations and agent tools** from the composer without
-consuming the unsent draft; `/integrations` is also available. R refreshes, Esc closes, and the
+consuming the unsent draft; `/harness` is also available. R refreshes, Esc closes, and the
 existing shared preview supports scrolling and mouse close. A single background job captures
 the conversation; closing/switching invalidates its publication and cancellation is checked
 between bounded reads. No catalog job launches a provider or adapter command.

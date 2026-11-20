@@ -39,15 +39,19 @@ foreach ($needle in @('/use [add]', '/copy', '/doctor', 'concordia doctor', 'con
 #    report problems (no provider CLIs), so only the report shape and exit-code contract are checked.
 $state = Join-Path ([System.IO.Path]::GetTempPath()) ("concordia-ci-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $state | Out-Null
-$env:CONCORDIA_STATE_DIR = $state
-$report = & $Exe doctor | Out-String
-$code = $LASTEXITCODE
-Remove-Item Env:\CONCORDIA_STATE_DIR
+$savedStateDir = $env:CONCORDIA_STATE_DIR
+try {
+    $env:CONCORDIA_STATE_DIR = $state
+    $report = & $Exe doctor | Out-String
+    $code = $LASTEXITCODE
+} finally { $env:CONCORDIA_STATE_DIR = $savedStateDir }
 if ($report -notmatch '^concordia doctor') { Fail "doctor report malformed" } else { Ok "doctor prints a report" }
 $hasFail = $report -match '(?m)^FAIL'
 if (($hasFail -and $code -ne 1) -or ((-not $hasFail) -and $code -ne 0)) { Fail "doctor exit code $code does not match its findings" } else { Ok "doctor exit code ($code) matches findings" }
 if (@(Get-ChildItem $state -Force).Count -ne 0) { Fail "doctor left files in the state dir" } else { Ok "doctor left no files behind" }
-Remove-Item -Recurse -Force $state
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+if (-not [IO.Path]::GetFullPath($state).StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe smoke fixture cleanup path' }
+Remove-Item -LiteralPath $state -Recurse -Force
 
 # 5. Unknown arguments fail with exit code 2.
 # (Windows PowerShell 5.1 throws on native stderr under -Stop, so relax it for this one call.)

@@ -10,10 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Enter as a key press and release in the console's win32-input-mode encoding (virtual key 13,
-/// scan code 28). Cursor's screen ignores a bare carriage return in its slash menu, so `/usage`
-/// never ran and every fetch timed out; a real key event runs it.
-const ENTER_KEY: &[u8] = b"\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_";
+// CSI-u Return reaches Ink's submit handler; Win32 input records no longer do on Cursor 2026.11.17.
+const ENTER_KEY: &[u8] = b"\x1b[13u";
 
 /// Whole fetch budget: start, ready, `/usage`, table.
 pub const PTY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -84,19 +82,69 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     }
     let cwd = probe_dir();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("temp dir: {e}"))?;
-    run_usage_in_pty(
+    let started = std::time::SystemTime::now();
+    let text = run_usage_in_pty(
         &PtySpec {
             program,
             args,
             env,
-            cwd,
+            cwd: cwd.clone(),
         },
         PTY_TIMEOUT,
-    )
+    );
+    if let Some(chats) = dirs::home_dir().map(|home| home.join(".cursor").join("chats")) {
+        remove_probe_chats(&chats, &cwd, started);
+    }
+    text
+}
+
+/// Cursor records every interactive start as a chat, so each usage check would leave an empty
+/// chat behind. Remove only the ones this check made: started in the probe folder, holding no
+/// conversation, and created since the check began.
+fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) {
+    let since_ms = since
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis());
+    let probe = probe
+        .to_string_lossy()
+        .trim_end_matches('\\')
+        .to_lowercase();
+    let Ok(projects) = std::fs::read_dir(chats) else {
+        return;
+    };
+    for project in projects.flatten() {
+        let Ok(entries) = std::fs::read_dir(project.path()) else {
+            continue;
+        };
+        for chat in entries.flatten() {
+            let dir = chat.path();
+            let recent = chat
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|modified| modified >= since);
+            if !recent || dir.join("store.db").exists() {
+                continue;
+            }
+            let Some(meta) = std::fs::read_to_string(dir.join("meta.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            else {
+                continue;
+            };
+            let made_here = meta["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.trim_end_matches('\\').to_lowercase() == probe);
+            let created = meta["createdAtMs"].as_u64().map_or(0, u128::from);
+            if made_here && meta["hasConversation"] == false && created >= since_ms {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+    }
 }
 
 struct Shared {
     buf: Vec<u8>,
+    overflow: bool,
     first: Option<Instant>,
     last: Instant,
 }
@@ -115,6 +163,9 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let mut cmd = CommandBuilder::new(&spec.program);
     cmd.args(&spec.args);
     cmd.cwd(&spec.cwd);
+    // Account-specific credentials, when supplied, are added below. Never let
+    // an unrelated inherited API key select the account for this observation.
+    cmd.env_remove("CURSOR_API_KEY");
     for (k, v) in &spec.env {
         cmd.env(k, v);
     }
@@ -122,6 +173,13 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("could not start the Cursor agent: {e}"))?;
+    let tree = match crate::process_lifetime::own_pty_process(child.as_ref()) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = child.kill();
+            return Err(error);
+        }
+    };
     drop(pair.slave);
     let pid = child.process_id().unwrap_or(0);
     let master = pair.master;
@@ -135,6 +193,7 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     };
     let shared = Arc::new(Mutex::new(Shared {
         buf: Vec::new(),
+        overflow: false,
         first: None,
         last: Instant::now(),
     }));
@@ -146,6 +205,10 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
                 break;
             }
             let Ok(mut s) = sink.lock() else { break };
+            if s.buf.len().saturating_add(n) > 1024 * 1024 {
+                s.overflow = true;
+                break;
+            }
             s.buf.extend_from_slice(&chunk[..n]);
             let now = Instant::now();
             s.last = now;
@@ -155,7 +218,7 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
 
     let result = drive(&shared, &mut writer, child.as_mut(), timeout);
 
-    crate::provider::turn::kill_process_tree(pid);
+    drop(tree);
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
@@ -181,10 +244,13 @@ fn drive(
     let mut epoch: Option<Instant> = None;
     loop {
         if start.elapsed() >= timeout {
-            return Err(format!("timed out after {}s", timeout.as_secs()));
+            return Err(format!("Cursor changed its usage screen or did not respond within {}s; usage is unavailable", timeout.as_secs()));
         }
         let (bytes, first, last) = {
             let s = shared.lock().map_err(|_| "poisoned")?;
+            if s.overflow {
+                return Err("Cursor usage output exceeds 1 MiB".into());
+            }
             (s.buf.clone(), s.first, s.last)
         };
         // ConPTY may ask where the cursor is and wait for the answer.
@@ -314,28 +380,33 @@ mod tests {
 
     const TABLE: &str = "Usage \u{2022} Pro                 Resets Nov 6\n Category  Current  Usage\n Included  27% used  ###\n On-Demand  Disabled\n";
 
-    /// A fake agent: prints a banner, waits for a line on stdin, then prints the table (or not).
+    /// A fake raw-input agent: accepts the same local command and Return sequence as Cursor.
     fn fake_agent(dir: &Path, table: bool, hang_after: bool) -> PtySpec {
         let sample = dir.join("sample.txt");
         std::fs::write(&sample, if table { TABLE } else { "nothing useful\n" }).unwrap();
         #[cfg(windows)]
         let (script, body) = (
-            dir.join("fake-agent.cmd"),
+            dir.join("fake-agent.ps1"),
             format!(
-                "@echo off\r\necho Cursor Agent ready\r\nset /p x=\r\ntype \"{}\"\r\n{}",
-                sample.display(),
-                if hang_after {
-                    "ping -n 60 127.0.0.1 >nul\r\n"
-                } else {
-                    ""
-                }
+                r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ProbeInput {{ [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); }}'
+[ProbeInput]::SetConsoleMode([ProbeInput]::GetStdHandle(-10), 0x0200) | Out-Null
+[Console]::WriteLine('Cursor Agent ready')
+$stream = [Console]::OpenStandardInput()
+$bytes = New-Object byte[] 11
+$offset = 0
+while ($offset -lt 11) {{ $n = $stream.Read($bytes, $offset, 11 - $offset); if ($n -eq 0) {{ exit 1 }}; $offset += $n }}
+if ([Text.Encoding]::UTF8.GetString($bytes) -ne "/usage$([char]27)[13u") {{ exit 2 }}
+[Console]::Write([IO.File]::ReadAllText('{}'))
+{}"#,
+                sample.display().to_string().replace('\'', "''"),
+                if hang_after { "Start-Sleep 60" } else { "" }
             ),
         );
         #[cfg(unix)]
         let (script, body) = (
             dir.join("fake-agent.sh"),
             format!(
-                "#!/bin/sh\necho 'Cursor Agent ready'\nread x\ncat '{}'\n{}",
+                "#!/bin/sh\nstty -icanon -echo\necho 'Cursor Agent ready'\ndd bs=1 count=11 of=/dev/null 2>/dev/null\ncat '{}'\n{}",
                 sample.display(),
                 if hang_after { "sleep 60\n" } else { "" }
             ),
@@ -346,6 +417,17 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        #[cfg(windows)]
+        let (program, args, env) = (
+            "powershell.exe".to_string(),
+            vec![
+                "-NoProfile".into(),
+                "-File".into(),
+                script.to_string_lossy().into_owned(),
+            ],
+            Vec::new(),
+        );
+        #[cfg(unix)]
         let (program, args, env) = interactive_launch(script.to_str().unwrap());
         PtySpec {
             program,
@@ -374,7 +456,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spec = fake_agent(dir.path(), false, true);
         let e = run_usage_in_pty(&spec, Duration::from_secs(4)).unwrap_err();
-        assert!(e.contains("timed out") || e.contains("exited"), "{e}");
+        assert!(
+            e.contains("usage is unavailable") || e.contains("exited"),
+            "{e}"
+        );
     }
 
     #[test]
@@ -387,23 +472,6 @@ mod tests {
             cwd: dir.path().to_path_buf(),
         };
         assert!(run_usage_in_pty(&spec, Duration::from_secs(4)).is_err());
-    }
-
-    /// One real fetch against the installed Cursor agent. It only types `/usage`; no prompt is
-    /// ever sent. Run by hand: `cargo test -p concordia --lib real_cursor -- --ignored --nocapture`.
-    #[test]
-    #[ignore = "drives the real Cursor agent"]
-    fn real_cursor_usage_screen() {
-        let home = tempfile::tempdir().unwrap();
-        let r = fetch_cursor_usage_text(home.path());
-        match &r {
-            Ok(text) => println!(
-                "OK\n{text}\n--- parsed: {:?}",
-                crate::usage::parse_cursor_usage(text)
-            ),
-            Err(e) => println!("ERR {e}"),
-        }
-        assert!(r.is_ok());
     }
 
     #[test]

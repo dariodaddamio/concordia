@@ -5,12 +5,23 @@
 //! - `hang`:   write our pid to `FAKE_PROVIDER_PID`, print a session line, then sleep.
 //! - `silent-hang`: write our pid to `FAKE_PROVIDER_PID`, then sleep without output.
 //! - `fail`:   print to stderr and exit 3.
+//! - app-server fixtures: answerable Codex question/approval requests from
+//!   `appserver-fixture.json`, including an optional question-then-approval sequence.
 //!
 //! In every mode, if `FAKE_PROVIDER_OUT` is set we record what we received: one `ARG:<hex>` line
 //! per argument (hex so newlines and quotes survive), the isolating env vars, our cwd, and the
 //! length of anything piped on stdin.
 
 use std::io::{Read, Write};
+
+fn visible_prompt(prompt: &str) -> String {
+    let (_, prompt) = concordia::provider::standing_context::extract(Some(prompt));
+    let prompt = prompt
+        .strip_prefix("You are running inside Concordia, ")
+        .and_then(|rest| rest.find("\n[").map(|index| &rest[index + 1..]))
+        .unwrap_or(&prompt);
+    concordia::prompt_time::strip_header(prompt).to_owned()
+}
 
 #[cfg(windows)]
 #[allow(clippy::zombie_processes)]
@@ -53,7 +64,7 @@ fn fake_acp() {
         std::fs::write(
             root.join("acp-environment.json"),
             serde_json::json!({
-                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok(),
+                "config_dir":std::env::var("CURSOR_CONFIG_DIR").ok().or_else(|| std::env::var("GROK_HOME").ok()),
                 "api_key_present":std::env::var_os("CURSOR_API_KEY").is_some(),
                 "auth_token_present":std::env::var_os("CURSOR_AUTH_TOKEN").is_some(),
             })
@@ -64,6 +75,11 @@ fn fake_acp() {
     let emit = |value: serde_json::Value| {
         println!("{value}");
         std::io::stdout().flush().unwrap();
+    };
+    let commands = |session: &str, list: &serde_json::Value| {
+        emit(
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session,"update":{"sessionUpdate":"available_commands_update","availableCommands":list}}}),
+        );
     };
     let finish = |session_id: &str| {
         emit(
@@ -88,9 +104,20 @@ fn fake_acp() {
             "initialize" => {
                 serde_json::json!({"protocolVersion":1,"agentCapabilities":{"loadSession":fixture["load_session"]!=false,"promptCapabilities":{"image":fixture["image"]!=false}}})
             }
-            "session/new" => serde_json::json!({"sessionId":session_id}),
+            "session/new" => {
+                if let Some(list) = fixture.get("available_commands") {
+                    commands(&session_id, list);
+                }
+                if let Some(list) = fixture.get("foreign_commands") {
+                    commands("foreign-session", list);
+                }
+                serde_json::json!({"sessionId":session_id})
+            }
             "session/load" => {
                 session_id = value["params"]["sessionId"].as_str().unwrap().to_owned();
+                if let Some(list) = fixture.get("available_commands") {
+                    commands(&session_id, list);
+                }
                 if let Some(history) = fixture["history"].as_array() {
                     for entry in history {
                         let update = if entry["role"] == "user" {
@@ -124,15 +151,48 @@ fn fake_acp() {
                         );
                     }
                 }
-                serde_json::json!({})
+                match fixture["load_session_id"].as_str() {
+                    Some(id) => serde_json::json!({"sessionId": id}),
+                    None => serde_json::json!({}),
+                }
             }
-            "session/set_mode" | "session/set_model" => serde_json::json!({}),
+            "authenticate"
+            | "session/set_mode"
+            | "session/set_model"
+            | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
+                if value["id"] == 9001 {
+                    // The standing-context resend is deliberately a separate wire request. It
+                    // must be acknowledged, but it must not start another fake turn.
+                    emit(
+                        serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}),
+                    );
+                    continue;
+                }
                 if fixture["quota"] == true {
                     emit(
                         serde_json::json!({"jsonrpc":"2.0","id":value["id"],"error":{"code":429,"message":"UsageLimitExceeded"}}),
                     );
                     continue;
+                }
+                if let Some(updates) = fixture["command_updates"].as_array() {
+                    for update in updates {
+                        if let Some(gate) = update["wait_for"].as_str() {
+                            let deadline =
+                                std::time::Instant::now() + std::time::Duration::from_secs(30);
+                            while !root.join(gate).exists() {
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "ACP command fixture gate timed out"
+                                );
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                        }
+                        commands(
+                            update["session_id"].as_str().unwrap_or(&session_id),
+                            &update["commands"],
+                        );
+                    }
                 }
                 if fixture["plan"] == true {
                     emit(
@@ -143,6 +203,13 @@ fn fake_acp() {
                         serde_json::json!({"jsonrpc":"2.0","id":100,"method":"session/request_permission","params":{"sessionId":session_id,"toolCall":{"title":fixture["permission_title"].as_str().unwrap_or("Read attached image"),"toolCallId":"image-read","rawInput":{"path":"synthetic-input"}},"options":[{"optionId":"yes","name":"Allow once","kind":"allow_once"},{"optionId":"no","name":"Decline","kind":"reject_once"}]}}),
                     );
                 } else {
+                    if fixture["compaction"] == true {
+                        for _ in 0..2 {
+                            let update = serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":session_id,"update":{"sessionUpdate":"compaction_update","status":"completed","compactionId":"fixture-compaction"}}});
+                            writeln!(journal, "{update}").unwrap();
+                            emit(update);
+                        }
+                    }
                     finish(&session_id);
                 }
                 continue;
@@ -164,16 +231,76 @@ fn fake_appserver() {
         println!("{value}");
         std::io::stdout().flush().unwrap();
     };
-    let mut thread = "native-fixture-thread".to_owned();
-    let finish = |thread: &str| {
+    let append_history = |thread: &str, role: &str, text: &str| {
+        if fixture["native_history"] != true {
+            return;
+        }
+        let home = std::path::PathBuf::from(std::env::var_os("CODEX_HOME").unwrap());
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let path = home
+            .join("sessions")
+            .join(format!("rollout-{thread}.jsonl"));
+        let new = !path.exists();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        if new {
+            writeln!(
+                file,
+                "{}",
+                json!({"type":"session_meta","payload":{"id":thread,"cwd":root}})
+            )
+            .unwrap();
+        }
+        writeln!(file, "{}", json!({"type":"response_item","payload":{"type":"message","role":role,"content":[{"type":if role=="user" {"input_text"} else {"output_text"},"text":text}]}})).unwrap();
+    };
+    let mut thread = if fixture["native_history"] == true {
+        "00000000-0000-4000-8000-000000000093"
+    } else {
+        "native-fixture-thread"
+    }
+    .to_owned();
+    let mut question_answered = false;
+    let mut approval_sent = false;
+    let large_tool = |thread: &str| {
+        if let Some(bytes) = fixture["large_tool_bytes"].as_u64() {
+            emit(
+                json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"large-output","type":"commandExecution","command":"synthetic large output","cwd":root,"aggregatedOutput":"x".repeat(bytes as usize),"status":"completed","exitCode":0}}}),
+            );
+        }
+    };
+    let finish = |thread: &str, answered: bool| {
+        if let Some(gate) = fixture["finish_wait_for"].as_str() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while !root.join(gate).exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "native message fixture completion gate timed out"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        if answered && fixture["question"] != true {
+            emit(
+                json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"completed","exitCode":0}}}),
+            );
+        }
         if fixture["artifact"] == true {
             std::fs::write(root.join("native-output.md"), "Synthetic native output\n").unwrap();
             let event = json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"native-output-event","type":"fileChange","status":"completed","changes":[{"path":"native-output.md","kind":{"type":"add"},"diff":"+Synthetic native output"}]}}});
             emit(event.clone());
             emit(event);
         }
+        let reply = if fixture["large_text"] == true {
+            format!("{}Native approval handled", "é".repeat(100_000))
+        } else {
+            "Native approval handled".into()
+        };
+        append_history(thread, "assistant", &reply);
         emit(
-            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":"Native approval handled"}}),
+            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":"reply","delta":reply}}),
         );
         emit(
             json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":"native-turn","status":"completed"}}}),
@@ -187,8 +314,27 @@ fn fake_appserver() {
             .open(root.join("appserver-calls.jsonl"))
             .unwrap();
         writeln!(journal, "{line}").unwrap();
-        if value["id"] == 100 && value.get("method").is_none() {
-            finish(&thread);
+        if value.get("method").is_none()
+            && ((value["id"] == 100) || (approval_sent && value["id"] == 101))
+        {
+            if fixture["question_then_approval"] == true && !question_answered {
+                question_answered = true;
+                approval_sent = true;
+                emit(json!({
+                    "id": 101,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {
+                        "threadId": thread,
+                        "turnId": "native-turn",
+                        "itemId": "command-1",
+                        "command": "synthetic command",
+                        "cwd": root,
+                        "availableDecisions": ["accept", "acceptForSession", "decline", "cancel"]
+                    }
+                }));
+            } else {
+                finish(&thread, true);
+            }
             continue;
         }
         let result = match value["method"].as_str().unwrap_or("") {
@@ -205,16 +351,107 @@ fn fake_appserver() {
                 }
                 json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user"})
             }
-            "turn/start" => {
-                // Deliberately arrive before the turn/start response: the client must buffer.
-                emit(
-                    json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
+            "thread/fork" => {
+                // A fork returns a new thread and leaves the original as it was.
+                let forked = format!("{thread}-fork");
+                append_history(&forked, "user", "(forked)");
+                thread = forked;
+                json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user","model":"synthetic-model","modelProvider":"openai","sandbox":value["params"]["sandbox"]})
+            }
+            "turn/steer" => {
+                assert_eq!(value["params"]["threadId"], thread);
+                assert_eq!(value["params"]["expectedTurnId"], "native-turn");
+                assert_eq!(
+                    value["params"]["input"][0]["text"],
+                    "Synthetic steering message"
                 );
+                if fixture["steer_refused"] == true {
+                    emit(
+                        json!({"id":value["id"],"error":{"code":-32000,"message":"turn mismatch"}}),
+                    );
+                } else if fixture["steer_closed"] == true {
+                    return;
+                } else {
+                    emit(
+                        json!({"id":value["id"],"result":{"turnId":if fixture["steer_wrong_turn"] == true {"foreign-turn"} else {"native-turn"}}}),
+                    );
+                }
+                finish(&thread, true);
+                continue;
+            }
+            "turn/start" => {
+                let prompt = value["params"]["input"]
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item["text"].as_str())
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+                append_history(&thread, "user", &prompt);
+
+                // Deliberately arrive before the turn/start response: the client must buffer.
+                // Question fixtures do not start a command. Permission fixtures keep
+                // command lifetime distinct and complete it only after a native answer.
+                if fixture["question"] != true {
+                    emit(
+                        json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
+                    );
+                }
+                if fixture["early_large"] == true {
+                    large_tool(&thread);
+                }
                 emit(
                     json!({"id":value["id"],"result":{"turn":{"id":"native-turn","status":"inProgress"}}}),
                 );
+                if fixture["early_large"] != true {
+                    large_tool(&thread);
+                }
                 if fixture["closed"] == true {
                     return;
+                }
+                if fixture["steer"] == true {
+                    continue;
+                }
+                if let Some(messages) = fixture["messages"].as_array() {
+                    if let Some(bytes) = fixture["wire_bytes"].as_u64() {
+                        let padding = "x".repeat(32 * 1024);
+                        for _ in 0..bytes.div_ceil(padding.len() as u64) {
+                            emit(
+                                json!({"method":"synthetic/telemetry","params":{"threadId":thread,"turnId":"native-turn","padding":padding}}),
+                            );
+                        }
+                    }
+                    for (index, message) in messages.iter().enumerate() {
+                        let id = format!("message-{index}");
+                        let text = message.as_str().unwrap();
+                        emit(
+                            json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":id,"type":"agentMessage","text":""}}}),
+                        );
+                        emit(
+                            json!({"method":"item/agentMessage/delta","params":{"threadId":thread,"turnId":"native-turn","itemId":id,"delta":text}}),
+                        );
+                        emit(
+                            json!({"method":"item/completed","params":{"threadId":thread,"turnId":"native-turn","item":{"id":id,"type":"agentMessage","text":text}}}),
+                        );
+                    }
+                    if let Some(gate) = fixture["wait_for"].as_str() {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(30);
+                        while !root.join(gate).exists() {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "native message fixture gate timed out"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    }
+                    emit(
+                        json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":"native-turn","status":"completed"}}}),
+                    );
+                    continue;
                 }
                 let method = if fixture["question"] == true {
                     "item/tool/requestUserInput"
@@ -231,12 +468,19 @@ fn fake_appserver() {
                 if fixture["wrong_turn"] == true {
                     params["turnId"] = json!("foreign-turn");
                 }
-                emit(json!({"id":100,"method":method,"params":params}));
+                let request = json!({"id":100,"method":method,"params":params});
+                emit(request.clone());
+                if fixture["duplicate"] == true {
+                    emit(request.clone());
+                }
                 if fixture["resolved"] == true {
                     emit(
                         json!({"method":"serverRequest/resolved","params":{"threadId":thread,"requestId":100}}),
                     );
-                    finish(&thread);
+                    if fixture["duplicate"] == true {
+                        emit(request);
+                    }
+                    finish(&thread, false);
                 }
                 continue;
             }
@@ -286,7 +530,9 @@ fn fake_claude_control(args: &[String]) {
         if value["type"] == "control_request" {
             let subtype = value["request"]["subtype"].as_str().unwrap();
             let response = match subtype {
-                "initialize" => json!({}),
+                "initialize" => {
+                    json!({"claude_code_version":"2.1.319","session_state":"idle","capabilities":{},"commands":[{"name":"compact","description":"Compact the conversation"},{"name":"review","description":"Review a pull request"}]})
+                }
                 "get_context_usage" => {
                     json!({"totalTokens":fixture["context_used"].as_u64().unwrap_or(120),
                     "maxTokens":1000,"rawMaxTokens":1000,"percentage":fixture["context_used"].as_u64().unwrap_or(120) as f64 / 10.0,
@@ -308,7 +554,7 @@ fn fake_claude_control(args: &[String]) {
                     json!({"type":"assistant","sessionId":session,"message":{"role":"assistant","content":[{"type":"text","text":"Completed fixture"}]}}))).unwrap();
             }
             emit(
-                json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude"}),
+                json!({"type":"system","subtype":"init","session_id":session,"model":"fixture-claude","slash_commands":["compact","review","fixture-skill"]}),
             );
             if fixture["background"] == true {
                 emit(
@@ -446,7 +692,7 @@ fn main() {
     if args.first().is_some_and(|arg| arg == "--version")
         && std::env::var("FAKE_PROVIDER_NATIVE_CLAUDE").as_deref() == Ok("1")
     {
-        println!("2.1.318 (Claude Code)");
+        println!("2.1.319 (Claude Code)");
         return;
     }
     if args.iter().any(|arg| arg == "--permission-prompt-tool")
@@ -464,7 +710,9 @@ fn main() {
         println!("codex-cli 0.166.0");
         return;
     }
-    if args.first().is_some_and(|a| a == "acp") {
+    if args.first().is_some_and(|a| a == "acp")
+        || args.windows(2).any(|pair| pair == ["agent", "stdio"])
+    {
         fake_acp();
         return;
     }
@@ -494,7 +742,7 @@ fn main() {
             match request["method"].as_str().unwrap_or("") {
                 "initialize" => println!(
                     "{}",
-                    serde_json::json!({"id":request["id"],"result":{"userAgent":"synthetic"}})
+                    serde_json::json!({"id":request["id"],"result":{"userAgent":"synthetic","codexHome":home}})
                 ),
                 "initialized" => continue,
                 "account/rateLimits/read" => {
@@ -721,6 +969,7 @@ fn main() {
 
 fn interaction(args: &[String]) {
     use serde_json::json;
+    use std::io::BufRead;
     let provider = if args.first().is_some_and(|a| a == "exec") {
         "codex"
     } else if args.first().is_some_and(|a| a == "-p") {
@@ -730,13 +979,23 @@ fn interaction(args: &[String]) {
     };
     let mut prompt = args.last().cloned().unwrap_or_default();
     let mut image_count = args.iter().filter(|a| *a == "--image").count();
+    let mut wire_frames = Vec::new();
     if args
         .windows(2)
         .any(|v| v == ["--input-format", "stream-json"])
     {
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input).unwrap();
-        let input: serde_json::Value = serde_json::from_str(&input).unwrap();
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        let mut line = String::new();
+        let input = loop {
+            line.clear();
+            assert!(input.read_line(&mut line).unwrap() > 0);
+            let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+            wire_frames.push(frame.clone());
+            if frame["type"] == "user" {
+                break frame;
+            }
+        };
         let content = input["message"]["content"].as_array().unwrap();
         prompt = content
             .iter()
@@ -763,11 +1022,112 @@ fn interaction(args: &[String]) {
             }
         }
     };
+    for frame in &wire_frames {
+        if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            writeln!(
+                file,
+                "{}",
+                json!({"kind":"wire","provider":provider,"frame":frame})
+            )
+            .unwrap();
+        }
+    }
     let emit = |event: serde_json::Value| {
         println!("{event}");
         let _ = std::io::stdout().flush();
     };
     journal("start");
+    if provider == "cursor" && prompt.contains("[ask]") {
+        if let Ok(path) = std::env::var("FAKE_PROVIDER_ASK") {
+            let fixture: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let directory = args
+                .windows(2)
+                .find(|pair| pair[0] == "--plugin-dir")
+                .expect("question plugin directory");
+            let plugin: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(std::path::Path::new(&directory[1]).join("mcp.json")).unwrap(),
+            )
+            .unwrap();
+            let env = &plugin["mcpServers"]["concordia-ask"]["env"];
+            for questions in fixture["bundles"].as_array().unwrap() {
+                let mut stream =
+                    std::net::TcpStream::connect(env["CONCORDIA_ASK_ENDPOINT"].as_str().unwrap())
+                        .unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(15)))
+                    .unwrap();
+                writeln!(
+                    stream,
+                    "{}",
+                    json!({"token":env["CONCORDIA_ASK_TOKEN"],"questions":questions})
+                )
+                .unwrap();
+                let mut answer = String::new();
+                std::io::BufReader::new(stream)
+                    .read_line(&mut answer)
+                    .unwrap();
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+                    let mut output = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .unwrap();
+                    writeln!(
+                        output,
+                        "{}",
+                        json!({"kind":"question-ack","answer":answer.trim()})
+                    )
+                    .unwrap();
+                }
+            }
+            if let Some(gate) = fixture["wait_for"].as_str() {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+                while !std::path::Path::new(gate).exists() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "question fixture gate timed out"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+            }
+        }
+    }
+    if prompt.contains("[compaction]") {
+        journal("compaction");
+    }
+    // `[bulk N]`: a long synthetic transcript for render timing journeys. The fixture emits
+    // bounded text batches so the test measures transcript layout rather than provider pipe
+    // backpressure.
+    if let Some(count) = prompt
+        .split("[bulk ")
+        .nth(1)
+        .and_then(|rest| rest.split(']').next())
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .filter(|_| provider == "codex")
+    {
+        emit(json!({"type":"thread.started","thread_id":"bulk-render-session"}));
+        for batch_start in (0..count).step_by(25) {
+            let mut text = String::new();
+            for index in batch_start..(batch_start + 25).min(count) {
+                text.push_str(&format!("## Step {index}\n\n- cached row {index}\n\n"));
+            }
+            emit(
+                json!({"type":"item.completed","item":{"type":"agent_message","id":format!("bulk-reply-{batch_start}"),"text":text}}),
+            );
+        }
+        emit(
+            json!({"type":"item.completed","item":{"type":"agent_message","id":"bulk-end","text":format!("BULK_DONE_{count}")}}),
+        );
+        emit(json!({"type":"turn.completed","usage":{"input_tokens":123,"output_tokens":45}}));
+        journal("done");
+        return;
+    }
     if prompt.contains("[context]")
         && provider == "codex"
         && !prompt.contains("Continue the interrupted request in this new native session")
@@ -786,7 +1146,9 @@ fn interaction(args: &[String]) {
                 json!({"type":"turn.failed","error":{"code":-32000,"codexErrorInfo":"usageLimitExceeded","message":"Request cannot be completed"}}),
             );
         } else {
-            emit(json!({"type":"turn.failed","error":{"message":"You've hit your usage limit"}}));
+            emit(
+                json!({"type":"turn.failed","error":{"code":"usage_limit_reached","message":"You've hit your usage limit"}}),
+            );
         }
         journal("limited");
         std::process::exit(1);
@@ -795,7 +1157,11 @@ fn interaction(args: &[String]) {
         "reasoning-start {} reasoning-end",
         "checking the requested changes. ".repeat(30)
     );
-    let command = format!("synthetic-command {} command-tail", "argument ".repeat(15));
+    let command = if prompt.contains("[launch]") {
+        "codex exec -m gpt-5.6-luna \"Fix the parser\nsecond line with \\\"quotes\\\"\"".to_owned()
+    } else {
+        format!("synthetic-command {} command-tail", "argument ".repeat(15))
+    };
     let tool_output = if prompt.contains("[long-tool]") {
         format!(
             "tool-output-start\n{}\ntool-output-end",
@@ -838,9 +1204,113 @@ fn interaction(args: &[String]) {
         }
     }
     if provider == "codex" && prompt.contains("[agents]") {
+        let states = if prompt.contains("[agents-forty]") {
+            (0..40)
+                .map(|index| {
+                    let role = if index == 0 {
+                        "Orchestrator"
+                    } else if index % 3 == 0 {
+                        "Review"
+                    } else {
+                        "Impl"
+                    };
+                    let id = format!("agent-{index:02}");
+                    (
+                        id,
+                        json!({
+                            "status": "completed",
+                            "message": "synthetic agent complete",
+                            "role": role,
+                            "model": if index % 2 == 0 { "Claude Sonnet 5.5" } else { "GPT-6.1 Sol Fast" },
+                            "effort": if index % 3 == 0 { "medium" } else { "high" },
+                            "tokens_used": 633883,
+                            "context_window": 1000000,
+                            "compaction_reference": "65.5%",
+                            "tokens_remaining": 334117,
+                            "turns": 2
+                        }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>()
+        } else if prompt.contains("[agents-six]") {
+            [
+                ("orchestrator", "Orchestrator", "Claude Opus 5.5", "high"),
+                ("author", "Author", "Claude Opus 5.5", "high"),
+                ("impl", "Impl", "Claude Sonnet 5.5", "high"),
+                ("review", "Review", "GPT-6.1 Sol Fast", "medium"),
+                ("rereview", "Re-Review", "GPT-6.1 Sol Fast", "low"),
+                ("impl-two", "Impl", "Claude Haiku 5.5", "max"),
+                ("review-two", "Review", "GPT-6.1 Sol Fast", "xhigh"),
+            ]
+            .into_iter()
+            .map(|(id, role, model, effort)| {
+                (
+                    id.to_owned(),
+                    json!({
+                        "status": "completed",
+                        "message": "synthetic agent complete",
+                        "role": role,
+                        "model": model,
+                        "effort": effort,
+                        "tokens_used": 633883,
+                        "context_window": 1000000,
+                        "compaction_reference": "65.5%",
+                        "tokens_remaining": 334117,
+                        "turns": 2
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>()
+        } else {
+            serde_json::Map::from_iter([(
+                "child-reviewer".into(),
+                json!({"status":"running","message":null}),
+            )])
+        };
         emit(
-            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"prompt":"Inspect the graph parser","agents_states":{"child-reviewer":{"status":"running","message":null}},"status":"completed"}}),
+            json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"spawn-child","tool":"spawn_agent","sender_thread_id":"parent","receiver_thread_ids":states.keys().filter(|id| **id != "orchestrator").collect::<Vec<_>>(),"prompt":"Inspect the graph parser","agents_states":states,"status":"completed"}}),
         );
+    }
+    let compaction_fixture = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| std::fs::read(cwd.join("provider-compaction.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let explicit_compaction = compaction_fixture.is_some();
+    if prompt.contains("[compaction]") || explicit_compaction {
+        let event = if provider == "claude" {
+            json!({"type":"system","subtype":"compact_boundary","uuid":"fixture-compaction"})
+        } else {
+            json!({"type":"turn/compaction_completed","compaction_id":"fixture-compaction"})
+        };
+        let event_count = compaction_fixture
+            .as_ref()
+            .and_then(|fixture| fixture["duplicate"].as_bool())
+            .map_or(1, |duplicate| if duplicate { 2 } else { 1 });
+        for _ in 0..event_count {
+            emit(event.clone());
+            journal("provider_compaction");
+        }
+        if provider == "claude" {
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            let mut line = String::new();
+            if input.read_line(&mut line).unwrap_or(0) > 0 {
+                let frame: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+                if let Ok(path) = std::env::var("FAKE_PROVIDER_JOURNAL") {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .unwrap();
+                    writeln!(
+                        file,
+                        "{}",
+                        json!({"kind":"wire","provider":provider,"frame":frame})
+                    )
+                    .unwrap();
+                }
+            }
+        }
     }
     if prompt.contains("[wait]") {
         let gate =
@@ -856,17 +1326,19 @@ fn interaction(args: &[String]) {
         std::process::exit(3);
     }
     // Keep the raw provider prompt in the journal, but echo the user's text in the reply.
-    let reply = if concordia::prompt_time::strip_header(&prompt).trim() == "[mermaid]" {
+    let visible_prompt = visible_prompt(&prompt);
+    let reply = if visible_prompt.trim() == "[mermaid]" {
         "```mermaid\nflowchart LR\n A[Prompt] --> B[Provider]\n```".into()
-    } else if concordia::prompt_time::strip_header(&prompt).trim() == "[choices]" {
+    } else if visible_prompt.trim() == "[choices]" {
         "Which approach do you prefer?\n1. Small patch\n2. Full refactor".into()
     } else {
-        format!(
-            "FAKE REPLY: {}",
-            concordia::prompt_time::strip_header(&prompt)
-        )
+        format!("FAKE REPLY: {visible_prompt}")
     };
-    if provider == "codex" && prompt.contains("[agents]") {
+    if provider == "codex"
+        && prompt.contains("[agents]")
+        && !prompt.contains("[agents-six]")
+        && !prompt.contains("[agents-forty]")
+    {
         emit(
             json!({"type":"item.completed","item":{"type":"collab_tool_call","id":"wait-child","tool":"wait","sender_thread_id":"parent","receiver_thread_ids":["child-reviewer"],"agents_states":{"child-reviewer":{"status":"completed","message":"GRAPH_REVIEW_FINISHED"}},"status":"completed"}}),
         );
@@ -899,4 +1371,19 @@ fn interaction(args: &[String]) {
         }
     }
     journal("done");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::visible_prompt;
+
+    #[test]
+    fn fake_reply_view_hides_standing_context_but_keeps_user_prompt() {
+        for prompt in [
+            "<concordia_standing_context>inside Concordia</concordia_standing_context>\n[Fri Nov 13 2026, 6:55am local]\nuser text",
+            "You are running inside Concordia, a native Windows app.\n[Fri Nov 13 2026, 6:55am local]\nuser text",
+        ] {
+            assert_eq!(visible_prompt(prompt), "user text");
+        }
+    }
 }

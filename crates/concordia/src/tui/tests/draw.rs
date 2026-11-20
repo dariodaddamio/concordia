@@ -1,6 +1,65 @@
 use super::*;
 
 #[test]
+fn attention_badge_opens_and_selects_the_paused_queue() {
+    let mut h = Harness::new(180, 30);
+    landing::open_home_tab(&mut h.app);
+    h.app.queue.items.push("pending prompt".into());
+    h.app.queue.paused = true;
+    h.draw();
+    let badge = h
+        .app
+        .areas
+        .header_attention
+        .expect("clickable attention badge");
+    h.click(badge.x + 2, badge.y);
+    assert!(h
+        .app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::NeedsYou));
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(h.app.queue.focused);
+    assert!(
+        h.app.queue.paused,
+        "inspection must not send a queued prompt"
+    );
+    assert_eq!(h.app.queue.items[0], "pending prompt");
+}
+
+#[test]
+fn home_picker_owns_navigation_and_preserves_the_composer() {
+    let mut h = Harness::new(120, 30);
+    landing::open_home_tab(&mut h.app);
+    h.app.editor.set_text("unsent home draft");
+    h.app.queue.items.push("queued prompt".into());
+    h.app.queue.paused = true;
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::NeedsYou);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(landing::visible(&h.app));
+    assert_eq!(h.app.editor.text(), "unsent home draft");
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+    assert!(h.app.queue.focused);
+    assert!(h.app.queue.paused);
+    assert!(!h.app.busy);
+}
+
+#[test]
+fn empty_paused_queue_has_no_attention_badge() {
+    let mut h = Harness::new(120, 24);
+    h.app.queue.paused = true;
+    h.draw();
+    assert!(h.app.areas.header_attention.is_none());
+    h.key(KeyCode::Char('n'), KeyModifiers::CONTROL);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
 fn pending_approval_is_a_needs_you_item() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
@@ -33,6 +92,7 @@ fn pending_approval_is_a_needs_you_item() {
                 "availableDecisions": ["accept", "decline"]
             }),
         )
+        .unwrap()
         .unwrap();
     app.questions.offer_native(request, true);
     app.sync_needs_you();
@@ -52,7 +112,7 @@ fn pending_approval_is_a_needs_you_item() {
 
 #[test]
 fn chat_map_row_expands_for_v2_maps() {
-    let map = crate::threads::build_map_v2(
+    let map = crate::threads::build_map(
         &[crate::threads::ThreadEvent::with_text(
             "user",
             "continue here",
@@ -60,6 +120,8 @@ fn chat_map_row_expands_for_v2_maps() {
         "thread-1",
         1600,
         true,
+        None,
+        None,
     );
     let row = ChatLine {
         role: MsgRole::System,
@@ -81,11 +143,13 @@ fn header_and_status_never_repeat_usage() {
         label: "5h".into(),
         used_pct: 60.0,
         resets: Some("3h".into()),
+        bucket: None,
     });
     snap.windows.push(crate::usage::UsageWindow {
         label: "7d".into(),
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
+        bucket: None,
     });
     h.app.set_usage_footer(&snap);
     h.app.usage_summary = "5h 40% left \u{b7} 7d 14% left".into();
@@ -99,7 +163,7 @@ fn header_and_status_never_repeat_usage() {
 #[test]
 fn home_header_omits_subscription_when_usage_box_visible() {
     let mut h = Harness::new(120, 30);
-    crate::tui::landing::open_home(&mut h.app);
+    crate::tui::landing::open_home_tab(&mut h.app);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     let landing = h.app.landing.as_mut().unwrap();
@@ -108,6 +172,7 @@ fn home_header_omits_subscription_when_usage_box_visible() {
         label: "7d".into(),
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
+        bucket: None,
     });
     landing.meters.push(crate::tui::landing::LandingMeter {
         provider: ProviderKind::Codex,
@@ -127,7 +192,7 @@ fn chat_header_keeps_credits_text() {
     h.app.landing = None;
     h.draw();
     assert!(
-        h.screen().contains("Credits: not reported"),
+        !h.screen().contains("Credits: not reported"),
         "{}",
         h.screen()
     );
@@ -143,6 +208,7 @@ fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
                 label: label.into(),
                 used_pct,
                 resets: Some(reset.into()),
+                bucket: None,
             });
         }
         let row = picker_row("codex", ProviderKind::Codex, &snap);
@@ -265,11 +331,12 @@ fn native_chat_cli_keeps_accounts_separate_and_binds_reads_explicitly() {
 #[test]
 fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
     let mut h = Harness::new(120, 30);
-    let mut snap = crate::usage::UsageSnapshot::no_data("cached; refreshing", "last report");
+    let mut snap = crate::usage::UsageSnapshot::no_data("checked 2 min ago", "last report");
     snap.windows.push(crate::usage::UsageWindow {
         label: "5h".into(),
         used_pct: 96.0,
         resets: Some("2026-10-16 06:03 local".into()),
+        bucket: None,
     });
     h.app.provider = ProviderKind::Codex;
     h.app.set_usage_footer(&snap);
@@ -305,7 +372,7 @@ fn distinct_escape_presses_drained_together_close_each_focused_layer() {
     h.app.queue.focused = true;
     let mut edit = Editor::default();
     edit.set_text("unsaved upper edit");
-    h.app.queue.edit = Some(edit);
+    h.app.begin_queue_edit(edit);
     h.app.activity.open(0);
     let (tx, _rx) = mpsc::unbounded_channel();
     let mut burst = input::BurstBuffer::default();
@@ -554,7 +621,10 @@ fn unified_diff_cards_show_counts_and_review_colours() {
         );
     }
 
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     h.draw();
     assert!(
         h.screen().contains("Edit File"),
@@ -628,7 +698,7 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
     // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("permissions: workspace"),
+        s.contains('\u{256d}') && s.contains("permissions: edit"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
@@ -699,10 +769,10 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("permissions: workspace ▾") {
-            "permissions: workspace ▾"
-        } else if row.ends_with("workspace ▾") {
-            "workspace ▾"
+        let right = if row.ends_with("permissions: edit ▾") {
+            "permissions: edit ▾"
+        } else if row.ends_with("edit ▾") {
+            "edit ▾"
         } else {
             ""
         };
@@ -732,21 +802,18 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
 fn shift_tab_never_reaches_full() {
     use ratatui::style::Color;
     let mut h = Harness::new(100, 12);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     let mut seen = Vec::new();
     for _ in 0..3 {
         h.key(KeyCode::BackTab, KeyModifiers::SHIFT);
         seen.push(h.app.trust);
         assert_eq!(get_settings(&h.app.state_root).trust, h.app.trust);
     }
-    assert_eq!(
-        seen,
-        [TrustMode::Plan, TrustMode::Ask, TrustMode::Workspace]
-    );
+    assert_eq!(seen, [TrustMode::Plan, TrustMode::Ask, TrustMode::Edit]);
     for (mode, want) in [
         (TrustMode::Plan, Color::Cyan),
         (TrustMode::Ask, Color::Yellow),
-        (TrustMode::Workspace, Color::Green),
+        (TrustMode::Edit, Color::Green),
         (TrustMode::Full, Color::Red),
     ] {
         h.app.trust = mode;
@@ -772,7 +839,8 @@ fn shift_tab_never_reaches_full() {
     assert!(close.y < mode.y);
     let popup = h.app.areas.permissions_popup;
     assert!(popup.width <= 54 && popup.x >= 40);
-    assert_eq!(popup.bottom(), mode.y);
+    // The permissions popup ends above the composer instead of drawing over it.
+    assert_eq!(popup.bottom(), h.app.areas.input.y - 1);
     assert!(h.app.areas.input.width > 0);
     assert!(!h.screen().contains("message · paused"));
     let input = h.app.areas.input;
@@ -853,8 +921,16 @@ fn mode_command_shows_and_sets_the_mode() {
     let mut h = Harness::new(100, 24);
     h.type_str("/mode");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(
+        h.app
+            .picker
+            .as_ref()
+            .is_some_and(|p| p.kind == PickerKind::Trust),
+        "bare /mode opens the permissions picker"
+    );
     let s = h.screen();
-    assert!(s.contains("mode: workspace"), "{s}");
+    assert!(s.contains("Edit · current") || s.contains("Edit"), "{s}");
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     h.type_str("/mode plan");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
@@ -863,24 +939,24 @@ fn mode_command_shows_and_sets_the_mode() {
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.trust, TrustMode::Plan);
     assert!(h.screen().contains("unknown mode bogus"));
-    h.type_str("/mode auto");
+    h.type_str("/mode edit");
     h.key(KeyCode::Enter, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 }
 
 #[test]
 fn mode_full_requires_confirmation_once_per_session() {
     let mut h = Harness::new(100, 24);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
     assert_eq!(
         h.app.picker.as_ref().unwrap().kind,
         PickerKind::FullModeConfirm
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(h.app.trust, TrustMode::Workspace);
+    assert_eq!(h.app.trust, TrustMode::Edit);
 
     h.send("/mode full");
     assert_eq!(
@@ -1054,10 +1130,11 @@ fn tips_hide_when_busy_or_typing_and_wait_20s_after_a_chat() {
 #[test]
 fn a_user_command_shows_as_typed_and_submits_the_rendered_prompt() {
     let mut h = Harness::new(80, 20);
+    // A name no provider advertises; provider collisions have their own cases.
     let cmds = crate::user_commands::commands_dir(&h.app.state_root);
     std::fs::create_dir_all(&cmds).unwrap();
     std::fs::write(
-        cmds.join("review.md"),
+        cmds.join("audit.md"),
         "---
 description: review the diff
 ---
@@ -1067,7 +1144,7 @@ Review for bugs. Focus: $ARGS",
     std::fs::write(cmds.join("doctor.md"), "shadowed").unwrap();
     h.app.user_cmds = crate::user_commands::scan(&h.app.state_root).commands;
 
-    h.type_str("/rev");
+    h.type_str("/aud");
     h.draw();
     let shown: String = h
         .term
@@ -1077,10 +1154,10 @@ Review for bugs. Focus: $ARGS",
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(shown.contains("/review") && shown.contains("custom"));
+    assert!(shown.contains("/audit") && shown.contains("custom"));
 
     h.app.editor.clear();
-    h.type_str("/review the parser");
+    h.type_str("/audit the parser");
     let (tx, mut rx) = mpsc::unbounded_channel();
     h.app.submit_input(&tx);
     assert_eq!(rx.try_recv().unwrap(), "Review for bugs. Focus: the parser");
@@ -1092,7 +1169,7 @@ Review for bugs. Focus: $ARGS",
         .rev()
         .find(|m| m.role == MsgRole::User)
         .unwrap();
-    assert_eq!(last_user.text, "/review the parser");
+    assert_eq!(last_user.text, "/audit the parser");
 
     // A built-in name is never shadowed: /doctor stays the built-in and sends no turn.
     h.type_str("/doctor");
@@ -1175,11 +1252,18 @@ fn expand_activity_restores_full_tool_and_reasoning_text_without_touching_draft(
     };
     assert!(!rows(&h).contains("hidden-output"));
     assert!(!rows(&h).contains("early-reasoning"));
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     assert!(rows(&h).contains("hidden-output"));
     assert!(rows(&h).contains("early-reasoning"));
     assert_eq!(h.app.editor.text(), "keep my draft");
-    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    h.app.expanded_activity = true;
+    h.key(
+        KeyCode::Char('o'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     assert!(!rows(&h).contains("hidden-output"));
 }
 
@@ -1327,17 +1411,48 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     let mut h = Harness::new(100, 30);
     let single = h.screen();
     assert!(h.app.tab_hits.is_empty());
-    h.app.tab_strip = vec!["Home".into(), "Fix the images …".into()];
+    let chip = |title: &str, provider, status| TabChip {
+        title: title.into(),
+        provider,
+        status,
+    };
+    h.app.tab_strip = vec![
+        chip("Home", ProviderKind::Codex, icons::TabStatus::Idle),
+        chip(
+            "Fix the images …",
+            ProviderKind::Claude,
+            icons::TabStatus::Failed,
+        ),
+        chip("Docs", ProviderKind::Cursor, icons::TabStatus::Waiting),
+    ];
     h.app.tab_index = 1;
     h.draw();
     let screen = h.screen();
     let top = screen.lines().next().unwrap();
     assert!(
-        top.contains("1 Home") && top.contains("2 Fix the images"),
+        top.contains("1 ⬡   Home")
+            && top.contains("2 ✻ ✗ Fix the images")
+            && top.contains("3 ➤ ● Docs"),
         "{top}"
     );
-    assert_eq!(h.app.tab_hits.len(), 2);
+    assert_eq!(h.app.tab_hits.len(), 3);
     assert!(h.app.tab_hits.iter().all(|r| r.y == 0 && r.width > 0));
     // The header moves down one row instead of being drawn over.
     assert_eq!(screen.lines().nth(1), single.lines().next());
+
+    // While a tab is dragged, a bar marks the gap where it will land.
+    h.app.tab_drag = Some((0, 2));
+    h.draw();
+    let marker = h.app.tab_hits[2].x - 1;
+    let top: Vec<char> = h.screen().lines().next().unwrap().chars().collect();
+    assert_eq!(top[usize::from(marker)], '|', "{top:?}");
+    h.app.tab_drag = Some((2, 0));
+    h.draw();
+    let top: Vec<char> = h.screen().lines().next().unwrap().chars().collect();
+    assert_eq!(top[0], '|', "{top:?}");
+    h.app.tab_strip[1].status = icons::TabStatus::Running;
+    h.app.tick_count = 1;
+    h.app.tab_drag = None;
+    h.draw();
+    assert!(h.screen().lines().next().unwrap().contains("2 ✻ ◓ Fix"));
 }

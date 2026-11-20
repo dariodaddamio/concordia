@@ -290,7 +290,7 @@ fn use_picker_always_offers_add_account() {
     let picker = h.app.picker.as_ref().expect("picker open");
     assert!(picker.kind == PickerKind::Use);
     assert!(picker.rows.iter().any(|row| row.id == "use-add"));
-    assert!(picker.rows.iter().any(|row| row.id == "use-continuation"));
+    assert!(!picker.rows.iter().any(|row| row.id == "use-continuation"));
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn add_account_flow_from_the_picker_to_a_connected_announcement() {
     let before = h.app.account.clone();
     h.tick(10);
     assert!(h.app.pending_login.is_none());
-    assert!(h.transcript_text().contains("Codex 3 connected"));
+    assert!(h.transcript_text().contains("Codex 1 connected"));
     assert_eq!(h.app.account, before, "must not switch accounts on its own");
 }
 
@@ -770,7 +770,7 @@ fn success_with_no_output_and_cancel_keep_their_own_messages() {
         ..Default::default()
     });
     let t = h.transcript_text();
-    assert!(t.contains("cancelled"));
+    assert!(t.contains("Cancelled"));
     assert!(
         !t.contains("provider exited"),
         "a cancel is not a failure: {t}"
@@ -838,17 +838,14 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         assert!(s.contains(needle), "palette missing {needle:?}:\n{s}");
     }
     assert!(
-        s.contains(&format!("commands · {}", palette::matching("/").len())),
+        s.contains(&format!("commands · {}", h.app.palette_entries().len())),
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
     // The rest are one wrap away: Up jumps to the last command and scrolls it into view.
     h.key_up();
     let s = h.screen();
-    assert!(
-        s.contains("/update") && s.contains("update Concordia"),
-        "{s}"
-    );
+    assert!(s.contains("/export"), "{s}");
 }
 
 #[test]
@@ -892,7 +889,7 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     h.type_str("/");
     h.key_up(); // wraps to the last command
     assert_eq!(h.app.editor.text(), "/");
-    assert_eq!(h.app.palette.selected, palette::matching("/").len() - 1);
+    assert_eq!(h.app.palette.selected, h.app.palette_entries().len() - 1);
 }
 
 #[test]
@@ -951,7 +948,7 @@ fn the_palette_stays_out_of_the_way_while_browsing_history() {
 }
 
 #[test]
-fn signing_in_to_the_same_login_twice_removes_the_duplicate_and_says_why() {
+fn signing_in_to_the_same_login_twice_preserves_both_homes_and_explains_removal() {
     let iso = Isolated::new();
     codex_login(&iso.base.path().join(".codex"), "me@example.com");
     let mut h = Harness::new(100, 30);
@@ -960,14 +957,20 @@ fn signing_in_to_the_same_login_twice_removes_the_duplicate_and_says_why() {
     let home = h.add_codex_signed_in_as("ME@Example.com"); // same login, different case
     assert!(h.app.pending_login.is_none());
     let t = h.transcript_text();
-    assert!(t.contains("already connected as Codex"), "{t}");
-    assert!(t.contains("duplicate slot was removed"), "{t}");
+    assert!(t.contains("same login as Codex"), "{t}");
+    assert!(
+        t.contains("Both account homes and their histories were kept"),
+        "{t}"
+    );
     assert!(t.contains("sign in with a different one"), "{t}");
     assert!(
-        !home.exists(),
-        "the duplicate's login folder must be deleted"
+        home.exists(),
+        "duplicate detection must preserve the account's native history"
     );
-    assert!(crate::store::list_stored_accounts(&h.app.state_root).is_empty());
+    assert_eq!(
+        crate::store::list_stored_accounts(&h.app.state_root).len(),
+        1
+    );
     assert!(!t.contains("connected as me@example.com - /use"), "{t}");
 }
 
@@ -988,38 +991,6 @@ fn a_different_login_is_kept_and_announced_with_its_address() {
 }
 
 #[test]
-fn the_account_picker_names_each_account_and_marks_duplicates() {
-    let iso = Isolated::new();
-    codex_login(&iso.base.path().join(".codex"), "same@example.com");
-    codex_login(&iso.base.path().join(".codex-2"), "same@example.com");
-    codex_login(&iso.base.path().join(".codex-3"), "different@example.com");
-    let mut h = Harness::new(100, 30);
-    h.type_str("/use");
-    h.enter();
-    let rows = &h.app.picker.as_ref().unwrap().rows;
-    let by_id = |id: &str| {
-        rows.iter()
-            .find(|r| r.id == id)
-            .unwrap_or_else(|| panic!("no row {id}"))
-    };
-    assert!(
-        by_id("use:codex").label.starts_with("Codex "),
-        "{}",
-        by_id("use:codex").label
-    );
-    assert!(
-        by_id("use:codex-2").label.starts_with("Codex 2"),
-        "{}",
-        by_id("use:codex-2").label
-    );
-    assert!(by_id("use:codex-3").label.starts_with("Codex 3"));
-    assert!(by_id("use:codex").detail.contains("same login as Codex 2"));
-    assert!(by_id("use:codex-2").detail.contains("same login as Codex"));
-    assert!(!by_id("use:codex-3").detail.contains("same login"));
-    assert!(h.picker_ids().contains(&"use-remove".to_string()));
-}
-
-#[test]
 fn removing_an_account_through_the_picker_deletes_what_concordia_created() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 30);
@@ -1029,10 +1000,10 @@ fn removing_an_account_through_the_picker_deletes_what_concordia_created() {
 
     h.type_str("/use remove");
     h.enter();
-    assert_eq!(h.picker_ids(), ["rmpick:codex-3"]);
+    assert_eq!(h.picker_ids(), ["rmpick:codex-1"]);
     h.enter(); // choose the account
     let ids = h.picker_ids();
-    assert_eq!(ids, ["rm:delete:codex-3", "rm:unreg:codex-3", "rm:cancel"]);
+    assert_eq!(ids, ["rm:delete:codex-1", "rm:unreg:codex-1", "rm:cancel"]);
     h.enter(); // "Remove and delete its login data"
     assert!(!home.exists());
     assert!(h.transcript_text().contains("deleted its login folder"));
@@ -1045,7 +1016,7 @@ fn cancelling_the_confirmation_changes_nothing() {
     let mut h = Harness::new(100, 30);
     h.fake_connect();
     let home = h.add_codex_signed_in_as("solo@example.com");
-    h.type_str("/use remove codex-3"); // straight to the confirmation
+    h.type_str("/use remove codex-1"); // straight to the confirmation
     h.enter();
     assert!(h.picker_ids().contains(&"rm:cancel".to_string()));
     h.key_down();
@@ -1194,7 +1165,6 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         PickerKind::Usage,
         PickerKind::Use,
         PickerKind::Model,
-        PickerKind::Resume,
         PickerKind::Files,
         PickerKind::Tokens,
         PickerKind::Related,
@@ -1202,6 +1172,10 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
     ] {
         let mut h = Harness::new(100, 28);
         h.app.editor.set_text("keep this draft");
+        let filterable = matches!(
+            kind,
+            PickerKind::Use | PickerKind::Model | PickerKind::Files
+        );
         h.app.show_picker(
             kind,
             "screen".into(),
@@ -1210,7 +1184,7 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
                 label: "Fixture entry".into(),
                 detail: "".into(),
             }],
-            true,
+            filterable,
         );
         if matches!(
             kind,
@@ -1220,7 +1194,27 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         }
         h.draw();
         let screen = h.screen();
-        assert!(screen.contains("Esc or X"), "{kind:?}: {screen}");
+        // Update is a full page (no paused composer). Overlay pickers keep ownership copy.
+        if kind != PickerKind::Update {
+            let ownership = if filterable {
+                "Typing filters the list, not your chat"
+            } else {
+                "Chat input is paused"
+            };
+            assert!(
+                screen.contains(ownership),
+                "{kind:?}: expected ownership hint, got {screen}"
+            );
+        } else {
+            assert!(
+                screen.contains("Esc close") || screen.contains("Esc cancel"),
+                "Update page must expose close/cancel: {screen}"
+            );
+        }
+        assert!(
+            !screen.contains("Esc or X"),
+            "{kind:?}: key names belong in the footer, not the paused composer: {screen}"
+        );
         assert!(
             !screen.contains("keep this draft"),
             "a modal must show input ownership: {screen}"
@@ -1237,34 +1231,7 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         assert_eq!(h.app.editor.text(), "keep this draft");
         assert!(!h.app.busy);
     }
-    // A read that finishes after dismissal or a conversation change cannot repaint the UI.
-    let mut h = Harness::new(100, 28);
-    h.app.editor.set_text("preserve related-work draft");
-    let before = h.app.messages.len();
-    h.app.memory_command("groups");
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Related);
-    h.app.dismiss_picker();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
-        h.app.poll_memory();
-        std::thread::yield_now();
-    }
-    assert!(!h.app.session_ui.memory_reading());
-    assert!(h.app.picker.is_none());
-    assert_eq!(h.app.messages.len(), before);
-    assert_eq!(h.app.editor.text(), "preserve related-work draft");
-    h.app.memory_command("groups");
-    h.app.session_ui.invalidate();
-    h.app.dismiss_picker();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while h.app.session_ui.memory_reading() && Instant::now() < deadline {
-        h.app.poll_memory();
-        std::thread::yield_now();
-    }
-    assert!(!h.app.session_ui.memory_reading());
-    assert_eq!(h.app.messages.len(), before);
 }
-
 #[test]
 fn modal_typing_is_a_filter_and_output_x_matches_escape() {
     let mut h = Harness::new(100, 28);
@@ -1308,7 +1275,7 @@ fn update_page_close_button_cancels_its_job_and_preserves_draft() {
     h.app.job = Some(fake_update_job());
     h.app.update_progress();
     h.draw();
-    assert!(h.screen().contains("Esc or X cancels the update"));
+    assert!(h.screen().contains("Esc cancel") && h.screen().contains("D details"));
     let (rect, _) = h.app.areas.modal_close.unwrap();
     h.down(rect.x, rect.y);
     h.up(rect.x, rect.y);
@@ -1347,7 +1314,10 @@ fn mouse_pointer_matches_clickable_targets_and_text() {
     assert_eq!(pointer::shape(&h.app, 4, y as u16), "pointer");
     let r = h.app.areas.input;
     assert_eq!(pointer::shape(&h.app, r.x + 3, r.y), "text");
-    assert_eq!(pointer::shape(&h.app, 0, 0), "default");
+    // Header Home/Chat navigation occupies (0,0).
+    assert_eq!(pointer::shape(&h.app, 0, 0), "pointer");
+    // Open-work body text is not a hit target.
+    assert_eq!(pointer::shape(&h.app, 90, y as u16), "default");
 }
 
 #[test]
@@ -1448,8 +1418,9 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
     h.app.editor.set_text("preserved draft");
     h.app.handle_slash("/config");
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(h.app.settings_view.is_some());
     assert!(!h.app.window_title().contains('—'));
+    h.key(KeyCode::Right, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Appearance);
     assert_eq!(h.app.editor.text(), "preserved draft");
@@ -1562,10 +1533,12 @@ fn slash_completion_keeps_tab_while_the_landing_lists_are_visible() {
         h.app.landing.is_some(),
         "appearance keeps the Home destination"
     );
-    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::Settings);
+    assert!(h.app.settings_view.is_some());
+    h.key(KeyCode::Right, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     h.key(KeyCode::Enter, KeyModifiers::NONE);
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.window_title(), "Concordia | Home");
@@ -1578,7 +1551,18 @@ fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model"},{"slug":"another-model"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"},{"slug":"another-model","display_name":"another-model","visibility":"list"}]}"#,
+    )
+    .unwrap();
+    crate::store::upsert_stored_account(
+        &h.app.state_root,
+        crate::store::StoredAccount {
+            id: "codex".into(),
+            provider: ProviderKind::Codex,
+            home_path: Some(home.to_string_lossy().into_owned()),
+            label: "Codex fixture".into(),
+            created_at: "fixture".into(),
+        },
     )
     .unwrap();
     set_use_selection(
@@ -1588,6 +1572,7 @@ fn model_argument_completion_uses_the_account_catalog_and_can_apply_it() {
             account: "codex".into(),
             home_path: Some(home.to_string_lossy().into_owned()),
             model: None,
+            effort: None,
             updated_at: "fixture".into(),
         },
     )
@@ -1643,21 +1628,21 @@ fn account_argument_completion_switches_only_to_a_connected_fixture() {
 }
 
 #[test]
-fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_binding() {
+fn unavailable_model_ids_are_rejected_but_unsafe_and_unknown_accounts_cannot_change_binding() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 24);
     let home = h.app.state_root.join("fixture-catalog");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        r#"{"models":[{"slug":"fixture-model"}]}"#,
+        r#"{"models":[{"slug":"fixture-model","display_name":"fixture-model","visibility":"list"}]}"#,
     )
     .unwrap();
     h.app.home_path = Some(home);
     h.app.model = "fixture-model".into();
     let account = h.app.account.clone();
     assert!(h.app.handle_slash("/model extra"));
-    assert_eq!(h.app.model, "extra");
+    assert_eq!(h.app.model, "fixture-model");
     assert!(h.app.picker.is_none());
     for line in [
         "/model ../outside",
@@ -1666,14 +1651,14 @@ fn typed_model_ids_are_accepted_but_unsafe_and_unknown_accounts_cannot_change_bi
         "/use not-connected",
     ] {
         assert!(h.app.handle_slash(line));
-        assert_eq!(h.app.model, "extra");
+        assert_eq!(h.app.model, "fixture-model");
         assert_eq!(h.app.account, account);
         assert!(h.app.picker.is_none());
     }
 }
 
 #[test]
-fn model_picker_groups_by_family_with_default_first() {
+fn model_picker_sorts_only_reported_models_by_display_name() {
     let rows = super::model_picker_rows(
         vec![
             crate::models::ModelEntry {
@@ -1681,27 +1666,29 @@ fn model_picker_groups_by_family_with_default_first() {
                 display_name: "B".into(),
                 family: "Family B".into(),
                 tier: crate::models::ModelTier::Standard,
-                source: crate::models::ModelSource::Catalog,
-                deprecated: false,
+                source: crate::models::ModelSource::Cached,
+                efforts: Vec::new(),
+                default_effort: None,
             },
             crate::models::ModelEntry {
                 id: "a".into(),
                 display_name: "A".into(),
                 family: "Family A".into(),
                 tier: crate::models::ModelTier::Standard,
-                source: crate::models::ModelSource::Catalog,
-                deprecated: false,
+                source: crate::models::ModelSource::Cached,
+                efforts: Vec::new(),
+                default_effort: None,
             },
         ],
         None,
     );
-    assert!(rows[0].label.starts_with("provider default"));
-    assert_eq!(rows[1].label, "Family A");
-    assert_eq!(rows[3].label, "Family B");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, "model:a");
+    assert_eq!(rows[1].id, "model:b");
 }
 
 #[test]
-fn model_picker_shows_source_tags_and_marks_current() {
+fn model_picker_hides_source_tags_and_marks_current() {
     let rows = super::model_picker_rows(
         vec![crate::models::ModelEntry {
             id: "sol".into(),
@@ -1709,12 +1696,54 @@ fn model_picker_shows_source_tags_and_marks_current() {
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
             source: crate::models::ModelSource::Cached,
-            deprecated: false,
+            efforts: Vec::new(),
+            default_effort: None,
         }],
         Some("sol"),
     );
-    assert!(rows[2].label.contains("current"));
-    assert!(rows[2].detail.contains("sol") && rows[2].detail.contains("cached"));
+    assert!(rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .label
+        .contains("current"));
+    assert!(!rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("cached"));
+}
+
+#[test]
+fn model_picker_lists_provider_efforts_in_the_row() {
+    let rows = super::model_picker_rows(
+        vec![crate::models::ModelEntry {
+            id: "sol".into(),
+            display_name: "Sol".into(),
+            family: "GPT".into(),
+            tier: crate::models::ModelTier::Frontier,
+            source: crate::models::ModelSource::ListedByCli,
+            efforts: vec![crate::models::ModelEffort {
+                name: "low".into(),
+                model_id: None,
+            }],
+            default_effort: Some("low".into()),
+        }],
+        None,
+    );
+    assert!(rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("efforts: low"));
+    assert!(!rows
+        .iter()
+        .find(|row| row.id == "model:sol")
+        .unwrap()
+        .detail
+        .contains("reported by CLI"));
 }
 
 #[test]
@@ -1725,8 +1754,9 @@ fn model_picker_filter_matches_names_and_ids() {
             display_name: "GPT Sol".into(),
             family: "GPT-5.6".into(),
             tier: crate::models::ModelTier::Frontier,
-            source: crate::models::ModelSource::Catalog,
-            deprecated: false,
+            source: crate::models::ModelSource::Cached,
+            efforts: Vec::new(),
+            default_effort: None,
         }],
         None,
     );
@@ -1735,7 +1765,10 @@ fn model_picker_filter_matches_names_and_ids() {
         title: "model".into(),
         rows,
         filter: "5.6-sol".into(),
+        filterable: true,
         state: ratatui::widgets::ListState::default(),
+        usage_scroll: 0,
+        usage_cols: 0,
     };
     assert_eq!(
         picker
@@ -1835,6 +1868,29 @@ fn waiting_status_and_the_adjacent_timer_describe_the_current_run() {
 }
 
 #[test]
+fn f1_snapshot_lists_tab_activity_shortcuts_and_the_icon_legend() {
+    let mut h = Harness::new(180, 60);
+    h.key(KeyCode::F(1), KeyModifiers::NONE);
+    let screen = h.screen();
+    for text in [
+        "Ctrl+Shift+PgUp",
+        "Ctrl+Shift+PgDn",
+        "Ctrl+O",
+        "Ctrl+Shift+O",
+        "double-click",
+        "Tab providers",
+        "Tool cards",
+        "MCP tool",
+        "agent or subagent",
+    ] {
+        assert!(
+            screen.contains(text),
+            "F1 snapshot is missing {text}:\n{screen}"
+        );
+    }
+}
+
+#[test]
 fn account_nickname_persists_without_changing_the_native_binding() {
     let _iso = Isolated::new();
     let mut h = Harness::new(120, 24);
@@ -1873,32 +1929,14 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         h.draw();
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
-        assert!(header.contains("Work (Codex)"), "{header}");
+        assert!(header.contains("Codex · Work"), "{header}");
+        // Top bar keeps nickname + model controls; email reveal was removed from the header.
         assert!(!header.contains("member@example.invalid"), "{header}");
-        assert!(header.contains("view email"), "{header}");
+        assert!(!header.contains("view email"), "{header}");
+        assert!(h.app.areas.header_email.is_none());
         let usage = screen.lines().nth(1).unwrap();
         assert!(usage.contains("Credits: 12.5 balance"), "{usage}");
         assert!(usage.contains("Subscription: 5h 80% left"), "{usage}");
-        let email = h.app.areas.header_email.unwrap();
-        h.down(email.x, email.y);
-        h.up(email.x, email.y);
-        h.draw();
-        assert!(h
-            .screen()
-            .lines()
-            .next()
-            .unwrap()
-            .contains("member@example.invalid"));
-        let email = h.app.areas.header_email.unwrap();
-        h.down(email.x, email.y);
-        h.up(email.x, email.y);
-        h.draw();
-        assert!(!h
-            .screen()
-            .lines()
-            .next()
-            .unwrap()
-            .contains("member@example.invalid"));
     }
 }
 

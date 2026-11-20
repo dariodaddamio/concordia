@@ -17,8 +17,20 @@ unavailable during history loading. Early turn events are buffered until turn/st
 exact turn ID. Foreign thread/turn requests receive errors. Stream closure before a matching
 terminal event is a failure, with no print fallback or automatic replay.
 
+09e separates the transport frame budget from diagnostic/display lines: a complete JSON frame
+may contain up to 64 MiB, with one queued frame and at most 64 MiB/256 early events. Larger frames
+fail explicitly and are never parsed as truncated requests. Large-frame parsing runs off the
+async executor; text progress is split at UTF-8 boundaries into at most 64 KiB per event. Tool
+cards retain their existing 64 KiB display bound, and native request payloads keep their own
+unchanged ownership/byte limits. Original native session data remains authoritative.
+
+A confirmed provider exit does not establish that an interrupted tool completed. If its tool
+completion is missing, the reservation stays retained for inspection and explicit reconciliation;
+the warning distinguishes this case from an unconfirmed provider exit. No failed request is
+automatically replayed.
+
 Trust comes from the final enforcement plan: read-only remains read-only without escalation,
-workspace mode requests native user approvals with workspace writes and no default network,
+edit mode requests native user approvals with workspace writes and no default network,
 and explicit full trust retains its existing meaning. Local compaction overrides remain process
 arguments. Image bytes are hash-verified and sent as native data URLs over stdin.
 
@@ -76,4 +88,4 @@ sentinel files and the main selection stayed unchanged. These helper-driven call
 physical worker-window parity. A no-model worker-window rehearsal stopped at its fake executable's
 unverified version gate before issuing a native request; no fallback or live retry was started.
 Original driver failures and separate manual corrections are retained in
-[the current evidence record](../e2e-status.md#scoped-native-questions-cancellations-and-pdf-reading-on-05c).
+[the Git-preserved historical journal](../e2e-status.md#earlier-evidence).

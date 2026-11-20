@@ -94,7 +94,7 @@ impl Job {
     pub(super) fn bind_native_input(&mut self) -> Result<Option<InteractionOwner>, String> {
         self.input.clear();
         self.input = State::default();
-        // Low-level callers without a registered home retain their legacy noninteractive path.
+        // Native-default low-level callers have no registered account owner for UI requests.
         if self.spec.home.is_none() {
             return Ok(None);
         }
@@ -123,6 +123,12 @@ impl Job {
 }
 
 impl Delegates {
+    pub(crate) fn refresh_native_inputs(&mut self) {
+        for job in &mut self.jobs {
+            job.refresh_native_input();
+        }
+    }
+
     pub(super) fn accept_native_input(&mut self, id: u32, request: Box<NativeRequest>) {
         for job in &mut self.jobs {
             job.refresh_native_input();

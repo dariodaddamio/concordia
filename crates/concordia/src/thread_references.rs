@@ -59,6 +59,7 @@ fn reason_code(reason: &str) -> &'static str {
         "stale" => "stale",
         "unsupported" => "unsupported",
         "unbound" => "unbound",
+        "projection_omitted" => "projection_omitted",
         _ => "capture_failed",
     }
 }
@@ -223,7 +224,9 @@ impl Record {
                 let owner_matches = ev.provider.as_deref()
                     == Some(reference.binding().provider.as_str())
                     && ev.account.as_deref() == Some(reference.binding().account.as_str());
-                if !owner_matches
+                if !reference.current_format() {
+                    "[native source unavailable: unsupported reference format; original source retained; re-index and explicitly select it again]".to_owned()
+                } else if !owner_matches
                     || reference.role() != role
                     || (role == "tool" && reference.native_call_id().is_none_or(str::is_empty))
                 {

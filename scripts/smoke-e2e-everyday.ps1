@@ -41,35 +41,8 @@ else {
 Invoke-Cargo @('test', '-p', 'concordia', '--tests', '--quiet')
 if ($script:cargoExit -ne 0) { Fail "cargo test -p concordia" } else { Ok "cargo test -p concordia" }
 
-$exe = Join-Path $root "target\release\concordia.exe"
-if (-not (Test-Path $exe)) {
-    Invoke-Cargo @('build', '-p', 'concordia', '--release', '--quiet')
-    if ($script:cargoExit -ne 0) { Fail "cargo build -p concordia --release" }
-}
-# usage reader against real home if present (read-only)
-$codex = Join-Path $env:USERPROFILE ".codex"
-if (Test-Path (Join-Path $codex "sessions")) {
-    $tmpTest = @"
-#[test]
-fn smoke_live_usage() {
-    let home = dirs::home_dir().unwrap().join(".codex");
-    let snap = concordia::usage::read_codex_usage(&home);
-    assert!(!snap.summary.is_empty());
-    eprintln!("usage={}", snap.summary);
-}
-"@
-    $path = Join-Path $root "crates\concordia\tests\_smoke_usage.rs"
-    Set-Content $path $tmpTest -Encoding utf8
-    try {
-        Invoke-Cargo @('test', '-p', 'concordia', '--test', '_smoke_usage', '--', '--nocapture')
-        $code = $script:cargoExit
-    } finally {
-        Remove-Item -LiteralPath $path -Force -EA SilentlyContinue
-    }
-    if ($code -ne 0) { Fail "live usage read" } else { Ok "live usage read" }
-} else {
-    Ok "skip live usage (no ~/.codex/sessions)"
-}
+# Native usage parsing is covered by the existing control-plane and library checks above.
+# Keep this smoke read-only with respect to provider homes and checked-out test sources.
 
 if ($failures.Count -gt 0) {
     Write-Host "`n$($failures.Count) failure(s)" -ForegroundColor Red

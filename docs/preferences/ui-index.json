@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "sourceOfTruth": "docs/preferences/ui.md",
+  "topics": [
+    {
+      "id": "purpose-and-information",
+      "heading": "Purpose and information",
+      "rule": "Design behavior before pages: identify applicable hover, focus, selected, disabled, loading, empty, success and error states.",
+      "keywords": [
+        "purpose",
+        "and",
+        "information",
+        "purpose-and-information",
+        "task",
+        "state",
+        "layout",
+        "spacing",
+        "containers",
+        "graphics",
+        "telemetry"
+      ],
+      "read": "docs/preferences/ui.md#purpose-and-information"
+    },
+    {
+      "id": "interaction-and-accessibility",
+      "heading": "Interaction and accessibility",
+      "rule": "Preserve accessible names, keyboard operation, visible focus and non-color cues. Keep required information available without hover or tooltips.",
+      "keywords": [
+        "interaction",
+        "and",
+        "accessibility",
+        "interaction-and-accessibility",
+        "keyboard",
+        "touch",
+        "focus",
+        "hover",
+        "selection",
+        "motion",
+        "reduced",
+        "viewport",
+        "theme",
+        "tokens",
+        "scrolling"
+      ],
+      "read": "docs/preferences/ui.md#interaction-and-accessibility"
+    },
+    {
+      "id": "forms-and-overlays",
+      "heading": "Forms and overlays",
+      "rule": "Give controls persistent labels, preserve typed values and explain invalid input. Prevent stale asynchronous results from replacing newer input.",
+      "keywords": [
+        "forms",
+        "and",
+        "overlays",
+        "forms-and-overlays",
+        "validation",
+        "errors",
+        "draft",
+        "input",
+        "async",
+        "loading",
+        "dismiss",
+        "focus"
+      ],
+      "read": "docs/preferences/ui.md#forms-and-overlays"
+    },
+    {
+      "id": "review",
+      "heading": "Review",
+      "rule": "Reuse the project's tokens, recipes and primitives before adding new ones.",
+      "keywords": [
+        "review",
+        "verify",
+        "responsive",
+        "components",
+        "design",
+        "system"
+      ],
+      "read": "docs/preferences/ui.md#review"
+    },
+    {
+      "id": "inspiration-sources",
+      "heading": "Inspiration sources",
+      "rule": "Research the interaction or information problem. Record useful patterns and synthesize them through the project's identity and existing components.",
+      "keywords": ["research", "references", "inspiration", "patterns"],
+      "read": "docs/preferences/ui.md#inspiration-sources"
+    }
+  ]
+}

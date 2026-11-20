@@ -1,5 +1,12 @@
 # Context capacity provenance
 
+Scoped source record: `2026-11-09a`; see [verification](../e2e-status.md) for the current build.
+That source pins Claude CLI `2.1.319` for native stdio and capacity metadata.
+That CLI passed an initialize-only observation; no live 2.1.319 context-usage/model turn
+is qualified. The 2.1.318 SDK and execution evidence below is historical. Saved observations must
+match the current version gate, so earlier 2.1.318 observations do not qualify 2.1.319 rollover.
+Source: `provider/claude_capacity.rs` (`CLI_VERSION`) and `provider/turn_claude.rs`.
+
 Build `2026-11-03k` extends the existing identity-bound Codex native rollout reader. Each fresh
 observation reports provider/account/canonical home/native session, requested and reported model,
 native turn id, transport and evidence version. Source metadata includes file identity, snapshot
@@ -15,13 +22,13 @@ readable as source history but cannot trigger proactive rollover. Source replace
 or append during measurement rejects that observation. Percent comparisons use widened integer
 arithmetic. Observations are re-read before a future turn rather than cached across launches.
 
-Before-turn notices expose the observation's identity and revision. `/context` explains the
+Before-turn notices expose the observation's identity and revision. The persisted rollover setting controls the
 selected account's evidence requirement; policy changes retain their account/home binding.
 Native compaction defaults and the separately implemented one-attempt reactive capacity-error
 recovery are preserved. No in-flight turn is interrupted or replayed to implement this policy.
 
 Build `2026-11-03x` adds Claude's version-matched Agent SDK `get_context_usage` control
-request on the opt-in native stdio adapter (installed 2026-11-04b, CLI 2.1.318). Capture happens **after a completed
+request on the opt-in native stdio adapter (historical installed 2026-11-04b, CLI 2.1.318). Capture happens **after a completed
 turn on that same live connection**. No pre-prompt resumed-process reading is allowed to trigger
 rollover: the official SDK does not explicitly guarantee that prior context has loaded then.
 The response must match the explicit selected model and contain valid current tokens, effective

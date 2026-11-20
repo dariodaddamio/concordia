@@ -16,11 +16,84 @@ pub(super) fn should_accept_key(key: &KeyEvent) -> bool {
     true
 }
 
+fn rename_key(app: &mut App, key: KeyEvent) {
+    if !should_accept_key(&key) {
+        return;
+    }
+    let mut editor = app.rename_editor.take().expect("active title editor");
+    let mcp_add = app.mcp_add_editor;
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Esc => {
+            app.mcp_add_editor = false;
+            return;
+        }
+        KeyCode::Enter => {
+            if mcp_add {
+                app.mcp_add_editor = false;
+                app.finish_mcp_add_editor(editor.text());
+                return;
+            }
+            let saved = app.rename_session(&editor.text());
+            if saved {
+                app.push_system(
+                    "Chat title saved. Undo: run /rename again with the previous title.",
+                );
+            } else {
+                app.rename_editor = Some(editor);
+            }
+            return;
+        }
+        KeyCode::Char('a' | 'A') if ctrl && !alt => editor.select_all(),
+        KeyCode::Char('v' | 'V') if ctrl && !alt => {
+            app.rename_editor = Some(editor);
+            match clipboard::get_text() {
+                Ok(text) => app.paste_text(&text),
+                Err(error) => app.flash(format!("paste failed: {error}")),
+            }
+            return;
+        }
+        KeyCode::Backspace => editor.backspace(),
+        KeyCode::Delete => editor.delete(),
+        KeyCode::Left => editor.move_left(shift),
+        KeyCode::Right => editor.move_right(shift),
+        KeyCode::Home => editor.move_to(0, shift),
+        KeyCode::End => editor.move_to(editor.chars().len(), shift),
+        KeyCode::Char(c) if !c.is_control() && (!ctrl && !alt || ctrl && alt) => {
+            if editor.chars().len() < 256 || editor.selection().is_some() {
+                editor.insert_char(c);
+            }
+        }
+        _ => {}
+    }
+    app.rename_editor = Some(editor);
+}
+
 pub(super) fn dispatch_key_burst(
     app: &mut App,
     burst: input::KeyBurst,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if app.local_terminal.visible() {
+        if burst.text {
+            app.local_terminal
+                .paste(burst.text_content.as_deref().unwrap_or_default());
+        } else {
+            for key in burst.keys {
+                local_terminal::key(app, &key);
+            }
+        }
+        return false;
+    }
+    if app.rename_editor.is_some() && burst.text {
+        app.paste_text_chunk(
+            burst.text_content.as_deref().unwrap_or_default(),
+            burst.continues_paste,
+        );
+        return false;
+    }
     // File drops can arrive as a whole unframed burst of character keys.
     if !burst.text && burst.keys.len() > 1 {
         let dropped: Option<String> = burst
@@ -45,7 +118,7 @@ pub(super) fn dispatch_key_burst(
     }
     if burst.text {
         let text = burst.text_content.as_deref().unwrap_or_default();
-        if !app.project_search.active() && questions::paste(app, text) {
+        if questions::paste(app, text) {
             return false;
         }
         app.paste_text_chunk(
@@ -76,8 +149,8 @@ pub(super) fn dispatch_key_event(
         && !app.palette_entries().is_empty()
         && !key_burst.active();
     if input::BurstBuffer::is_candidate(&key)
+        && !app.local_terminal.visible()
         && app.picker.is_none()
-        && !app.project_search.active()
         && !palette_action
     {
         if let Some(burst) = key_burst.push(key, now) {
@@ -102,14 +175,56 @@ pub(super) fn handle_key(
     key: KeyEvent,
     turn_tx: &mpsc::UnboundedSender<String>,
 ) -> bool {
+    if local_terminal::key(app, &key) {
+        return false;
+    }
     if app.key_sheet {
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1)) {
-            app.key_sheet = false;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::F(1) => app.key_sheet = false,
+            KeyCode::Up => app.key_sheet_scroll = app.key_sheet_scroll.saturating_sub(1),
+            KeyCode::Down => app.key_sheet_scroll = app.key_sheet_scroll.saturating_add(1),
+            KeyCode::PageUp => app.key_sheet_scroll = app.key_sheet_scroll.saturating_sub(8),
+            KeyCode::PageDown => app.key_sheet_scroll = app.key_sheet_scroll.saturating_add(8),
+            KeyCode::Home => app.key_sheet_scroll = 0,
+            KeyCode::End => app.key_sheet_scroll = usize::MAX,
+            _ => {}
         }
         return false;
     }
-    if (key.code == KeyCode::F(1) || key.code == KeyCode::Char('?')) && key.modifiers.is_empty() {
+    if app.settings_view.is_some() && app.picker.is_none() {
+        // Esc closes settings; Ctrl+C must still arm quit the same way as on the chat screen.
+        let quit = key.modifiers.contains(KeyModifiers::CONTROL)
+            && !key.modifiers.contains(KeyModifiers::ALT)
+            && matches!(key.code, KeyCode::Char('c' | 'C'));
+        if !quit {
+            settings::key(app, key);
+            return false;
+        }
+    }
+    if app
+        .picker
+        .as_ref()
+        .is_some_and(|p| p.kind == PickerKind::GrokBotForm)
+    {
+        app.grok_bot_form_key(key);
+        return false;
+    }
+    let idle_help = key.code == KeyCode::Char('?')
+        && !app.busy
+        && app.rename_editor.is_none()
+        && !app.raster.active()
+        && !workers::overlay_open(app)
+        && app.editor.chars().is_empty()
+        && app.picker.is_none()
+        && app.workspace.focused.is_none()
+        && !worker_input::active(app)
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && app.queue.edit.is_none()
+        && !landing::editing_goal(app);
+    if (key.code == KeyCode::F(1) || idle_help) && key.modifiers.is_empty() {
         app.key_sheet = true;
+        app.key_sheet_scroll = 0;
         return false;
     }
     // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
@@ -144,26 +259,9 @@ pub(super) fn handle_key(
     if worker_input::key(app, &key) {
         return false;
     }
-    if app.project_search.active() {
-        if (matches!(key.code, KeyCode::Char('v' | 'V'))
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && !key.modifiers.contains(KeyModifiers::ALT))
-            || (key.code == KeyCode::Insert && key.modifiers.contains(KeyModifiers::SHIFT))
-        {
-            match clipboard::get_text() {
-                Ok(text) => app.project_search.paste(&text),
-                Err(error) => app.project_search.notice(&format!("paste failed: {error}")),
-            }
-            return false;
-        }
-        let action = app.project_search.key(key);
-        app.apply_search_action(action);
-        return false;
-    }
     if key.code == KeyCode::F(9)
         && app.picker.is_none()
         && app.workspace.focused.is_none()
-        && app.queue.edit.is_none()
         && app.activity.detail.is_none()
         && !app.questions.focused
     {
@@ -181,16 +279,6 @@ pub(super) fn handle_key(
     {
         landing::close(app);
         integrations::open(app);
-        return false;
-    }
-    if key.code == KeyCode::Char('f')
-        && key.modifiers.contains(KeyModifiers::CONTROL)
-        && app
-            .picker
-            .as_ref()
-            .is_some_and(|p| p.kind == PickerKind::Files)
-    {
-        app.open_project_search();
         return false;
     }
     if key.code == KeyCode::F(4)
@@ -237,7 +325,11 @@ pub(super) fn handle_key(
     if landing::navigation_key(app, key) {
         return false;
     }
-    if landing::visible(app) && landing::handle_key(app, key) {
+    if app.picker.is_none()
+        && landing::visible(app)
+        && !key.modifiers.contains(KeyModifiers::CONTROL)
+        && landing::handle_key(app, key)
+    {
         return false;
     }
     if tokens::handle_key(app, key) {
@@ -250,6 +342,15 @@ pub(super) fn handle_key(
         return false;
     }
     if let Some(picker) = app.picker.as_mut() {
+        if picker.kind == PickerKind::Agents && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            if let Some(index) = picker.state.selected() {
+                if let Some(row) = picker.filtered().get(index) {
+                    let id = row.id.clone();
+                    app.toggle_agents_row(&id);
+                }
+            }
+            return false;
+        }
         // Keep the long-standing command-history affordance when `/doctor` was just submitted.
         // Once the user has typed or selected a row, the doctor picker owns navigation normally.
         if picker.kind == PickerKind::Doctor
@@ -304,6 +405,20 @@ pub(super) fn handle_key(
             let visible = app.update_view.max(1);
             let last = app.update_rows.saturating_sub(visible);
             match key.code {
+                KeyCode::Char('d' | 'D')
+                    if picker.kind == PickerKind::Update
+                        && !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && app
+                            .job
+                            .as_ref()
+                            .is_some_and(|job| job.kind == JobKind::Update) =>
+                {
+                    app.update_details = !app.update_details;
+                    picker.state.select(Some(0));
+                    app.update_progress();
+                }
                 KeyCode::Char('h' | 'H')
                     if picker.kind == PickerKind::Update
                         && !key
@@ -352,6 +467,8 @@ pub(super) fn handle_key(
                 KeyCode::PageDown => picker.state.select(Some(
                     (picker.state.selected().unwrap_or(0) + visible).min(last),
                 )),
+                KeyCode::Home => picker.state.select(Some(0)),
+                KeyCode::End => picker.state.select(Some(last)),
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.dismiss_picker()
                 }
@@ -376,6 +493,28 @@ pub(super) fn handle_key(
             KeyCode::Char('r') if picker.kind == PickerKind::Model && picker.filter.is_empty() => {
                 app.refresh_model_picker()
             }
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
+                if picker.kind == PickerKind::Usage =>
+            {
+                // The usage page is a grid of cards: move the way the arrow points.
+                let n = picker.filtered().len();
+                if n > 0 {
+                    let cols = picker.usage_cols.max(1);
+                    let i = picker.state.selected().unwrap_or(0).min(n - 1);
+                    let next = match key.code {
+                        KeyCode::Left => i.saturating_sub(1),
+                        KeyCode::Right => (i + 1).min(n - 1),
+                        KeyCode::Up if i >= cols => i - cols,
+                        KeyCode::Down if i + cols < n => i + cols,
+                        KeyCode::Down if i / cols < (n - 1) / cols => n - 1,
+                        _ => i,
+                    };
+                    if next != i {
+                        picker.state.select(Some(next));
+                        picker.usage_scroll = 0;
+                    }
+                }
+            }
             KeyCode::Up => {
                 let n = picker.filtered().len();
                 if n > 0 {
@@ -390,6 +529,47 @@ pub(super) fn handle_key(
                 if n > 0 {
                     let i = picker.state.selected().unwrap_or(0);
                     picker.state.select(Some((i + 1) % n));
+                }
+            }
+            KeyCode::PageUp => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    let i = picker.state.selected().unwrap_or(0);
+                    picker.state.select(Some(i.saturating_sub(8)));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.usage_scroll = picker.usage_scroll.saturating_sub(8);
+                }
+            }
+            KeyCode::PageDown => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    let i = picker.state.selected().unwrap_or(0);
+                    picker.state.select(Some((i + 8).min(n - 1)));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.usage_scroll = picker.usage_scroll.saturating_add(6);
+                }
+            }
+            KeyCode::End => {
+                let n = picker.filtered().len();
+                if n > 0 && picker.kind != PickerKind::Usage {
+                    picker.state.select(Some(n - 1));
+                }
+                if picker.kind == PickerKind::Usage {
+                    // Keep the current provider card selected and page within its complete
+                    // provider-reported bucket list.
+                    picker.state.select(Some(0));
+                    picker.usage_scroll = usize::MAX;
+                }
+            }
+            KeyCode::Home => {
+                if !picker.filtered().is_empty() && picker.kind != PickerKind::Usage {
+                    picker.state.select(Some(0));
+                }
+                if picker.kind == PickerKind::Usage {
+                    picker.state.select(Some(0));
+                    picker.usage_scroll = 0;
                 }
             }
             KeyCode::Backspace => {
@@ -413,56 +593,35 @@ pub(super) fn handle_key(
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
-    if ctrl && shift && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.worker_panel_open = !app.worker_panel_open;
-        app.worker_panel_explicit = Some(app.worker_panel_open);
-        let choice = app.worker_panel_open;
-        let _ = crate::store::modify_store(&app.state_root, |store| {
-            store.settings.worker_panel_open = Some(choice);
-            Ok(())
-        });
-        app.flash(if app.worker_panel_open {
-            "worker panel open (read-only)"
-        } else {
-            "worker panel closed"
-        });
+    if key.code == KeyCode::F(2)
+        && key.modifiers.is_empty()
+        && app.rename_editor.is_none()
+        && app.workspace.focused.is_none()
+        && app.queue.edit.is_none()
+        && app.activity.detail.is_none()
+        && !app.questions.focused
+        && !landing::editing_goal(app)
+    {
+        let mut editor = Editor::default();
+        editor.set_text(app.session_ui.title.as_deref().unwrap_or_default());
+        editor.select_all();
+        app.rename_editor = Some(editor);
         return false;
     }
-    if key.code == KeyCode::F(2) && key.modifiers.is_empty() {
-        app.rename_active = true;
-        app.editor
-            .set_text(app.session_ui.title.as_deref().unwrap_or_default());
-        return false;
-    }
-    if app.rename_active {
-        match key.code {
-            KeyCode::Esc => {
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Enter => {
-                app.session_ui.title = crate::session_titles::sanitize(&app.editor.text());
-                app.session_chip = app.session_ui.title.clone();
-                app.persist_session_title();
-                app.rename_active = false;
-                app.editor.clear();
-            }
-            KeyCode::Backspace => app.editor.backspace(),
-            KeyCode::Left => app.editor.move_left(false),
-            KeyCode::Right => app.editor.move_right(false),
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                app.editor.insert_char(c)
-            }
-            _ => {}
-        }
+    if app.rename_editor.is_some() {
+        rename_key(app, key);
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('g' | 'G')) {
-        app.open_agents_picker();
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Agents)
+        {
+            app.dismiss_picker();
+        } else {
+            app.open_agents_picker();
+        }
         return false;
     }
     if ctrl && !alt && matches!(key.code, KeyCode::Char('n' | 'N')) {
@@ -473,12 +632,20 @@ pub(super) fn handle_key(
 
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('o' | 'O'))
     {
+        let every = key.modifiers.contains(KeyModifiers::SHIFT);
+        let all = app.expanded_activity;
+        if app.activity.expand_last_message(&app.messages, all, every) == 0 {
+            app.flash("Nothing to expand in the last message.");
+        }
+        return false;
+    }
+    if app.activity.detail.is_none() && key.code == KeyCode::F(5) && key.modifiers.is_empty() {
         app.expanded_activity = !app.expanded_activity;
         app.activity.collapsed.clear();
         app.flash(if app.expanded_activity {
-            "full activity - Ctrl+O collapses"
+            "full activity everywhere - F5 returns to compact"
         } else {
-            "compact activity - Ctrl+O expands"
+            "compact activity - F5 shows full activity everywhere"
         });
         return false;
     }
@@ -493,6 +660,10 @@ pub(super) fn handle_key(
     }
     if app.activity.detail.is_none() && ctrl && !alt && matches!(key.code, KeyCode::Char('e' | 'E'))
     {
+        if app.older_history_source_available() {
+            app.open_older_history_source();
+            return false;
+        }
         if let Some(i) = app.messages.iter().rposition(|m| m.role == MsgRole::Card) {
             app.open_tool_details(i);
         } else {
@@ -540,6 +711,16 @@ pub(super) fn handle_key(
     if queue_focus::handle_key(app, &key) {
         app.workspace.focused = None;
         return false;
+    }
+    // Tab chords must win whenever the chat has focus, even with a file pane open.
+    if app.workspace.focused.is_none() {
+        match tabs::action_for(key) {
+            tabs::TabAction::Unhandled => {}
+            action => {
+                app.tab_request = Some(action);
+                return false;
+            }
+        }
     }
     if app.workspace.focused.is_some()
         && !app.queue.focused
@@ -683,6 +864,10 @@ pub(super) fn handle_key(
             false
         }
         KeyCode::Tab => {
+            if app.pending_steer.is_some() {
+                app.flash("Waiting for Codex to confirm steering; your draft is kept");
+                return false;
+            }
             if !queue::tab(app) {
                 app.tab_complete_slash();
             }
@@ -825,6 +1010,16 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 }
 
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
+    if matches!(m.kind, MouseEventKind::Down(_)) {
+        app.rename_editor = None;
+    }
+    if local_terminal::mouse(app, m) {
+        return;
+    }
+    if app.settings_view.is_some() && app.picker.is_none() && !app.key_sheet {
+        settings::mouse(app, m);
+        return;
+    }
     if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::Drag(_)) {
         app.card_header_pressed = None;
         app.busy_send_confirmation = None;
@@ -837,9 +1032,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         if !modal::mouse(app, &m) {
             worker_input::mouse(app, &m);
         }
-        return;
-    }
-    if app.project_search.active() {
         return;
     }
     let permissions_hit = contains(app.areas.permissions, m.column, m.row);
@@ -883,6 +1075,17 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     {
         app.dismiss_picker();
     }
+    if app.header_dropdown.is_some()
+        && m.kind == MouseEventKind::Down(MouseButton::Left)
+        && !app
+            .areas
+            .header_dropdown
+            .is_some_and(|rect| contains(rect, m.column, m.row))
+    {
+        // The closing click is consumed so it does not also act on what is underneath.
+        app.dismiss_picker();
+        return;
+    }
     if app
         .picker
         .as_ref()
@@ -915,28 +1118,85 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         return;
     }
+    let attention_hit = app
+        .areas
+        .header_attention
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_attention_pressed = attention_hit;
+        if attention_hit {
+            return;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_attention_pressed)
+    {
+        if attention_hit {
+            app.open_needs_you_picker();
+        }
+        return;
+    }
     let home_hit = app
         .areas
         .header_home
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let provider_hit = app
+        .areas
+        .header_provider
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let model_hit = app
+        .areas
+        .header_model
+        .is_some_and(|rect| contains(rect, m.column, m.row));
+    let effort_hit = app
+        .areas
+        .header_effort
         .is_some_and(|rect| contains(rect, m.column, m.row));
     let credits_hit = app
         .areas
         .header_credits
         .is_some_and(|rect| contains(rect, m.column, m.row));
     if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.header_provider_pressed = provider_hit;
+        app.header_model_pressed = model_hit;
+        app.header_effort_pressed = effort_hit;
         app.header_home_pressed = home_hit;
         app.header_credits_pressed = credits_hit;
         app.header_email_pressed = false;
-        if home_hit || credits_hit {
+        if home_hit || credits_hit || provider_hit || model_hit || effort_hit {
             return;
         }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_provider_pressed)
+    {
+        if provider_hit {
+            app.open_provider_picker();
+        }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_model_pressed)
+    {
+        if let Some(chip) = app.areas.header_model.filter(|_| model_hit) {
+            app.toggle_header_dropdown(PickerKind::Model, chip);
+        }
+        return;
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.header_effort_pressed)
+    {
+        if let Some(chip) = app.areas.header_effort.filter(|_| effort_hit) {
+            app.toggle_header_dropdown(PickerKind::Effort, chip);
+        }
+        return;
     }
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_home_pressed)
     {
         if home_hit {
             if landing::visible(app) {
-                landing::close(app);
+                landing::back_to_chat(app);
             } else {
                 landing::open_home(app);
             }
@@ -972,7 +1232,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if chatref::handle_mouse(app, m) {
         return;
     }
-    if landing::visible(app) && landing::handle_mouse(app, m) {
+    if app.picker.is_none() && landing::visible(app) && landing::handle_mouse(app, m) {
         return;
     }
     if app.activity.detail.is_some() {
@@ -1039,6 +1299,27 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         return;
     }
     if app.picker.is_some() {
+        if app
+            .picker
+            .as_ref()
+            .is_some_and(|picker| picker.kind == PickerKind::Agents)
+        {
+            if let Some(list) = app.areas.agents_list {
+                if m.kind == MouseEventKind::Down(MouseButton::Left)
+                    && contains(list, m.column, m.row)
+                {
+                    let picker = app.picker.as_ref().unwrap();
+                    let selected = picker.state.selected().unwrap_or(0);
+                    let visible = usize::from(list.height.saturating_sub(2)).max(1);
+                    let offset = selected.saturating_sub(visible.saturating_sub(1));
+                    let row = usize::from(m.row.saturating_sub(list.y + 1)) + offset;
+                    if row < picker.filtered().len() {
+                        app.picker.as_mut().unwrap().state.select(Some(row));
+                    }
+                }
+            }
+            return;
+        }
         let max = app.update_rows.saturating_sub(app.update_view.max(1));
         if let Some(picker) = app.picker.as_mut().filter(|p| {
             matches!(
@@ -1060,6 +1341,19 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                 _ => {}
             }
         }
+        if m.kind == MouseEventKind::Up(MouseButton::Left) {
+            if let Some(index) = app
+                .picker_rows
+                .iter()
+                .find(|(rect, _)| contains(*rect, m.column, m.row))
+                .map(|(_, index)| *index)
+            {
+                if let Some(picker) = app.picker.as_mut() {
+                    picker.state.select(Some(index));
+                }
+                app.apply_picker_selection(None);
+            }
+        }
         return;
     }
     if images::mouse(app, &m) || questions::mouse(app, &m) {
@@ -1074,6 +1368,34 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     }
     let (x, y) = (m.column, m.row);
     let t = app.areas.transcript;
+    let rail = app.areas.transcript_rail;
+    if let Drag::Scrollbar(grab) = app.drag {
+        match m.kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let at = usize::from(y.saturating_sub(rail.y)) * 8 + pointer::sub_row();
+                app.view
+                    .drag_scroll_thumb(at.saturating_sub(usize::from(grab)), rail.height);
+            }
+            MouseEventKind::Up(MouseButton::Left) => app.drag = Drag::None,
+            _ => {}
+        }
+        return;
+    }
+    if m.kind == MouseEventKind::Down(MouseButton::Left) && contains(rail, x, y) {
+        let (offset, size) = app.view.scroll_thumb_eighths(rail.height);
+        let at = usize::from(y - rail.y) * 8 + pointer::sub_row();
+        app.view.clear_selection();
+        app.file_click = None;
+        if at < offset {
+            app.view.scroll_up(app.view.page());
+        } else if at >= offset + size {
+            app.view.scroll_down(app.view.page());
+        } else {
+            // Remember where on the thumb the grab landed, in eighths of a cell.
+            app.drag = Drag::Scrollbar((at - offset) as u16);
+        }
+        return;
+    }
     match m.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             app.file_click = None;
@@ -1154,6 +1476,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                 }
             } else if contains(app.areas.input, x, y) {
                 app.questions.focused = false;
+                app.workspace.focused = None;
                 app.view.clear_selection();
                 app.drag = Drag::Input;
                 let idx = input_index_at(app, x, y);
@@ -1188,7 +1511,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
                     let idx = input_index_at(app, x, y);
                     app.editor.move_to(idx, true);
                 }
-                Drag::None => {}
+                Drag::None | Drag::Scrollbar(_) => {}
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {

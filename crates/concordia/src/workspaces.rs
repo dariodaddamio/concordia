@@ -976,6 +976,8 @@ impl WorkspaceGuard<'_> {
             .map_err(|error| error.to_string())
     }
     /// The enclosing OS lock proves exclusive admission; persist claims before spawning Git.
+    /// Used for lifecycle actions on a workspace no delegated worker changed; fresh run ids
+    /// never reuse a known run, so no released reservation is reacquired here.
     pub(crate) fn reserve(
         &mut self,
         runs: &[String],
@@ -1019,6 +1021,36 @@ impl WorkspaceGuard<'_> {
                 confirmed_exit: false,
             });
         }
+        self.save()
+    }
+
+    /// Reacquire the single released worker reservation of a managed lifecycle action.
+    /// It never creates a reservation and never rewrites a stored identity: the stored run,
+    /// conversation, attempt and request must equal the caller's exact origin record and the
+    /// reservation must be `Released`, so no live owner is displaced. Anything else is refused
+    /// before Git starts. Fresh lifecycle runs never reuse a known run id, so a released run id
+    /// cannot be reused for a different request.
+    pub(crate) fn reacquire_released(&mut self, origin: &Reservation) -> Result<(), String> {
+        for request in &self.requests {
+            request.revalidate()?;
+        }
+        let mut matches = self
+            .registry
+            .reservations
+            .iter_mut()
+            .filter(|known| known.run == origin.run);
+        let (Some(held), None) = (matches.next(), matches.next()) else {
+            return Err("lifecycle reservation identity changed; Git was not started".into());
+        };
+        if held.conversation != origin.conversation
+            || held.attempt != origin.attempt
+            || held.request != origin.request
+            || held.phase != Phase::Released
+        {
+            return Err("lifecycle reservation identity changed; Git was not started".into());
+        }
+        held.phase = Phase::Held;
+        held.confirmed_exit = false;
         self.save()
     }
     pub(crate) fn finish(

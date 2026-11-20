@@ -5,6 +5,8 @@
 # The fake feed is an HttpListener on 127.0.0.1 in a separate hidden process (stopped by PID at the
 # end). It is not a background job: a job's child process keeps this shell's stdout open.
 # Usage: powershell -NoProfile -File scripts/test-install.ps1
+param([string]$Exe = (Join-Path $PSScriptRoot '..\target\dist\concordia.exe'))
+
 $ErrorActionPreference = 'Stop'
 $installer = Join-Path $PSScriptRoot 'install.ps1'
 $assetZip = 'concordia-x86_64-pc-windows-msvc.zip'
@@ -45,11 +47,14 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $fakeZip = Join-Path $work 'fake.zip'
 [IO.Compression.ZipFile]::CreateFromDirectory($zipSrc, $fakeZip)
 $bodyB64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($fakeZip))
-$releaseExe = Join-Path $PSScriptRoot '..\target\dist\concordia.exe'
+$releaseExe = [IO.Path]::GetFullPath($Exe)
 if (-not (Test-Path -LiteralPath $releaseExe)) { throw 'build the release executable before running installer fixtures' }
 $happySrc = Join-Path $work 'happy-src'
 New-Item -ItemType Directory -Path $happySrc | Out-Null
 Copy-Item -LiteralPath $releaseExe -Destination (Join-Path $happySrc 'concordia.exe')
+Set-Content -LiteralPath (Join-Path $happySrc 'LICENSE') -Value 'synthetic license' -Encoding ascii
+Set-Content -LiteralPath (Join-Path $happySrc 'THIRD-PARTY-LICENSES.txt') -Value 'synthetic notices' -Encoding ascii
+Set-Content -LiteralPath (Join-Path $happySrc 'bom.json') -Value '{"bomFormat":"CycloneDX","specVersion":"1.5","version":1}' -Encoding ascii
 $happyZip = Join-Path $work 'happy.zip'
 [IO.Compression.ZipFile]::CreateFromDirectory($happySrc, $happyZip)
 $unsafeZip = Join-Path $work 'unsafe.zip'

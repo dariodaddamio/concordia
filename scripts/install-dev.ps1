@@ -39,7 +39,7 @@ function Get-RustupCommand {
     $command = Get-Command rustup.exe -ErrorAction SilentlyContinue
     if (-not $command) {
         $candidate = Join-Path $script:CargoBin 'rustup.exe'
-        if (Test-Path $candidate) { $command = Get-Item $candidate }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { $command = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue }
     }
     $command
 }
@@ -142,7 +142,6 @@ function Get-InstallPlan {
     $msvc = $Items | Where-Object { $_.Name -eq 'MSVC' }
     $sdk = $Items | Where-Object { $_.Name -eq 'Windows SDK' }
     $installer = $Items | Where-Object { $_.Name -eq 'VS installer' }
-    $wezterm = $Items | Where-Object { $_.Name -eq 'WezTerm (optional)' }
     if (-not $rustup.Ok) { $plan += [pscustomobject]@{ Type = 'Install'; File = 'winget.exe'; Arguments = @('install', '--id', 'Rustlang.Rustup', '-e'); Display = 'winget Rustlang.Rustup' } }
     if (-not $toolchain.Ok) {
         $version = Get-PinnedToolchain
@@ -154,7 +153,6 @@ function Get-InstallPlan {
         }
         $plan += [pscustomobject]@{ Type = 'Install'; File = 'winget.exe'; Arguments = @('install', '--id', 'Microsoft.VisualStudio.2022.BuildTools', '-e', '--override', '--quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'); Display = 'winget Microsoft.VisualStudio.2022.BuildTools' }
     }
-    if (-not $wezterm.Ok) { $plan += [pscustomobject]@{ Type = 'Install'; File = 'winget.exe'; Arguments = @('install', '--id', 'wez.wezterm', '-e'); Display = 'winget wez.wezterm' } }
     $plan
 }
 

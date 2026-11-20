@@ -11,7 +11,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-pub const CLI_VERSION: &str = "2.1.318";
+/// Current official control schema matched against the installed CLI and initialize-only receipt.
+/// This identifies protocol support, not a claim of live model-turn qualification.
+pub const CLI_VERSION: &str = "2.1.319";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextUsage {

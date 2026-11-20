@@ -1,6 +1,16 @@
 //! Shared exclusions for automatic workspace discovery and content search.
 use std::path::{Path, PathBuf};
 
+/// Strip Windows verbatim prefixes (`\\?\`, `\\?\UNC\`) for paths shown to the user.
+pub fn display_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{rest}"))
+    } else {
+        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
+    }
+}
+
 /// Classify by path alone: never open credentials to decide whether they are sensitive.
 pub fn sensitive(path: &Path) -> bool {
     let normalized = path
@@ -363,12 +373,11 @@ mod tests {
         let alias = workspace.join("escaped");
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
             let result = crate::process_ui::command("powershell.exe")
                 .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:CONCORDIA_RELIABILITY_JUNCTION_LINK -Target $env:CONCORDIA_RELIABILITY_JUNCTION_TARGET | Out-Null"])
                 .env("CONCORDIA_RELIABILITY_JUNCTION_LINK", &alias)
                 .env("CONCORDIA_RELIABILITY_JUNCTION_TARGET", &outside)
-                .creation_flags(0x08000000).output().unwrap();
+                .output().unwrap();
             assert!(
                 result.status.success(),
                 "junction fixture failed: {}",
@@ -480,11 +489,6 @@ mod tests {
                     "commit.gpgSign=false",
                 ])
                 .args(args);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                command.creation_flags(0x08000000);
-            }
             let output = command.output().unwrap();
             assert!(
                 output.status.success(),

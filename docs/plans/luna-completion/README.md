@@ -1,5 +1,10 @@
 # Luna roadmap execution plan
 
+Historical campaign baseline and acceptance briefs. The assignments, branches and execution
+instructions below record that campaign; they are not a current dispatch authorization or live
+agent roster. Use the [canonical backlog](../README.md) for the current finish queue and
+[verification status](../../e2e-status.md) for later installed evidence.
+
 Status: execution started 2026-11-03. Prepared 2026-11-03 against build
 `2026-11-03w`, source `0caec481a42428f92c024c9429715202cd4e4e74`.
 Three Luna planning reviewers audited the current contracts. This document does not claim

@@ -4,7 +4,17 @@
 //! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
 
 use crate::commands::command_registry;
+use crate::store::ProviderKind;
 use crate::user_commands::UserCommand;
+
+pub(super) struct SessionCommands {
+    pub owner: crate::provider::interaction::InteractionOwner,
+    // Keep the UI's original paths for cheap lookup; the launch owner uses canonical paths.
+    pub home_path: Option<std::path::PathBuf>,
+    pub cwd: std::path::PathBuf,
+    pub session_id: String,
+    pub commands: Vec<crate::provider::AvailableCommand>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -12,13 +22,11 @@ pub struct Entry {
     pub help: String,
     /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-}
-
-fn everyday(command: &str) -> bool {
-    command_registry()
-        .iter()
-        .find(|c| c.name == command)
-        .is_some_and(|c| c.everyday)
+    /// Provider-native commands are discoverable; unsupported transport operations open the native UI.
+    pub provider: bool,
+    /// Concordia and the active provider both advertise this command; Enter opens a choice.
+    pub shared: bool,
+    pub disabled: bool,
 }
 
 /// Commands whose full text starts with what the user has typed. Only a single-line prompt that
@@ -30,28 +38,107 @@ pub fn matching(input: &str) -> Vec<Entry> {
 
 /// Like [`matching`], with the user's commands listed after the built-ins.
 pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
+    matching_for_provider(input, user, None)
+}
+
+pub fn matching_for_provider(
+    input: &str,
+    user: &[UserCommand],
+    provider: Option<ProviderKind>,
+) -> Vec<Entry> {
+    matching_for_session(input, user, provider, None)
+}
+
+pub(super) fn matching_for_session(
+    input: &str,
+    user: &[UserCommand],
+    provider: Option<ProviderKind>,
+    advertised: Option<&[crate::provider::AvailableCommand]>,
+) -> Vec<Entry> {
     if !input.starts_with('/') || input.contains('\n') {
         return Vec::new();
     }
     let typed = input.to_ascii_lowercase();
+    let specs: Vec<(&str, &str)> = match advertised {
+        Some(commands) => commands
+            .iter()
+            .map(|command| (command.name.as_str(), command.description.as_str()))
+            .collect(),
+        None => provider
+            .into_iter()
+            .flat_map(crate::provider::command_specs)
+            .map(|command| (command.name, command.description))
+            .collect(),
+    };
     let builtin = command_registry()
         .iter()
         .filter(|c| c.name.starts_with(&typed))
-        .filter(|c| typed != "/" || everyday(c.name))
+        .filter(|c| typed != "/" || !c.name.is_empty())
         .map(|c| Entry {
             command: c.name.to_string(),
             help: c.description.to_string(),
             custom: false,
+            provider: false,
+            shared: specs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(c.name)),
+            disabled: false,
+        });
+    let provider_commands = specs
+        .iter()
+        .filter(|(name, _)| name.to_ascii_lowercase().starts_with(&typed))
+        .filter(|(name, _)| {
+            !command_registry()
+                .iter()
+                .any(|builtin| builtin.name.eq_ignore_ascii_case(name))
+        })
+        .map(|(name, description)| Entry {
+            command: name.to_string(),
+            help: if advertised.is_none()
+                && matches!(
+                    provider,
+                    Some(ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode)
+                ) {
+                format!("{description} (availability not yet reported)")
+            } else if advertised.is_some()
+                || provider
+                    .is_some_and(|provider| crate::provider::command_supported(provider, name))
+            {
+                format!("{description} (provider transport)")
+            } else {
+                format!(
+                    "{} (native terminal: {})",
+                    description,
+                    crate::provider::command_unavailable_reason(provider.unwrap(), name)
+                )
+            },
+            custom: false,
+            provider: true,
+            shared: command_registry().iter().any(|builtin| {
+                builtin
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(name))
+            }),
+            disabled: false,
         });
     let custom = user
         .iter()
         .filter(|c| c.command.starts_with(&typed))
+        .filter(|c| {
+            !specs
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(&c.command))
+        })
         .map(|c| Entry {
             command: c.command.to_string(),
             help: c.description.to_string(),
             custom: true,
+            provider: false,
+            shared: false,
+            disabled: false,
         });
-    let mut entries: Vec<_> = builtin.chain(custom).collect();
+    let mut entries: Vec<_> = builtin.chain(provider_commands).chain(custom).collect();
     if let Some(index) = entries.iter().position(|entry| entry.command == input) {
         let exact = entries.remove(index);
         entries.insert(0, exact);
@@ -104,15 +191,11 @@ mod tests {
     #[test]
     fn a_bare_slash_lists_every_command() {
         let all = cmds("/");
-        assert_eq!(
-            all.len(),
-            command_registry().iter().filter(|c| c.everyday).count()
-        );
+        assert_eq!(all.len(), command_registry().len());
         assert_eq!(
             all,
             command_registry()
                 .iter()
-                .filter(|c| c.everyday)
                 .map(|c| c.name)
                 .collect::<Vec<_>>()
         );
@@ -120,8 +203,6 @@ mod tests {
 
     #[test]
     fn typing_narrows_by_prefix_case_insensitively() {
-        assert_eq!(cmds("/mem"), ["/memory"]);
-        assert!(!cmds("/").iter().any(|cmd| cmd == "/memory"));
         assert_eq!(cmds("/up"), ["/update"]);
         assert_eq!(cmds("/UP"), ["/update"]);
         assert_eq!(cmds("/use a"), Vec::<&str>::new());
@@ -164,10 +245,7 @@ go",
         .unwrap();
         let user = crate::user_commands::scan(dir.path()).commands;
         let all = matching_with("/", &user);
-        assert_eq!(
-            all.len(),
-            command_registry().iter().filter(|c| c.everyday).count() + 1
-        );
+        assert_eq!(all.len(), command_registry().len() + 1);
         let last = all.last().unwrap();
         assert_eq!(
             (last.command.as_str(), last.help.as_str(), last.custom),
@@ -176,6 +254,25 @@ go",
         assert!(all[..all.len() - 1].iter().all(|e| !e.custom));
         assert_eq!(matching_with("/sh", &user).len(), 1);
         assert!(matching_with("/sh", &[]).is_empty());
+    }
+
+    #[test]
+    fn provider_commands_reflect_transport_support() {
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Cursor));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/auto-run")
+            .unwrap();
+        assert!(entry.provider);
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("availability not yet reported"));
+        let entries = matching_for_provider("/", &[], Some(ProviderKind::Codex));
+        let entry = entries
+            .iter()
+            .find(|entry| entry.command == "/diff")
+            .unwrap();
+        assert!(!entry.disabled);
+        assert!(entry.help.contains("native terminal"));
     }
 
     #[test]
@@ -207,14 +304,9 @@ pub fn is_branch(input: &str) -> bool {
             | "/model"
             | "/mode"
             | "/update"
-            | "/workers"
-            | "/workers add"
-            | "/workers remove"
-            | "/delegate"
-            | "/delegate protocol"
-            | "/delegate model"
-            | "/delegate returns"
             | "/harness"
+            | "/skills"
+            | "/hooks"
     )
 }
 
@@ -226,7 +318,7 @@ pub fn has_argument_menu(input: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         root.as_str(),
-        "/use" | "/model" | "/mode" | "/update" | "/workers" | "/delegate" | "/harness" | "/usage"
+        "/use" | "/model" | "/mode" | "/update" | "/harness" | "/skills" | "/hooks" | "/usage"
     )
 }
 
@@ -247,6 +339,9 @@ pub fn matching_arguments(
                 command,
                 help,
                 custom: false,
+                provider: false,
+                shared: false,
+                disabled: false,
             });
         }
     };
@@ -274,7 +369,7 @@ pub fn matching_arguments(
                 "/use rename".into(),
                 "ACCOUNT NICKNAME - rename for display; omit nickname to reset".into(),
             );
-            for provider in ["codex", "claude", "cursor"]
+            for provider in ["codex", "claude", "cursor", "grok"]
                 .into_iter()
                 .filter(|_| typed.starts_with("/use add"))
             {
@@ -319,12 +414,12 @@ pub fn matching_arguments(
         "/mode" => {
             add(
                 "/mode".into(),
-                "plan | ask | auto | full - Enter shows the permission mode".into(),
+                "plan | ask | edit | full - Enter shows the permission mode".into(),
             );
             for (mode, help) in [
                 ("plan", "read-only analysis"),
                 ("ask", "use provider approvals"),
-                ("auto", "allow workspace edits"),
+                ("edit", "allow workspace edits"),
                 ("full", "full access using provider-supported controls"),
             ] {
                 add(format!("/mode {mode}"), help.into());
@@ -333,72 +428,28 @@ pub fn matching_arguments(
         "/update" => {
             add("/update".into(), "Enter opens the update preview".into());
         }
-        "/workers" => {
+        cmd @ ("/skills" | "/hooks") => {
             add(
-                "/workers".into(),
-                "list | add ACCOUNT | remove ACCOUNT".into(),
+                cmd.into(),
+                "Enter inspects this account's sources; shared setup runs through /harness".into(),
             );
             add(
-                "/workers add".into(),
-                "choose an account to use as a worker".into(),
+                format!("{cmd} list"),
+                "inspect this account's local sources".into(),
             );
             add(
-                "/workers remove".into(),
-                "choose a worker account to remove".into(),
+                format!("{cmd} status"),
+                "show Harness setup and verification results".into(),
             );
-            for (id, label) in accounts {
-                if typed.starts_with("/workers add") {
-                    add(
-                        format!("/workers add {id}"),
-                        format!("add {label} as a worker"),
-                    );
-                }
-                if typed.starts_with("/workers remove") {
-                    add(
-                        format!("/workers remove {id}"),
-                        format!("remove {label} from workers"),
-                    );
-                }
-            }
-        }
-        "/delegate" => {
-            add(
-                "/delegate".into(),
-                "ACCOUNT TASK | auto TASK | use | stop | protocol".into(),
-            );
-            for (suffix, help) in [
-                ("use", "include a completed worker result"),
-                ("returns", "view automatic result handback settings"),
-                (
-                    "returns auto",
-                    "return finished worker batches when the main agent is idle",
-                ),
-                ("returns manual", "send results only on request"),
-                (
-                    "collect",
-                    "send up to three new results to the main agent together",
-                ),
-                (
-                    "model",
-                    "ACCOUNT [MODEL|default] - configure a worker model",
-                ),
-                ("stop", "stop worker tasks"),
-                ("help", "show delegation syntax and limits"),
-                ("protocol", "view proposal confirmation settings"),
-                ("protocol on", "allow proposals that require confirmation"),
-                ("protocol off", "disable delegation proposals"),
-            ] {
-                if !suffix.starts_with("protocol ") || typed.starts_with("/delegate protocol") {
-                    add(format!("/delegate {suffix}"), help.into());
-                }
-            }
-            if typed.starts_with("/delegate model") {
-                for (id, label) in accounts {
-                    add(
-                        format!("/delegate model {id}"),
-                        format!("show models for {label}; register it as a worker first"),
-                    );
-                }
+            if cmd == "/skills" {
+                add(
+                    "/skills remove".into(),
+                    "PATH - stop sharing and remove matching links across accounts".into(),
+                );
+                add(
+                    format!("{cmd} install"),
+                    "[PATH] [--current] - share skill folders across accounts".into(),
+                );
             }
         }
         "/harness" => {
@@ -407,7 +458,10 @@ pub fn matching_arguments(
                 "connect | status | tools | verify | disconnect | skill".into(),
             );
             for (suffix, help) in [
-                ("connect", "FOLDER or PROGRAM - connect a project harness"),
+                (
+                    "connect",
+                    "PATH [--current] - connect setup across accounts",
+                ),
                 ("status", "show connected harnesses and verification state"),
                 (
                     "tools",
@@ -415,12 +469,12 @@ pub fn matching_arguments(
                 ),
                 (
                     "verify",
-                    "NAME - run configured verification; may use provider usage",
+                    "[NAME] [--current] - verify all accounts; may use provider usage",
                 ),
                 ("disconnect", "NAME - remove a harness connection"),
                 (
                     "skill",
-                    "install the connection instructions in the selected account",
+                    "[--current] - install the connection skill across accounts",
                 ),
             ] {
                 add(format!("/harness {suffix}"), help.into());
@@ -491,15 +545,7 @@ mod discovery_tests {
     #[test]
     fn advertised_children_use_supported_command_syntax() {
         for root in [
-            "/use",
-            "/model",
-            "/mode",
-            "/update",
-            "/workers",
-            "/delegate",
-            "/delegate protocol",
-            "/harness",
-            "/usage",
+            "/use", "/model", "/mode", "/update", "/harness", "/skills", "/hooks", "/usage",
         ] {
             let entries = matching_arguments(root, &[], &[]);
             assert_eq!(entries[0].command, root);

@@ -45,7 +45,7 @@ interfaces from work still being implemented; it does not mark the complete road
 - Retrieval validation covers Codex and Claude exact hit readback, account mismatch, mutation,
   confirmed-link removal, no stored text, draft preservation and stale TUI results. Clippy passes.
 
-- `/context` policy now implements between-turn Codex proactive rollover using the last native
+- The persisted policy now implements between-turn Codex proactive rollover using the last native
   request's context measurement, with original-source verification and normal cancellation/pack
   delivery. Claude and Cursor capacity remain explicitly unavailable. Per-process Codex token
   threshold and Claude automatic-compaction controls are visible, opt-in and reversible.

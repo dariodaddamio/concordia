@@ -34,10 +34,12 @@ fn resume_queue(app: &mut App) -> String {
     if app.cancel_requested {
         return "queue remains paused while cancellation finishes".into();
     }
+    if app.questions.native_approval_waiting() {
+        return "queue remains paused while a native approval is waiting".into();
+    }
 
     app.queue.paused = false;
-    app.questions.clear();
-    app.queue.advance = true;
+    app.queue.dispatch.set_automatic();
     if app.busy {
         "queue resumed - it will continue after the current turn".into()
     } else {

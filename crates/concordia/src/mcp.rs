@@ -1,1839 +1,906 @@
-//! `concordia mcp`: a minimal stdio MCP server over Concordia's own data (docs/mcp.md).
-//!
-//! JSON-RPC 2.0, one message per line. Data reads and bounded task/goal proposals; goal mutation
-//! happens only after explicit local UI review. No network, no process
-//! spawning. The handler is a pure function of (state folder, request line).
-
-use crate::threads;
+//! The single always-on MCP surface: account discovery and delegated agents.
 use serde_json::{json, Value};
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+mod http;
+mod stdio;
+use http::HttpSession;
 
-/// Newest protocol revision implemented.
 pub const LATEST_PROTOCOL: &str = "2025-06-18";
-/// Revisions this server answers as-is (the surface used here is identical across them).
 const KNOWN_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
-/// A request line larger than this is refused.
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
-/// Cap for any tool result text, in characters.
 pub const MAX_RESULT_CHARS: usize = 20_000;
-const DEFAULT_READ_CHARS: usize = threads::READ_CHARS;
-/// Pending proposal files beyond this are refused (a runaway agent cannot fill the folder).
-pub const MAX_PENDING_PROPOSALS: usize = 10;
+pub const MAX_PENDING_PROPOSALS: usize = 64;
 const MAX_PROPOSAL_FILE: u64 = 16 * 1024;
+const MAX_UPSTREAM_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UPSTREAM_FRAME: usize = 256 * 1024;
 
-#[derive(Debug, Clone)]
-pub struct Scope {
-    pub account: String,
-    pub workspace: PathBuf,
-    unrestricted: bool,
-}
-
-impl Scope {
-    fn from_env() -> Result<Self, String> {
-        let raw = std::env::var(crate::integration::SCOPE_ENV)
-            .map_err(|_| "MCP server is unscoped; history reads are disabled".to_string())?;
-        let value: Value = serde_json::from_str(&raw)
-            .map_err(|_| "MCP server scope is malformed; history reads are disabled".to_string())?;
-        let account = value
-            .get("account")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or("MCP server scope has no account; history reads are disabled")?;
-        let workspace = value
-            .get("workspace")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or("MCP server scope has no workspace; history reads are disabled")?;
-        let workspace = std::fs::canonicalize(workspace)
-            .map_err(|_| "MCP server scope workspace is unavailable; history reads are disabled")?;
-        if !workspace.is_dir() {
-            return Err(
-                "MCP server scope workspace is not a directory; history reads are disabled".into(),
-            );
+fn bounded_line<R: BufRead>(input: &mut R, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut out = Vec::with_capacity(limit.min(4096));
+    let mut oversized = false;
+    loop {
+        let chunk = input.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok((oversized || !out.is_empty()).then_some(if oversized {
+                Vec::new()
+            } else {
+                out
+            }));
         }
-        Ok(Self {
-            account: account.into(),
-            workspace,
-            unrestricted: false,
-        })
+        let take = chunk
+            .iter()
+            .position(|b| *b == b'\n')
+            .map_or(chunk.len(), |i| i + 1);
+        let ended = take < chunk.len() || chunk[take - 1] == b'\n';
+        if out.len().saturating_add(take) > limit {
+            oversized = true;
+            out.clear();
+        }
+        if !oversized {
+            out.extend_from_slice(&chunk[..take]);
+        }
+        input.consume(take);
+        if ended {
+            return Ok(Some(if oversized { Vec::new() } else { out }));
+        }
     }
 }
 
-pub fn proposals_dir(state_root: &Path) -> PathBuf {
-    state_root.join("proposals")
+pub fn proposals_dir(root: &Path) -> PathBuf {
+    root.join("proposals")
+}
+pub use crate::agent_records as records;
+pub use records::{
+    agents_dir, bind_agent_run, read_agent, record_path, update_agent, update_agent_run,
+    write_agent, AgentRecord,
+};
+pub fn take_pending_records(root: &Path, limit: usize) -> Vec<AgentRecord> {
+    let Ok(entries) = std::fs::read_dir(agents_dir(root)) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .take(MAX_PENDING_PROPOSALS * 4)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                return None;
+            }
+            read_agent(root, path.file_stem()?.to_str()?).ok()
+        })
+        .take(limit.min(MAX_PENDING_PROPOSALS))
+        .collect()
 }
 
-// ---------------------------------------------------------------------------------------------
-// Transport
-// ---------------------------------------------------------------------------------------------
+/// Names returned by this server's `tools/list` response. Callers use this registry when
+/// describing a session, so the standing context cannot drift from the registered surface.
+pub fn registered_tool_names() -> Vec<String> {
+    vec!["agents".into()]
+}
 
-/// Serve until the input closes. One reply line per request; notifications get none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proposal {
+    pub agent_id: String,
+    pub to: String,
+    pub task: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub from_thread: String,
+    #[serde(default)]
+    pub workspace: Option<PathBuf>,
+    #[serde(default)]
+    pub parent_run_id: Option<String>,
+}
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum PendingProposal {
+    Delegate(Proposal),
+}
+
+fn error_reply(id: Value, code: i64, message: &str) -> String {
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":crate::redact::redact(message).as_ref()}}).to_string()
+}
+fn result_reply(id: Value, result: Value) -> String {
+    json!({"jsonrpc":"2.0","id":id,"result":result}).to_string()
+}
 pub fn serve<R: BufRead, W: Write>(
     mut input: R,
     mut output: W,
-    state_root: &Path,
+    root: &Path,
 ) -> std::io::Result<()> {
-    let scope = Scope::from_env();
     loop {
-        let mut buf = Vec::new();
-        let n = (&mut input)
-            .take(MAX_REQUEST_BYTES as u64 + 1)
-            .read_until(b'\n', &mut buf)?;
-        if n == 0 {
+        let Some(buf) = bounded_line(&mut input, MAX_REQUEST_BYTES)? else {
             return Ok(());
-        }
-        let oversized = buf.len() > MAX_REQUEST_BYTES;
-        if oversized && buf.last() != Some(&b'\n') {
-            // Discard the rest of this line without holding it in memory.
-            loop {
-                let mut sink = Vec::new();
-                let m = (&mut input).take(8192).read_until(b'\n', &mut sink)?;
-                if m == 0 || sink.last() == Some(&b'\n') {
-                    break;
-                }
-            }
-        }
-        let reply = if oversized {
-            Some(error_reply(Value::Null, -32600, "request too large"))
-        } else {
-            match std::str::from_utf8(&buf) {
-                Ok(line) if line.trim().is_empty() => None,
-                Ok(line) => handle_line_scoped(state_root, line, scope.as_ref().ok()),
-                Err(_) => Some(error_reply(Value::Null, -32700, "parse error: not UTF-8")),
-            }
         };
-        if let Some(r) = reply {
-            output.write_all(r.as_bytes())?;
+        let too_large = buf.is_empty();
+        let reply = if too_large {
+            Some(error_reply(Value::Null, -32600, "request too large"))
+        } else if buf.iter().all(u8::is_ascii_whitespace) {
+            None
+        } else {
+            std::str::from_utf8(&buf)
+                .ok()
+                .and_then(|line| handle_line(root, line))
+        };
+        if let Some(reply) = reply {
+            output.write_all(reply.as_bytes())?;
             output.write_all(b"\n")?;
             output.flush()?;
         }
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// JSON-RPC handler (pure)
-// ---------------------------------------------------------------------------------------------
-
-fn error_reply(id: Value, code: i64, message: &str) -> String {
-    let message = crate::redact::redact(message);
-    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message.as_ref()}}).to_string()
-}
-
-fn result_reply(id: Value, result: Value) -> String {
-    json!({"jsonrpc":"2.0","id":id,"result":result}).to_string()
-}
-
-/// One request line in, the reply line out (None for notifications).
-pub fn handle_line(state_root: &Path, line: &str) -> Option<String> {
-    let legacy = Scope {
-        account: String::new(),
-        workspace: PathBuf::new(),
-        unrestricted: true,
-    };
-    handle_line_scoped(state_root, line, Some(&legacy))
-}
-
-fn handle_line_scoped(state_root: &Path, line: &str, scope: Option<&Scope>) -> Option<String> {
-    if line.len() > MAX_REQUEST_BYTES {
-        return Some(error_reply(Value::Null, -32600, "request too large"));
-    }
-    let msg: Value = match serde_json::from_str(line.trim()) {
-        Ok(v) => v,
-        Err(_) => return Some(error_reply(Value::Null, -32700, "parse error")),
-    };
-    let Some(obj) = msg.as_object() else {
-        // Batches are not supported (removed from the protocol in 2025-06-18).
-        return Some(error_reply(
-            Value::Null,
-            -32600,
-            "invalid request: expected one JSON object",
-        ));
-    };
-    let Some(method) = obj.get("method").and_then(Value::as_str) else {
-        // A response or garbage from the client: nothing to answer.
-        return if obj.contains_key("id")
-            && !obj.contains_key("result")
-            && !obj.contains_key("error")
-        {
-            Some(error_reply(
-                obj["id"].clone(),
-                -32600,
-                "invalid request: no method",
-            ))
-        } else {
-            None
-        };
-    };
-    let Some(id) = obj
+pub fn handle_line(root: &Path, line: &str) -> Option<String> {
+    let msg: Value = serde_json::from_str(line.trim()).ok()?;
+    let id = msg
         .get("id")
         .cloned()
-        .filter(|i| i.is_string() || i.is_number())
-    else {
-        return None; // notification (initialized, cancelled, ...): never answered
-    };
-    let params = obj.get("params").cloned().unwrap_or(Value::Null);
+        .filter(|v| v.is_string() || v.is_number())?;
+    let method = msg.get("method").and_then(Value::as_str)?;
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
     Some(match method {
-        "initialize" => result_reply(id, initialize(&params)),
+        "initialize" => result_reply(
+            id,
+            json!({"protocolVersion":params.get("protocolVersion").and_then(Value::as_str).filter(|v| KNOWN_PROTOCOLS.contains(v)).unwrap_or(LATEST_PROTOCOL),"capabilities":{"tools":{}},"serverInfo":{"name":"concordia","version":crate::version::VERSION}}),
+        ),
         "ping" => result_reply(id, json!({})),
-        "tools/list" => result_reply(id, json!({"tools": tool_list()})),
-        "tools/call" => match call_tool(state_root, &params, scope) {
-            Ok(r) => result_reply(id, r),
-            Err(m) => error_reply(id, -32602, &m),
+        "tools/list" => result_reply(id, json!({"tools": advertised_tools(root)})),
+        "tools/call" => match call_agents(root, &params) {
+            Ok(text) => result_reply(id, text_result(text, false)),
+            Err(e) if e == "unknown tool" => match call_remote(root, &params) {
+                Ok(value) => result_reply(id, redact_value(value)),
+                Err(error) => result_reply(id, text_result(error, true)),
+            },
+            Err(e) => result_reply(id, text_result(e, true)),
         },
-        other => error_reply(id, -32601, &format!("method not found: {other}")),
+        _ => error_reply(id, -32601, "method not found"),
     })
 }
 
-fn initialize(params: &Value) -> Value {
-    let asked = params.get("protocolVersion").and_then(Value::as_str);
-    let version = match asked {
-        Some(v) if KNOWN_PROTOCOLS.contains(&v) => v,
-        _ => LATEST_PROTOCOL,
+fn advertised_tools(root: &Path) -> Vec<Value> {
+    let mut tools = vec![
+        json!({"name":"agents","description":"Start an agent with role defaults; explicit provider/model win. Inspect and control a bounded worker: follow-up creates a new explicitly identified run, cancel is owned by the worker loop, and watch is bounded without retrying uncertain work.","inputSchema":{"type":"object","additionalProperties":false,"properties":{"action":{"enum":["list","start","status","result","followup","cancel","watch"]},"agent_id":{"type":"string"},"role":{"type":"string"},"account":{"type":"string"},"provider":{"type":"string"},"routine":{"type":"string"},"model":{"type":"string"},"effort":{"type":"string"},"task":{"type":"string"},"parent":{"type":"string"}},"required":["action"]}}),
+    ];
+    let selected = std::env::var("CONCORDIA_MCP_SERVER").ok();
+    if selected.is_some() {
+        tools.clear();
+    }
+    let project = proxy_project();
+    let discovery_deadline = Instant::now() + Duration::from_secs(10);
+    let Ok(registry) = crate::mcp_registry::load(root) else {
+        return tools;
     };
-    json!({
-        "protocolVersion": version,
-        "capabilities": {"tools": {}},
-        "serverInfo": {"name": "concordia", "version": crate::version::VERSION},
-    })
-}
-
-/// Tool list. Descriptions and schemas are kept terse: they cost tokens on every turn.
-fn tool_list() -> Value {
-    let id = json!({"type":"string","description":"thread id or unique prefix"});
-    let mut tools = json!([
-        {
-            "name": "threads",
-            "description": "List recent Concordia chat threads (id, age, title).",
-            "inputSchema": {"type":"object","properties":{"limit":{"type":"integer"}}}
-        },
-        {
-            "name": "thread_map",
-            "description": "Short map of one thread: ask, files, commands, errors, last reply.",
-            "inputSchema": {"type":"object","properties":{"id":id},"required":["id"]}
-        },
-        {
-            "name": "thread_read",
-            "description": "Read parts of a thread. Prefer tail or grep over the whole text.",
-            "inputSchema": {"type":"object","properties":{
-                "id":id,
-                "tail":{"type":"integer"},
-                "grep":{"type":"string"},
-                "range":{"type":"string","description":"A-B"},
-                "max_chars":{"type":"integer"}
-            },"required":["id"]}
-        },
-        {
-            "name": "native_read",
-            "description": "Read exact chunks/ranges. history scans the next bounded whole-history page.",
-            "inputSchema": {"type":"object","properties":{"id":{"type":"string"},"message":{"type":"integer"},"offset":{"type":"integer"},"max_bytes":{"type":"integer"},"from_message":{"type":"integer"},"limit":{"type":"integer"},"history":{"type":"boolean"}},"required":["id"]}
-        },
-        {
-            "name": "usage",
-            "description": "Last cached usage limits per account (no live check).",
-            "inputSchema": {"type":"object","properties":{}}
-        },
-        {
-            "name":"feed",
-            "description":"Read the bounded local Concordia event feed.",
-            "inputSchema":{"type":"object","properties":{"cursor":{"type":"integer"},"limit":{"type":"integer"},"pane":{"type":"string"}}}
-        },
-        {
-            "name":"memory",
-            "description":"Search original chats, file facts or confirmed groups. Read-only; use native_read for exact excerpts.",
-            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
-                "action":{"enum":["recall","ranked","files","groups","members"]},
-                "query":{"type":"string"},"workspace":{"type":"string"},"source":{"type":"string"},
-                "account":{"type":"string"},"goal":{"type":"string"},"file":{"type":"string"},
-                "group":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            },"required":["action"]}
-        },
-        {
-            "name": "goals",
-            "description": "Read goals/source links or propose add/close for local review. Proposals need request_id UUID and current revision.",
-            "inputSchema": {"type":"object","additionalProperties":false,"properties":{
-                "action":{"enum":["read","propose_add","propose_close","status"]},
-                "goal":{"type":"string"},"workspace":{"type":"string"},
-                "text":{"type":"string","maxLength":512},"request_id":{"type":"string"},
-                "offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            }}
-        },
-        {
-            "name": "delegate",
-            "description": "Propose a task for another account. Only records a proposal; the user must approve it.",
-            "inputSchema": {"type":"object","properties":{
-                "to":{"type":"string","description":"worker account id"},
-                "task":{"type":"string","description":"complete, self-contained task"},
-                "from_thread":{"type":"string"}
-            },"required":["to","task"]}
-        },
-        {
-            "name":"integrations",
-            "description":"Discover connected integration metadata and namespaced tools. Read-only; never executes tools or adapter commands.",
-            "inputSchema":{"type":"object","additionalProperties":false,"properties":{
-                "id":{"type":"string"},"offset":{"type":"integer","minimum":0},"revision":{"type":"string"}
-            }}
+    for (server, entry) in &registry.servers {
+        if Instant::now() >= discovery_deadline {
+            break;
         }
-    ]);
-    for tool in tools
-        .as_array_mut()
-        .expect("static tool catalog is an array")
-    {
-        if matches!(
-            tool["name"].as_str(),
-            Some(
-                "threads"
-                    | "thread_map"
-                    | "thread_read"
-                    | "native_read"
-                    | "usage"
-                    | "memory"
-                    | "integrations"
-            )
+        if selected.as_deref().is_some_and(|name| name != server)
+            || crate::mcp_registry::effective(&registry, &project, server).is_none()
+        {
+            continue;
+        }
+        if let Ok(values) = remote_sequence(
+            &entry.transport,
+            vec![
+                json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":LATEST_PROTOCOL,"capabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}}),
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+            ],
         ) {
-            tool["annotations"] = json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false});
+            let value = values.into_iter().last().unwrap_or(Value::Null);
+            if let Some(remote) = value
+                .get("result")
+                .and_then(|v| v.get("tools"))
+                .and_then(Value::as_array)
+            {
+                tools.extend(remote.iter().filter_map(|tool| {
+                    let name = tool.get("name")?.as_str()?;
+                    let description = tool.get("description").and_then(Value::as_str).unwrap_or("remote MCP tool");
+                    Some(json!({"name":format!("{server}/{name}"),"description":crate::redact::redact(description).as_ref(),"inputSchema":redact_value(tool.get("inputSchema").cloned().unwrap_or_else(|| json!({"type":"object"})))}))
+                }));
+            }
         }
     }
     tools
 }
 
-fn text_result(text: String, is_error: bool) -> Value {
-    let redacted = crate::redact::redact(&text);
-    let changed = redacted.as_ref() != text;
-    let mut result = json!({"content":[{"type":"text","text":cap(redacted.as_ref(), MAX_RESULT_CHARS)}],"isError":is_error});
-    if changed {
-        result["redacted"] = json!(true);
-        result["content"].as_array_mut().unwrap().push(
-            json!({"type":"text","text":"Some stored text was redacted before returning it."}),
-        );
-    }
-    result
+fn proxy_project() -> PathBuf {
+    let project = std::env::var_os("CONCORDIA_PROJECT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    project.canonicalize().unwrap_or(project)
 }
 
-fn cap(s: &str, max: usize) -> String {
-    match s.char_indices().nth(max) {
-        Some((i, _)) => format!("{}\n[truncated]", &s[..i]),
-        None => s.to_string(),
-    }
-}
-
-fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
-    args.get(key).and_then(Value::as_str)
-}
-
-fn uint_arg(args: &Value, key: &str) -> Option<usize> {
-    args.get(key).and_then(Value::as_u64).map(|n| n as usize)
-}
-
-fn tool_goals(root: &Path, args: &Value) -> Result<String, String> {
-    if args.as_object().is_some_and(|args| {
-        args.keys().any(|key| {
-            !matches!(
-                key.as_str(),
-                "action" | "goal" | "workspace" | "offset" | "revision" | "text" | "request_id"
-            )
-        })
-    }) || [
-        "action",
-        "goal",
-        "workspace",
-        "revision",
-        "text",
-        "request_id",
-    ]
-    .iter()
-    .any(|key| args.get(*key).is_some_and(|value| !value.is_string()))
-    {
-        return Err(
-            "invalid goal tool arguments; requester identity cannot be supplied by the client"
-                .into(),
-        );
-    }
-    let action = str_arg(args, "action").unwrap_or("read");
-    if action != "read" {
-        let request =
-            str_arg(args, "request_id").ok_or("goal proposals/status need request_id UUID")?;
-        if action == "status" {
-            if ["goal", "workspace", "offset", "revision", "text"]
-                .iter()
-                .any(|key| args.get(*key).is_some())
-            {
-                return Err("goal status takes only action and request_id".into());
-            }
-            return crate::goals::changes::status(root, request);
-        }
-        let revision = str_arg(args, "revision")
-            .ok_or("read current goals first and supply their revision")?;
-        if args.get("workspace").is_some() || args.get("offset").is_some() {
-            return Err("goal proposals do not take source/cursor arguments".into());
-        }
-        let proposal = match action {
-            "propose_add" if args.get("goal").is_none() => crate::goals::changes::propose_add(
-                root,
-                request,
-                revision,
-                str_arg(args, "text").ok_or("goal add proposal needs text")?,
-            )?,
-            "propose_close" if args.get("text").is_none() => crate::goals::changes::propose_close(
-                root,
-                request,
-                revision,
-                str_arg(args, "goal").ok_or("goal close proposal needs exact goal id")?,
-            )?,
-            _ => return Err("unsupported goal action or incompatible arguments".into()),
-        };
-        if let Some(status) = crate::goals::changes::existing_status(root, &proposal)? {
-            return Ok(status);
-        }
-        record_pending(
-            root,
-            request,
-            &serde_json::to_vec(&proposal).map_err(|_| "goal proposal serialization failed")?,
-        )?;
-        return Ok(json!({"status":"proposal_recorded","request_id":request,"goal":proposal.goal_id(),"revision":proposal.observed_revision,"approval":"local user must review and approve; no goal changed","requesting_actor":"unverified MCP client"}).to_string());
-    }
-    if args.get("text").is_some() || args.get("request_id").is_some() {
-        return Err("goal reads do not take proposal fields".into());
-    }
-    if args.get("offset").is_some_and(|offset| !offset.is_u64())
-        || args
-            .get("revision")
-            .is_some_and(|revision| !revision.is_string())
-    {
-        return Err("goal cursor needs a nonnegative offset and string revision".into());
-    }
-    let offset = uint_arg(args, "offset").unwrap_or(0);
-    let revision = str_arg(args, "revision");
-    let value = if let Some(goal) = str_arg(args, "goal") {
-        if goal.is_empty() || goal.len() > 128 {
-            return Err("invalid goal id".into());
-        }
-        let workspace =
-            str_arg(args, "workspace").ok_or("goal/source reads need the exact workspace")?;
-        crate::native_memory::relations::list(
-            root,
-            Some(Path::new(workspace)),
-            Some(goal),
-            offset,
-            revision,
-        )?
-    } else {
-        if args.get("goal").is_some() || args.get("workspace").is_some() {
-            return Err("workspace is used only with a goal id".into());
-        }
-        crate::native_memory::relations::goals(root, offset, revision)?
-    };
-    serde_json::to_string(&value).map_err(|e| e.to_string())
-}
-
-fn tool_memory(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
-    let object = args.as_object().ok_or("memory needs an object")?;
-    let action = str_arg(args, "action").ok_or("memory needs an action")?;
-    let allowed: &[&str] = match action {
-        "recall" => &["action", "query", "workspace", "source", "account"],
-        "ranked" => &[
-            "action",
-            "query",
-            "workspace",
-            "source",
-            "account",
-            "goal",
-            "file",
-        ],
-        "files" => &["action", "source", "offset", "revision"],
-        "groups" => &["action", "workspace", "offset", "revision"],
-        "members" => &["action", "group", "offset", "revision"],
-        _ => return Err("unsupported read-only memory action".into()),
-    };
-    for (key, value) in object {
-        if !allowed.contains(&key.as_str())
-            || if key == "offset" {
-                !value.is_u64()
-            } else {
-                !value.is_string()
-            }
-        {
-            return Err("unsupported or mistyped memory argument".into());
-        }
-    }
-    let required = |key| {
-        str_arg(args, key)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("memory {action} needs {key}"))
-    };
-    let offset = uint_arg(args, "offset").unwrap_or(0);
-    let revision = str_arg(args, "revision");
-    if !scope.unrestricted && matches!(action, "files" | "groups" | "members") {
-        return Err("this memory read is unavailable through scoped MCP".into());
-    }
-    if !scope.unrestricted {
-        if let Some(account) = str_arg(args, "account") {
-            if account != scope.account {
-                return Err("MCP scope rejects account outside the registered scope".into());
-            }
-        }
-    }
-    if !scope.unrestricted {
-        if let Some(workspace) = str_arg(args, "workspace") {
-            let requested =
-                std::fs::canonicalize(workspace).map_err(|_| "workspace is unavailable")?;
-            if !requested.starts_with(&scope.workspace) {
-                return Err("MCP scope rejects workspace outside the registered scope".into());
-            }
-        }
-    }
-    let value = match action {
-        "recall" => serde_json::to_value(crate::native_memory::retrieval::recall(
-            root,
-            required("query")?,
-            str_arg(args, "source"),
-            if scope.unrestricted {
-                str_arg(args, "account")
-            } else {
-                Some(&scope.account)
-            },
-            if scope.unrestricted {
-                str_arg(args, "workspace").map(Path::new)
-            } else {
-                Some(&scope.workspace)
-            },
-        )?)
-        .map_err(|error| error.to_string())?,
-        "ranked" => serde_json::to_value(crate::native_memory::rank::recall(
-            root,
-            crate::native_memory::rank::Request {
-                text: required("query")?,
-                source: str_arg(args, "source"),
-                account: if scope.unrestricted {
-                    str_arg(args, "account")
-                } else {
-                    Some(&scope.account)
-                },
-                workspace: if scope.unrestricted {
-                    str_arg(args, "workspace").map(Path::new)
-                } else {
-                    Some(&scope.workspace)
-                },
-                goal: str_arg(args, "goal"),
-                file: str_arg(args, "file"),
-                from: None,
-                at: None,
-            },
-        )?)
-        .map_err(|error| error.to_string())?,
-        "groups" => crate::native_memory::relations::groups::list(
-            root,
-            Path::new(required("workspace")?),
-            offset,
-            revision,
-        )?,
-        "members" => crate::native_memory::relations::groups::members(
-            root,
-            required("group")?,
-            offset,
-            revision,
-        )?,
-        "files" => {
-            let mut argv = vec!["file-facts".into(), required("source")?.to_owned()];
-            if offset != 0 || revision.is_some() {
-                argv.extend([
-                    offset.to_string(),
-                    revision.ok_or("file cursor requires revision")?.to_owned(),
-                ]);
-            }
-            crate::native_memory::files::command(root, &argv)?
-        }
-        _ => unreachable!(),
-    };
-    let text = serde_json::to_string(&value).map_err(|error| error.to_string())?;
-    if text.chars().count() > MAX_RESULT_CHARS {
-        return Err("memory result exceeds response budget; narrow the query with source, account or workspace".into());
-    }
-    Ok(text)
-}
-
-/// Err is a protocol error (unknown tool, bad params shape); tool failures are `isError` results.
-fn call_tool(state_root: &Path, params: &Value, scope: Option<&Scope>) -> Result<Value, String> {
+fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
-        .ok_or("tools/call needs a tool name")?;
+        .ok_or_else(|| "remote MCP call needs a tool name".to_string())?;
+    let (server, tool) = name
+        .split_once('/')
+        .ok_or_else(|| "unknown tool".to_string())?;
+    if std::env::var("CONCORDIA_MCP_SERVER")
+        .ok()
+        .as_deref()
+        .is_some_and(|name| name != server)
+    {
+        return Err("remote MCP server does not match this proxy".into());
+    }
+    let registry =
+        crate::mcp_registry::load(root).map_err(|_| "MCP registry cannot be read".to_string())?;
+    // The caller cannot choose the policy scope. The proxy process binds its project at
+    // launch; absent an authenticated binding, use its own working directory.
+    let project = proxy_project();
+    let entry = crate::mcp_registry::effective(&registry, &project, server)
+        .ok_or_else(|| "remote MCP server is disabled for this project".to_string())?;
+    let values = remote_sequence(
+        &entry.transport,
+        vec![
+            json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":LATEST_PROTOCOL,"capabilities":{},"clientInfo":{"name":"concordia","version":crate::version::VERSION}}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":params.get("arguments").cloned().unwrap_or_else(|| json!({}))}}),
+        ],
+    )?;
+    let response = values.into_iter().last().unwrap_or(Value::Null);
+    if let Some(error) = response.get("error") {
+        return Err(error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("remote MCP call failed")
+            .to_owned());
+    }
+    response
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "remote MCP response had no result".into())
+}
+
+fn remote_sequence(
+    transport: &crate::mcp_registry::Transport,
+    requests: Vec<Value>,
+) -> Result<Vec<Value>, String> {
+    if let crate::mcp_registry::Transport::Stdio { command, args, env } = transport {
+        return stdio::sequence(command, args, env, requests);
+    }
+    if let crate::mcp_registry::Transport::Remote { url, headers } = transport {
+        let mut session = HttpSession::new(url, headers)?;
+        let mut values = Vec::new();
+        for (index, request) in requests.into_iter().enumerate() {
+            let value = session.request(&request)?;
+            if index == 0 {
+                let notification = json!({"jsonrpc":"2.0","method":"notifications/initialized"});
+                let _ = session.request(&notification)?;
+            }
+            if request.get("id").is_some() {
+                values.push(value);
+            }
+        }
+        return Ok(values);
+    }
+    Err("unsupported MCP transport".into())
+}
+
+fn text_result(text: String, is_error: bool) -> Value {
+    json!({"content":[{"type":"text","text":crate::redact::redact(&text).chars().take(MAX_RESULT_CHARS).collect::<String>()}],"isError":is_error})
+}
+
+fn redact_value(mut value: Value) -> Value {
+    match &mut value {
+        Value::String(text) => *text = crate::redact::redact(text).into_owned(),
+        Value::Array(values) => {
+            for value in values {
+                *value = redact_value(value.take());
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                *value = redact_value(value.take());
+            }
+        }
+        _ => {}
+    }
+    value
+}
+fn arg<'a>(args: &'a Value, name: &str) -> Result<&'a str, String> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| format!("agents needs {name}"))
+}
+fn caller_context(args: &Value) -> Result<(String, String, PathBuf), String> {
+    let parent = std::env::var("CONCORDIA_PARENT_CONVERSATION")
+        .map_err(|_| "agent start requires a verified parent conversation")?;
+    let parent_run = std::env::var("CONCORDIA_PARENT_RUN")
+        .map_err(|_| "agent start requires a verified parent run")?;
+    if parent.is_empty() || uuid::Uuid::parse_str(&parent_run).is_err() {
+        return Err("agent start requires a valid parent conversation and run".into());
+    }
+    if args
+        .get("parent")
+        .and_then(Value::as_str)
+        .is_some_and(|requested| requested != parent)
+    {
+        return Err("agent start parent does not match the verified caller".into());
+    }
+    let workspace = std::env::var_os("CONCORDIA_PROJECT_DIR")
+        .map(PathBuf::from)
+        .ok_or("agent start requires a verified workspace")?
+        .canonicalize()
+        .map_err(|_| "agent workspace is unavailable")?;
+    Ok((parent, parent_run, workspace))
+}
+fn call_agents(root: &Path, params: &Value) -> Result<String, String> {
+    if std::env::var_os("CONCORDIA_MCP_SERVER").is_some() {
+        return Err("unknown tool".into());
+    }
+    if params.get("name").and_then(Value::as_str) != Some("agents") {
+        return Err("unknown tool".into());
+    }
     let args = params
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    if !args.is_object() {
-        return Err("arguments must be an object".into());
-    }
-    let read_scope = if matches!(
-        name,
-        "threads"
-            | "thread_map"
-            | "thread_read"
-            | "native_read"
-            | "usage"
-            | "feed"
-            | "memory"
-            | "goals"
-            | "integrations"
-    ) {
-        Some(scope.ok_or("MCP server is unscoped; history reads are disabled")?)
-    } else {
-        None
-    };
-    if matches!(name, "goals" | "integrations") && !read_scope.unwrap().unrestricted {
-        return Err("this read surface is unavailable through scoped MCP".into());
-    }
-    if matches!(name, "thread_map" | "thread_read") {
-        ensure_thread_scope(state_root, &args, read_scope.unwrap())?;
-    }
-    if name == "native_read" {
-        ensure_native_scope(state_root, &args, read_scope.unwrap())?;
-    }
-    let out = match name {
-        "threads" => Ok(tool_threads(
-            state_root,
-            uint_arg(&args, "limit"),
-            read_scope.unwrap(),
-        )),
-        "thread_map" => tool_thread_map(state_root, &args),
-        "thread_read" => tool_thread_read(state_root, &args),
-        "native_read" => tool_native_read(state_root, &args),
-        "usage" => Ok(tool_usage(state_root, read_scope.unwrap())),
-        "feed" => tool_feed(state_root, &args, read_scope.unwrap()),
-        "memory" => tool_memory(state_root, &args, read_scope.unwrap()),
-        "goals" => tool_goals(state_root, &args),
-        "delegate" => tool_delegate(state_root, &args),
-        "integrations" => {
-            if args.as_object().is_some_and(|args| {
-                args.keys()
-                    .any(|key| !matches!(key.as_str(), "id" | "offset" | "revision"))
-            }) || args.get("offset").is_some_and(|value| !value.is_u64())
-                || args.get("id").is_some_and(|value| !value.is_string())
-                || args.get("revision").is_some_and(|value| !value.is_string())
-            {
-                Err("invalid integration discovery arguments".into())
-            } else {
-                crate::harness::catalog::tool(
-                    state_root,
-                    str_arg(&args, "id"),
-                    uint_arg(&args, "offset").unwrap_or(0),
-                    str_arg(&args, "revision"),
-                )
+    let action = arg(&args, "action")?;
+    match action {
+        "list" => {
+            let accounts = crate::accounts::list_all_accounts(root).into_iter().map(|a| { let models = a.home_path.as_deref().map(|h| crate::catalog::list_models(a.provider, h)).unwrap_or_default(); let usage = a.home_path.as_deref().and_then(|h| crate::usage::cached_usage_view(root, a.provider, &a.account, h)); json!({"account":a.account,"provider":a.provider.as_str(),"models":models,"usage":usage.map(|u| json!({"fresh":u.fresh,"observed_at":u.observed_at,"windows":u.windows}))}) }).collect::<Vec<_>>();
+            Ok(json!({"accounts":accounts}).to_string())
+        }
+        "start" if args.get("provider").and_then(Value::as_str) == Some("grok-bot") => {
+            let routine = arg(&args, "routine")?;
+            let task = arg(&args, "task")?;
+            let (parent, _, _) = caller_context(&args)?;
+            let id = crate::grok_bot::start(root, routine, task, &parent)?;
+            Ok(json!({"agent_id":id,"status":"waiting"}).to_string())
+        }
+        "start" => {
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            let role_name = args
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("general");
+            let role = crate::store::get_settings(root)
+                .roles
+                .get(role_name)
+                .cloned()
+                .ok_or_else(|| format!("unknown agent role: {role_name}"))?;
+            let account = args
+                .get("account")
+                .and_then(Value::as_str)
+                .or(role.account.as_deref())
+                .ok_or_else(|| "agents needs account or a role account".to_string())?;
+            let task = arg(&args, "task")?;
+            let connected = crate::accounts::get_account(root, account)
+                .ok_or_else(|| format!("unknown connected account: {account}"))?;
+            let selected_provider = args
+                .get("provider")
+                .and_then(Value::as_str)
+                .or(role.provider.as_deref());
+            if let Some(provider) = selected_provider {
+                if provider != connected.provider.as_str() {
+                    return Err(format!(
+                        "agent provider override {provider} does not match connected account {account} ({})",
+                        connected.provider.as_str()
+                    ));
+                }
             }
-        }
-        other => return Err(format!("unknown tool: {other}")),
-    };
-    Ok(match out {
-        Ok(t) => text_result(t, false),
-        Err(e) => text_result(e, true),
-    })
-}
-
-fn tool_feed(root: &Path, args: &Value, scope: &Scope) -> Result<String, String> {
-    let cursor = uint_arg(args, "cursor").unwrap_or(0);
-    let limit = uint_arg(args, "limit").unwrap_or(50).min(200);
-    let pane = str_arg(args, "pane");
-    let mut events = crate::feed::read(root, 0, pane).map_err(|e| e.to_string())?;
-    if !scope.unrestricted {
-        events.retain(|e| e.account.as_deref() == Some(scope.account.as_str()));
-    }
-    let page: Vec<_> = events.iter().skip(cursor).take(limit).collect();
-    let next = if cursor + page.len() < events.len() {
-        Some(cursor + page.len())
-    } else {
-        None
-    };
-    let value = json!({"events": page, "next_cursor": next, "account": scope.account});
-    serde_json::to_string(&value).map_err(|e| e.to_string())
-}
-
-fn tool_native_read(root: &Path, args: &Value) -> Result<String, String> {
-    let object = args
-        .as_object()
-        .ok_or("native_read arguments must be an object")?;
-    if object.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "id" | "message" | "offset" | "max_bytes" | "from_message" | "limit" | "history"
-        )
-    }) {
-        return Err("unsupported native_read argument".into());
-    }
-    let id = str_arg(args, "id").ok_or("native_read requires id")?;
-    if let Some(history) = args.get("history") {
-        if history.as_bool() != Some(true) || object.len() != 2 {
-            return Err("history must be true without excerpt/range options".into());
-        }
-        return serde_json::to_string(&crate::native_memory::history_from_pointer(root, id)?)
-            .map_err(|e| e.to_string());
-    }
-    let mut command = vec![
-        if object.contains_key("message") {
-            "excerpt"
-        } else {
-            "sources"
-        }
-        .to_string(),
-        id.to_string(),
-    ];
-    for (key, option) in [
-        ("message", "--message"),
-        ("offset", "--offset"),
-        ("max_bytes", "--max-bytes"),
-        ("from_message", "--from-message"),
-        ("limit", "--limit"),
-    ] {
-        if let Some(value) = args.get(key) {
-            let number = value
-                .as_u64()
-                .ok_or_else(|| format!("{key} must be a nonnegative integer"))?;
-            command.extend([option.to_string(), number.to_string()]);
-        }
-    }
-    crate::native_memory::command(root, &command)
-}
-
-fn normalized_scope_path(path: &Path) -> Option<String> {
-    let path = std::fs::canonicalize(path).ok()?;
-    let mut value = path.to_string_lossy().replace('/', "\\");
-    while value.len() > 3 && value.ends_with('\\') {
-        value.pop();
-    }
-    #[cfg(windows)]
-    {
-        if let Some(stripped) = value.strip_prefix(r"\\?\") {
-            value = stripped.to_owned();
-        }
-        value.make_ascii_lowercase();
-    }
-    Some(value)
-}
-
-fn in_workspace(root: &Path, path: &str, scope: &Scope) -> bool {
-    let Some(candidate) = normalized_scope_path(Path::new(path)) else {
-        return false;
-    };
-    if normalized_scope_path(&scope.workspace).is_some_and(|workspace| {
-        candidate == workspace
-            || candidate
-                .strip_prefix(&workspace)
-                .is_some_and(|rest| rest.starts_with('\\'))
-    }) {
-        return true;
-    }
-    let Ok(registry) = crate::managed_workspaces::load(root) else {
-        return false;
-    };
-    registry.records.iter().any(|record| {
-        normalized_scope_path(&record.owner)
-            .zip(normalized_scope_path(&scope.workspace))
-            .is_some_and(|(owner, workspace)| owner == workspace)
-            && normalized_scope_path(&record.execution).is_some_and(|worktree| {
-                candidate == worktree
-                    || candidate
-                        .strip_prefix(&worktree)
-                        .is_some_and(|rest| rest.starts_with('\\'))
-            })
-    })
-}
-
-fn ensure_thread_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
-    if scope.unrestricted {
-        return Ok(());
-    }
-    let prefix = str_arg(args, "id").ok_or("missing id")?;
-    let id = threads::resolve_prefix(root, prefix).map_err(|e| e.to_string())?;
-    let meta = threads::list(root)
-        .into_iter()
-        .find(|m| m.id == id)
-        .ok_or("thread is outside the registered MCP scope")?;
-    if meta.account.as_deref() != Some(scope.account.as_str())
-        || !in_workspace(root, &meta.cwd, scope)
-    {
-        return Err("MCP scope rejects this thread".into());
-    }
-    Ok(())
-}
-
-fn ensure_native_scope(root: &Path, args: &Value, scope: &Scope) -> Result<(), String> {
-    if scope.unrestricted {
-        return Ok(());
-    }
-    let id = str_arg(args, "id").ok_or("native_read requires id")?;
-    let summary = crate::native_memory::verify_source(root, id)?;
-    if summary.account != scope.account {
-        return Err("MCP scope rejects this native session account".into());
-    }
-    let record = crate::sessions::find_native_record(
-        root,
-        &summary.account,
-        Some(summary.provider),
-        &summary.session_id,
-    )?
-    .ok_or("native session is outside the registered MCP scope")?;
-    if record.0.account != scope.account
-        || !record
-            .0
-            .cwd
-            .as_deref()
-            .is_some_and(|cwd| in_workspace(root, cwd, scope))
-    {
-        return Err("MCP scope rejects this native session workspace".into());
-    }
-    Ok(())
-}
-
-fn tool_threads(state_root: &Path, limit: Option<usize>, scope: &Scope) -> String {
-    let limit = limit.unwrap_or(10).clamp(1, 30);
-    let metas: Vec<_> = threads::list(state_root)
-        .into_iter()
-        .filter(|m| {
-            scope.unrestricted
-                || (m.account.as_deref() == Some(scope.account.as_str())
-                    && in_workspace(state_root, &m.cwd, scope))
-        })
-        .collect();
-    if metas.is_empty() {
-        return "no recorded threads (the user enables recording with [threads] enabled = true)"
-            .into();
-    }
-    metas
-        .iter()
-        .take(limit)
-        .map(|m| {
-            let title = if m.title.is_empty() {
-                "(untitled)"
-            } else {
-                &m.title
+            let id = uuid::Uuid::new_v4().to_string();
+            let record = AgentRecord {
+                agent_id: id.clone(),
+                account: account.into(),
+                provider: selected_provider
+                    .unwrap_or(connected.provider.as_str())
+                    .into(),
+                role: role_name.into(),
+                model: args
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or(role.model.clone()),
+                effort: args
+                    .get("effort")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or(role.effort.clone()),
+                task: task.into(),
+                parent: parent.clone(),
+                workspace: Some(workspace.clone()),
+                parent_run_id: Some(parent_run.clone()),
+                run_id: None,
+                status: "queued".into(),
+                result: None,
+                activity: vec!["delegation requested".into()],
             };
-            format!("{}  {}  {}", m.id, threads::age_label(m.started), title)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn resolve(state_root: &Path, args: &Value) -> Result<(String, Vec<threads::ThreadEvent>), String> {
-    let prefix = str_arg(args, "id").ok_or("missing id")?;
-    let id = threads::resolve_prefix(state_root, prefix).map_err(|e| e.to_string())?;
-    let events = threads::ThreadLog::open(state_root, &id)
-        .read_all()
-        .map_err(|e| format!("{e:#}"))?;
-    Ok((id, events))
-}
-
-fn tool_thread_map(state_root: &Path, args: &Value) -> Result<String, String> {
-    let (id, events) = resolve(state_root, args)?;
-    let cap = crate::config::for_root(state_root).threads.map_chars;
-    Ok(threads::build_map(&events, &id, cap, true))
-}
-
-fn tool_thread_read(state_root: &Path, args: &Value) -> Result<String, String> {
-    let (_, events) = resolve(state_root, args)?;
-    let range = match str_arg(args, "range") {
-        Some(r) => Some(threads::parse_range(r).map_err(|e| e.to_string())?),
-        None => None,
-    };
-    let opts = threads::ReadOpts {
-        tail: uint_arg(args, "tail"),
-        grep: str_arg(args, "grep")
-            .filter(|g| !g.is_empty())
-            .map(str::to_string),
-        range,
-        max_chars: uint_arg(args, "max_chars")
-            .unwrap_or(DEFAULT_READ_CHARS)
-            .clamp(200, MAX_RESULT_CHARS),
-    };
-    Ok(threads::read_events_text(&events, &opts))
-}
-
-/// Cached readings only. Never starts a refresh or infers an account from an unbound legacy file.
-fn tool_usage(state_root: &Path, scope: &Scope) -> String {
-    let dir = state_root.join("usage-cache");
-    let mut rows: Vec<String> = Vec::new();
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
-    files.sort();
-    for path in files {
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let Some(account) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !scope.unrestricted && account != scope.account {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
-        let now = threads::now_secs();
-        let fetched_at = v.get("fetched_at").and_then(Value::as_u64);
-        let (freshness, age) = match fetched_at.filter(|at| *at <= now) {
-            Some(at) => {
-                let seconds = now.saturating_sub(at);
-                let freshness = if seconds < crate::usage::USAGE_TTL_SECS {
-                    "recent cache"
-                } else {
-                    "stale cache"
-                };
-                (freshness, threads::age_label(at))
+            write_agent(root, &record)?;
+            if let Err(error) = write_proposal(
+                root,
+                &Proposal {
+                    agent_id: id.clone(),
+                    to: account.into(),
+                    task: task.into(),
+                    role: role_name.into(),
+                    model: args
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or(role.model),
+                    effort: args
+                        .get("effort")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or(role.effort),
+                    from_thread: record.parent.clone(),
+                    workspace: Some(workspace),
+                    parent_run_id: Some(parent_run),
+                },
+            ) {
+                records::update_agent_exact(
+                    root,
+                    &id,
+                    "failed",
+                    Some(error.clone()),
+                    "request publication failed",
+                )?;
+                return Err(error);
             }
-            None => ("cache age unknown", "age unknown".to_string()),
-        };
-        let identity = v.get("identity");
-        let bound = identity.and_then(|i| {
-            if i.get("home")?.as_str()?.is_empty() {
-                return None;
-            }
-            Some(format!(
-                "{} account {}",
-                i.get("provider")?.as_str()?,
-                i.get("account")?.as_str()?
-            ))
-        });
-        let who = bound.unwrap_or_else(|| format!("identity unknown (legacy cache {account})"));
-        let windows: Vec<String> = v
-            .get("windows")
-            .and_then(Value::as_array)
-            .map(|ws| {
-                ws.iter()
-                    .filter_map(|w| {
-                        let label = w.get("label")?.as_str()?;
-                        let used = w.get("used_pct")?.as_f64()?.clamp(0.0, 100.0);
-                        let reset = w.get("resets").and_then(Value::as_str);
-                        if reset.is_some_and(|r| r.starts_with("already reset")) {
-                            return Some(format!(
-                                "{label} reset since report (current usage unknown)"
-                            ));
-                        }
-                        let resets = reset.map(|r| format!(", resets {r}")).unwrap_or_default();
-                        Some(format!(
-                            "{label} {:.0}% left ({:.0}% used{resets})",
-                            100.0 - used,
-                            used
-                        ))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if windows.is_empty() {
-            rows.push(format!(
-                "{who} [{freshness}, read {age}]: no limits reported"
-            ));
-        } else {
-            rows.push(format!(
-                "{who} [{freshness}, read {age}]: {}",
-                windows.join("; ")
-            ));
+            Ok(json!({"agent_id":id,"status":"queued","role":role_name}).to_string())
         }
+        "status" | "result" | "watch" => {
+            let id = arg(&args, "agent_id")?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            let record = if action == "watch" {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    let current = read_agent(root, id)?;
+                    if current.parent != parent
+                        || current.parent_run_id.as_deref() != Some(parent_run.as_str())
+                        || current.workspace.as_ref() != Some(&workspace)
+                    {
+                        return Err("agent read owner mismatch".into());
+                    }
+                    if matches!(
+                        current.status.as_str(),
+                        "finished"
+                            | "success"
+                            | "quota"
+                            | "crashed"
+                            | "cancelled"
+                            | "uncertain"
+                            | "failed"
+                    ) || Instant::now() >= deadline
+                    {
+                        break current;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            } else {
+                read_agent(root, id)?
+            };
+            if record.parent != parent
+                || record.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || record.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent read owner mismatch".into());
+            }
+            Ok(agent_view(root, record, action == "result")?.to_string())
+        }
+        "cancel" => {
+            let id = arg(&args, "agent_id")?;
+            let _lock = records::ControlLock::acquire(root, id)?;
+            let record = read_agent(root, id)?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            if record.parent != parent
+                || record.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || record.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent cancellation owner mismatch".into());
+            }
+            if matches!(
+                record.status.as_str(),
+                "finished" | "success" | "quota" | "crashed" | "cancelled" | "uncertain" | "failed"
+            ) {
+                return Err("agent is already terminal; no action was replayed".into());
+            }
+            records::write_control(
+                root,
+                &records::AgentControl {
+                    agent_id: id.into(),
+                    action: "cancel".into(),
+                    task: None,
+                },
+            )?;
+            Ok(
+                json!({"agent_id":id,"accepted":true,"status":"cancellation_requested"})
+                    .to_string(),
+            )
+        }
+        "followup" => {
+            let source = read_agent(root, arg(&args, "agent_id")?)?;
+            let task = arg(&args, "task")?;
+            let (parent, parent_run, workspace) = caller_context(&args)?;
+            if source.parent != parent
+                || source.parent_run_id.as_deref() != Some(parent_run.as_str())
+                || source.workspace.as_ref() != Some(&workspace)
+            {
+                return Err("agent follow-up owner mismatch".into());
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let record = AgentRecord {
+                agent_id: id.clone(),
+                account: source.account.clone(),
+                provider: source.provider.clone(),
+                role: source.role.clone(),
+                model: source.model.clone(),
+                effort: source.effort.clone(),
+                task: task.into(),
+                parent: parent.clone(),
+                workspace: Some(workspace.clone()),
+                parent_run_id: Some(parent_run.clone()),
+                run_id: None,
+                status: "queued".into(),
+                result: None,
+                activity: vec![format!("follow-up of {} requested", source.agent_id)],
+            };
+            write_agent(root, &record)?;
+            if let Err(error) = write_proposal(
+                root,
+                &Proposal {
+                    agent_id: id.clone(),
+                    to: record.account.clone(),
+                    task: record.task.clone(),
+                    role: record.role.clone(),
+                    model: record.model.clone(),
+                    effort: record.effort.clone(),
+                    from_thread: parent,
+                    workspace: Some(workspace),
+                    parent_run_id: Some(parent_run),
+                },
+            ) {
+                records::update_agent_exact(
+                    root,
+                    &id,
+                    "failed",
+                    Some(error.clone()),
+                    "follow-up publication failed",
+                )?;
+                return Err(error);
+            }
+            Ok(json!({"agent_id":id,"status":"queued","followup_of":source.agent_id}).to_string())
+        }
+        _ => Err(
+            "agents action must be list, start, status, result, followup, cancel or watch".into(),
+        ),
     }
-    if rows.is_empty() {
-        "no cached usage readings (cache only; Concordia does not refresh from MCP)".into()
+}
+
+fn agent_view(root: &Path, record: AgentRecord, result_only: bool) -> Result<Value, String> {
+    let metadata = records::read_agent_metadata(root, &record.agent_id)?;
+    let outcome = metadata.reason.as_deref().unwrap_or("unknown");
+    let base = json!({"agent_id":record.agent_id,"status":record.status,"outcome":outcome,"result":record.result,"activity":record.activity,"last_event":metadata.last_event,"heartbeat_unix":metadata.heartbeat_unix,"run_id":record.run_id,"process_id":metadata.process_id,"native_session":metadata.native_session});
+    Ok(if result_only {
+        base
     } else {
-        rows.join("\n")
-    }
-}
-
-/// A proposal as written by `delegate` and read by the TUI.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Proposal {
-    pub to: String,
-    pub task: String,
-    #[serde(default)]
-    pub from_thread: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(untagged)]
-pub enum PendingProposal {
-    Goal(crate::goals::changes::Proposal),
-    Delegate(Proposal),
-}
-
-fn pending_proposal_files(state_root: &Path) -> Vec<PathBuf> {
-    if std::fs::symlink_metadata(proposals_dir(state_root))
-        .is_ok_and(|metadata| !metadata.is_dir() || crate::workspaces::linked(&metadata))
-    {
-        return Vec::new();
-    }
-    std::fs::read_dir(proposals_dir(state_root))
-        .map(|rd| {
-            rd.flatten()
-                .take(256)
-                .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
-                .take(MAX_PENDING_PROPOSALS + 1)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn record_pending(state_root: &Path, request: &str, body: &[u8]) -> Result<(), String> {
-    if !uuid::Uuid::parse_str(request).is_ok_and(|uuid| uuid.to_string() == request)
-        || body.len() as u64 > MAX_PROPOSAL_FILE
-    {
-        return Err("invalid proposal request id or payload bound".into());
-    }
-    let dir = proposals_dir(state_root);
-    std::fs::create_dir_all(&dir).map_err(|_| "proposal storage unavailable")?;
-    crate::workspaces::directory_id(&dir)?;
-    let path = dir.join(format!("{request}.json"));
-    let lock = dir.join("proposals.lock");
-    for file in [&path, &lock] {
-        if std::fs::symlink_metadata(file)
-            .is_ok_and(|metadata| !metadata.is_file() || crate::workspaces::linked(&metadata))
-        {
-            return Err("proposal storage must use regular owned files".into());
-        }
-    }
-    crate::state_io::with_lock(&lock, || {
-        if path.exists() {
-            let mut existing = Vec::new();
-            std::fs::File::open(&path)?
-                .take(MAX_PROPOSAL_FILE + 1)
-                .read_to_end(&mut existing)?;
-            if existing == body {
-                return Ok(());
-            }
-            return Err(std::io::Error::other(
-                "request id already names another pending proposal",
-            ));
-        }
-        if pending_proposal_files(state_root).len() >= MAX_PENDING_PROPOSALS
-            || std::fs::read_dir(&dir)?.take(257).count() >= 256
-        {
-            return Err(std::io::Error::other(
-                "too many proposals/retained invalid records; no automatic pruning",
-            ));
-        }
-        crate::state_io::write_atomic(&path, body)
-    })
-    .map_err(|error| error.to_string())
-}
-
-fn tool_delegate(state_root: &Path, args: &Value) -> Result<String, String> {
-    let to = str_arg(args, "to").unwrap_or("").trim();
-    let task = str_arg(args, "task").unwrap_or("").trim();
-    if to.is_empty() || task.is_empty() {
-        return Err("delegate needs 'to' and 'task'".into());
-    }
-    if to.chars().count() > 64 {
-        return Err("'to' is too long".into());
-    }
-    if task.chars().count() > crate::delegate::TASK_MAX_CHARS {
-        return Err(format!(
-            "task is longer than {} characters; make it shorter",
-            crate::delegate::TASK_MAX_CHARS
-        ));
-    }
-    let from: String = str_arg(args, "from_thread")
-        .unwrap_or("")
-        .trim()
-        .chars()
-        .take(64)
-        .collect();
-    if !crate::store::delegation_protocol_on(state_root) {
-        return Err("delegation is off; the user can turn it on with /delegate protocol on".into());
-    }
-    if pending_proposal_files(state_root).len() >= MAX_PENDING_PROPOSALS {
-        return Err("too many proposals are waiting for the user; try again later".into());
-    }
-    let dir = proposals_dir(state_root);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot record proposal: {e}"))?;
-    let id = uuid::Uuid::new_v4();
-    let body = serde_json::to_string(&Proposal {
-        to: to.to_string(),
-        task: task.to_string(),
-        from_thread: from,
-    })
-    .map_err(|e| e.to_string())?;
-    record_pending(state_root, &id.to_string(), body.as_bytes())?;
-    Ok("proposal recorded; the user must approve it in Concordia".into())
-}
-
-/// Legacy delegate-only access shares the same bounded proposal owner.
-pub fn take_proposals(state_root: &Path) -> Vec<Proposal> {
-    take_selected(state_root, MAX_PENDING_PROPOSALS, |proposal| {
-        matches!(proposal, PendingProposal::Delegate(_))
-    })
-    .into_iter()
-    .filter_map(|proposal| match proposal {
-        PendingProposal::Delegate(proposal) => Some(proposal),
-        _ => None,
-    })
-    .collect()
-}
-
-pub fn take_pending(state_root: &Path, delegates: bool, limit: usize) -> Vec<PendingProposal> {
-    take_selected(state_root, limit.min(MAX_PENDING_PROPOSALS), |proposal| {
-        delegates || matches!(proposal, PendingProposal::Goal(_))
+        json!({"agent_id":record.agent_id,"account":record.account,"provider":record.provider,"status":record.status,"outcome":outcome,"run_id":record.run_id,"process_id":metadata.process_id,"native_session":metadata.native_session,"result":record.result,"activity":record.activity,"last_event":metadata.last_event,"heartbeat_unix":metadata.heartbeat_unix})
     })
 }
-
-fn take_selected(
-    state_root: &Path,
-    limit: usize,
-    accept: impl Fn(&PendingProposal) -> bool,
-) -> Vec<PendingProposal> {
-    let mut out = Vec::new();
-    for path in pending_proposal_files(state_root)
-        .into_iter()
+fn write_proposal(root: &Path, proposal: &Proposal) -> Result<(), String> {
+    let dir = proposals_dir(root);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    crate::fs_safe::resolved_directory(&dir)
+        .ok_or("proposal directory is linked or unavailable")?;
+    if std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
         .take(MAX_PENDING_PROPOSALS)
+        .count()
+        >= MAX_PENDING_PROPOSALS
     {
-        if out.len() >= limit {
-            break;
+        return Err("too many delegated agents are waiting".into());
+    }
+    let bytes = serde_json::to_vec(proposal).map_err(|e| e.to_string())?;
+    let bytes = crate::redact::redact_bytes(&bytes);
+    if bytes.len() as u64 > MAX_PROPOSAL_FILE {
+        return Err("delegation record is too large".into());
+    }
+    crate::state_io::write_atomic(&dir.join(format!("{}.json", proposal.agent_id)), &bytes)
+        .map_err(|e| e.to_string())
+}
+pub fn take_proposals(root: &Path) -> Vec<Proposal> {
+    take_pending(root, MAX_PENDING_PROPOSALS)
+        .into_iter()
+        .map(|p| match p {
+            PendingProposal::Delegate(p) => p,
+        })
+        .collect()
+}
+pub fn take_pending(root: &Path, limit: usize) -> Vec<PendingProposal> {
+    let mut out = Vec::new();
+    let dir = proposals_dir(root);
+    let Some(owned) = crate::fs_safe::resolved_directory(&dir) else {
+        return out;
+    };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for e in rd.flatten().take(limit.min(MAX_PENDING_PROPOSALS)) {
+        let p = e.path();
+        if !crate::fs_safe::regular_owned_file(&p, &owned) {
+            continue;
         }
-        let small = std::fs::symlink_metadata(&path).is_ok_and(|metadata| {
-            metadata.is_file()
-                && !crate::workspaces::linked(&metadata)
-                && metadata.len() <= MAX_PROPOSAL_FILE
-        });
-        let proposal = small
-            .then(|| {
-                let mut options = std::fs::OpenOptions::new();
-                options.read(true);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::fs::OpenOptionsExt;
-                    options.custom_flags(0x0020_0000);
-                }
-                let file = options.open(&path).ok()?;
-                if !file.metadata().is_ok_and(|metadata| {
-                    metadata.is_file() && !crate::workspaces::linked(&metadata)
-                }) {
-                    return None;
-                }
-                let mut bytes = Vec::new();
-                file.take(MAX_PROPOSAL_FILE + 1)
-                    .read_to_end(&mut bytes)
-                    .ok()?;
-                if bytes.len() as u64 > MAX_PROPOSAL_FILE {
-                    return None;
-                }
-                let proposal: PendingProposal = serde_json::from_slice(&bytes).ok()?;
-                if matches!(&proposal, PendingProposal::Goal(goal) if goal.validate().is_err()) {
-                    return None;
-                }
-                Some(proposal)
-            })
-            .flatten();
-        if let Some(proposal) = proposal {
-            if !accept(&proposal) {
-                continue;
+        if let Some(text) = crate::fs_safe::read_text_bounded(&p, MAX_PROPOSAL_FILE as usize) {
+            if let Ok(v) = serde_json::from_str(&text) {
+                let _ = std::fs::remove_file(p);
+                out.push(v);
             }
-            if std::fs::remove_file(&path).is_ok() {
-                out.push(proposal);
-            }
-        } else {
-            // Preserve invalid/future metadata without reading oversized bodies or following links.
-            let _ = std::fs::rename(
-                &path,
-                path.with_extension(format!("invalid-{}", uuid::Uuid::new_v4())),
-            );
         }
     }
     out
 }
 
-/// True when at least one proposal file is waiting (a cheap `read_dir`).
-pub fn has_proposals(state_root: &Path) -> bool {
-    !pending_proposal_files(state_root).is_empty()
+/// Claim only requests bound to this active conversation, workspace and parent attempt.
+pub fn take_pending_for(
+    root: &Path,
+    limit: usize,
+    parent: &str,
+    workspace: &Path,
+    parent_run: &str,
+) -> Vec<Proposal> {
+    if limit == 0 {
+        return Vec::new();
+    }
+    let Ok(workspace) = workspace.canonicalize() else {
+        return Vec::new();
+    };
+    let directory = proposals_dir(root);
+    let Some(owned) = crate::fs_safe::resolved_directory(&directory) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten().take(MAX_PENDING_PROPOSALS * 4) {
+        let path = entry.path();
+        if !crate::fs_safe::regular_owned_file(&path, &owned) {
+            continue;
+        }
+        let Some(raw) = crate::fs_safe::read_text_bounded(&path, MAX_PROPOSAL_FILE as usize) else {
+            continue;
+        };
+        let Ok(proposal) = serde_json::from_str::<Proposal>(&raw) else {
+            continue;
+        };
+        if proposal.from_thread != parent
+            || proposal.workspace.as_ref() != Some(&workspace)
+            || proposal.parent_run_id.as_deref() != Some(parent_run)
+        {
+            continue;
+        }
+        let Ok(record) = records::read_agent(root, &proposal.agent_id) else {
+            continue;
+        };
+        if record.parent != parent
+            || record.workspace.as_ref() != Some(&workspace)
+            || record.parent_run_id.as_deref() != Some(parent_run)
+            || path.file_name().and_then(|name| name.to_str())
+                != Some(format!("{}.json", proposal.agent_id).as_str())
+        {
+            continue;
+        }
+        if record.status != "queued" {
+            continue;
+        }
+        // A queued cancellation is consumed by the proposal owner before the request can
+        // become a live worker. Keep the intent durable if the terminal record cannot persist.
+        if records::peek_control(root, &proposal.agent_id)
+            .is_some_and(|control| control.action == "cancel")
+        {
+            if records::update_agent_exact(
+                root,
+                &proposal.agent_id,
+                "cancelled",
+                None,
+                "queued cancellation accepted before launch",
+            )
+            .is_ok()
+            {
+                let _ = records::ack_control(root, &proposal.agent_id);
+                let _ = std::fs::remove_file(&path);
+            }
+            continue;
+        }
+        let claim = path.with_extension(format!("claim-{}", uuid::Uuid::new_v4()));
+        if std::fs::rename(&path, &claim).is_err() {
+            continue;
+        }
+        // The durable AgentRecord keeps the task even if cleanup or submission fails.
+        let _ = std::fs::remove_file(claim);
+        out.push(proposal);
+        if out.len() == limit {
+            break;
+        }
+    }
+    out
+}
+pub fn has_proposals(root: &Path) -> bool {
+    std::fs::read_dir(proposals_dir(root)).is_ok_and(|mut r| r.next().is_some())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::threads::{ThreadEvent, ThreadLog, ThreadMeta};
+    use std::io::Read;
+    use std::net::TcpListener;
 
-    fn call(root: &Path, req: Value) -> Value {
-        serde_json::from_str(&handle_line(root, &req.to_string()).unwrap()).unwrap()
-    }
-
-    fn rpc(id: u64, method: &str, params: Value) -> Value {
-        json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
-    }
-
-    fn tool(root: &Path, name: &str, args: Value) -> (String, bool) {
-        let r = call(
-            root,
-            rpc(1, "tools/call", json!({"name":name,"arguments":args})),
-        );
-        let res = &r["result"];
-        (
-            res["content"][0]["text"].as_str().unwrap().to_string(),
-            res["isError"].as_bool().unwrap(),
-        )
-    }
-
-    fn seed(root: &Path) -> String {
-        seed_at(root, String::new())
-    }
-
-    fn seed_at(root: &Path, cwd: String) -> String {
-        let id = "3f9a0000-aaaa-bbbb-cccc-111122223333";
-        let log = ThreadLog::open(root, id);
-        log.write_meta(&ThreadMeta {
-            id: id.into(),
-            started: threads::now_secs(),
-            title: "fix the login redirect".into(),
-            cwd,
-            account: Some("claude-2".into()),
-        })
-        .unwrap();
-        let legacy = [
-            ThreadEvent::with_text("user", "fix the login redirect"),
-            ThreadEvent::with_text(
-                "assistant",
-                "Done: the redirect now keeps the query string.",
-            ),
-            ThreadEvent::with_text("user", "add a test for it"),
-        ]
-        .iter()
-        .map(|ev| serde_json::to_string(ev).unwrap() + "\n")
-        .collect::<String>();
-        // Deliberately exercise legacy body-bearing history, without a production body writer.
-        std::fs::write(
-            crate::threads::threads_dir(root).join(format!("{id}.jsonl")),
-            legacy,
-        )
-        .unwrap();
-        id.into()
-    }
-
-    fn managed_fixture(state: &Path, owner: &Path, execution: &Path) {
-        let id = "11111111-1111-4111-8111-111111111111";
-        let state = state.canonicalize().unwrap();
-        let owner = owner.canonicalize().unwrap();
-        std::fs::create_dir_all(state.join("managed-worktrees").join(id)).unwrap();
-        let execution = execution.canonicalize().unwrap();
-        let record = json!({
-            "id": id,
-            "revision": 1,
-            "owner": owner,
-            "owner_identity": "1",
-            "common_git": owner,
-            "common_identity": "1",
-            "base": "0123456789012345678901234567890123456789",
-            "branch": format!("concordia/work-{id}"),
-            "execution": execution,
-            "execution_identity": null,
-            "phase": "creating",
-            "note": "fixture",
-            "operation": null
-        });
-        std::fs::write(
-            state.join("managed-workspaces.json"),
-            serde_json::to_vec(&json!({"version": 1, "revision": 1, "records": [record]})).unwrap(),
-        )
-        .unwrap();
-    }
-
-    fn scoped(root: &Path, account: &str, workspace: &Path, req: Value) -> Value {
-        let scope = Scope {
-            account: account.into(),
-            workspace: workspace.to_path_buf(),
-            unrestricted: false,
+    #[test]
+    fn agent_record_storage_redacts_every_user_supplied_field() {
+        let root = tempfile::tempdir().unwrap();
+        let secret = "agent-record-secret-20261112";
+        crate::redact::register_runtime_secret(secret);
+        let record = AgentRecord {
+            agent_id: "agent-record-redaction".into(),
+            account: secret.into(),
+            provider: "synthetic".into(),
+            role: "general".into(),
+            model: Some(secret.into()),
+            effort: Some(secret.into()),
+            task: secret.into(),
+            parent: secret.into(),
+            workspace: None,
+            parent_run_id: None,
+            run_id: None,
+            status: "queued".into(),
+            result: Some(secret.into()),
+            activity: vec![secret.into()],
         };
-        serde_json::from_str(&handle_line_scoped(root, &req.to_string(), Some(&scope)).unwrap())
-            .unwrap()
+
+        write_agent(root.path(), &record).unwrap();
+        let raw =
+            std::fs::read_to_string(record_path(root.path(), &record.agent_id).unwrap()).unwrap();
+        assert!(!raw.contains(secret));
+        let stored = read_agent(root.path(), &record.agent_id).unwrap();
+        assert_ne!(stored.account, secret);
+        assert_ne!(stored.model.as_deref(), Some(secret));
+        assert_ne!(stored.task, secret);
+        assert_ne!(stored.parent, secret);
+        assert_ne!(stored.result.as_deref(), Some(secret));
+        assert_ne!(stored.activity[0], secret);
     }
 
     #[test]
-    fn scoped_server_cannot_read_another_workspace() {
+    fn tool_schema_names_role_defaults_and_override_fields() {
         let root = tempfile::tempdir().unwrap();
-        let other = tempfile::tempdir().unwrap();
-        let id = seed(root.path());
-        let req = rpc(
-            1,
-            "tools/call",
-            json!({"name":"thread_read","arguments":{"id":id}}),
-        );
-        let response = scoped(root.path(), "claude-2", other.path(), req);
-        assert!(response["error"]["message"].is_string());
+        let line = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string();
+        let reply = handle_line(root.path(), &line).unwrap();
+        assert!(reply.contains("role"));
+        assert!(reply.contains("explicit provider/model"));
     }
 
+    #[cfg(windows)]
     #[test]
-    fn scoped_server_cannot_read_another_account() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let id = seed(root.path());
-        let response = scoped(
-            root.path(),
-            "codex-3",
-            workspace.path(),
-            rpc(
-                1,
-                "tools/call",
-                json!({"name":"thread_read","arguments":{"id":id}}),
-            ),
-        );
-        assert!(response["error"]["message"].is_string());
-    }
+    fn remote_tool_result_is_unwrapped_and_credential_manager_header_is_used() {
+        use std::ffi::OsStr;
+        use std::iter::once;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Security::Credentials::*;
 
-    #[test]
-    fn scoped_server_reads_its_managed_worktrees() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let worktree = root
-            .path()
-            .join("managed-worktrees/11111111-1111-4111-8111-111111111111");
-        managed_fixture(root.path(), workspace.path(), &worktree);
-        let id = seed_at(root.path(), worktree.to_string_lossy().into_owned());
-        let scope = Scope {
-            account: "claude-2".into(),
-            workspace: workspace.path().to_path_buf(),
-            unrestricted: false,
+        let target_name = "ConcordiaSyntheticMcpReview";
+        let target: Vec<u16> = OsStr::new(target_name)
+            .encode_wide()
+            .chain(once(0))
+            .collect();
+        let mut blob = b"synthetic-token".to_vec();
+        let credential = CREDENTIALW {
+            Flags: 0,
+            Type: CRED_TYPE_GENERIC,
+            TargetName: target.as_ptr() as *mut u16,
+            Comment: std::ptr::null_mut(),
+            LastWritten: FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            },
+            CredentialBlobSize: blob.len() as u32,
+            CredentialBlob: blob.as_mut_ptr(),
+            Persist: CRED_PERSIST_SESSION,
+            AttributeCount: 0,
+            Attributes: std::ptr::null_mut(),
+            TargetAlias: std::ptr::null_mut(),
+            UserName: std::ptr::null_mut(),
         };
-        assert!(in_workspace(
-            root.path(),
-            &worktree.to_string_lossy(),
-            &scope
-        ));
-        let request = rpc(
-            1,
-            "tools/call",
-            json!({"name":"thread_read","arguments":{"id":id}}),
-        );
-        let response = scoped(root.path(), "claude-2", workspace.path(), request);
-        assert!(
-            response["result"]["content"][0]["text"].is_string(),
-            "{response:?}"
-        );
+        assert_ne!(unsafe { CredWriteW(&credential, 0) }, 0);
 
-        let other_workspace = tempfile::tempdir().unwrap();
-        let other_worktree = root
-            .path()
-            .join("managed-worktrees/22222222-2222-4222-8222-222222222222");
-        let other_id = "22222222-2222-4222-8222-222222222222";
-        std::fs::create_dir_all(&other_worktree).unwrap();
-        let mut registry: crate::managed_workspaces::Registry =
-            crate::managed_workspaces::load(root.path()).unwrap();
-        registry.records.push(serde_json::from_value(json!({
-            "id": other_id, "revision": 1, "owner": other_workspace.path(), "owner_identity": "1",
-            "common_git": other_workspace.path(), "common_identity": "1", "base": "0123456789012345678901234567890123456789",
-            "branch": format!("concordia/work-{other_id}"), "execution": other_worktree, "execution_identity": null,
-            "phase": "creating", "note": "fixture", "operation": null
-        })).unwrap());
-        std::fs::write(
-            root.path().join("managed-workspaces.json"),
-            serde_json::to_vec(&registry).unwrap(),
-        )
-        .unwrap();
-        let other_thread = seed_at(root.path(), other_worktree.to_string_lossy().into_owned());
-        let rejected = scoped(
-            root.path(),
-            "claude-2",
-            workspace.path(),
-            rpc(
-                1,
-                "tools/call",
-                json!({"name":"thread_read","arguments":{"id":other_thread}}),
-            ),
-        );
-        assert!(rejected["error"]["message"].is_string());
-    }
-
-    #[test]
-    fn scope_matches_extended_and_case_variant_paths() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let scope = Scope {
-            account: "a".into(),
-            workspace: workspace.path().to_path_buf(),
-            unrestricted: false,
-        };
-        let plain = workspace.path().to_string_lossy().into_owned();
-        let variant = if cfg!(windows) {
-            format!(r"\\?\{}", plain.to_uppercase())
-        } else {
-            format!("{}{}", plain, std::path::MAIN_SEPARATOR)
-        };
-        assert!(in_workspace(root.path(), &variant, &scope));
-    }
-
-    #[test]
-    fn unscoped_server_fails_closed() {
-        let root = tempfile::tempdir().unwrap();
-        let request = rpc(1, "tools/call", json!({"name":"threads","arguments":{}}));
-        let response = serde_json::from_str::<Value>(
-            &handle_line_scoped(root.path(), &request.to_string(), None).unwrap(),
-        )
-        .unwrap();
-        assert!(response["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unscoped"));
-    }
-
-    #[test]
-    fn explicit_cross_scope_argument_is_rejected() {
-        let root = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        let response = scoped(
-            root.path(),
-            "claude-2",
-            workspace.path(),
-            rpc(
-                1,
-                "tools/call",
-                json!({"name":"memory","arguments":{"action":"recall","query":"needle","account":"codex-3"}}),
-            ),
-        );
-        assert_eq!(response["result"]["isError"], true);
-        assert!(response["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("account"));
-    }
-
-    #[test]
-    fn initialize_negotiates_the_protocol_version() {
-        let d = tempfile::tempdir().unwrap();
-        let r = call(
-            d.path(),
-            rpc(1, "initialize", json!({"protocolVersion":"2024-11-05"})),
-        );
-        assert_eq!(r["id"], 1);
-        assert_eq!(r["result"]["protocolVersion"], "2024-11-05");
-        assert_eq!(r["result"]["serverInfo"]["name"], "concordia");
-        assert!(r["result"]["capabilities"]["tools"].is_object());
-        let r = call(
-            d.path(),
-            rpc(2, "initialize", json!({"protocolVersion":"2099-01-01"})),
-        );
-        assert_eq!(r["result"]["protocolVersion"], LATEST_PROTOCOL);
-        let r = call(d.path(), rpc(3, "initialize", json!({})));
-        assert_eq!(r["result"]["protocolVersion"], LATEST_PROTOCOL);
-    }
-
-    #[test]
-    fn notifications_get_no_reply_and_ping_works() {
-        let d = tempfile::tempdir().unwrap();
-        let n = json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string();
-        assert!(handle_line(d.path(), &n).is_none());
-        let r = call(d.path(), rpc(7, "ping", Value::Null));
-        assert_eq!(r["result"], json!({}));
-    }
-
-    #[test]
-    fn tools_list_has_exactly_the_declared_tools_with_terse_schemas() {
-        let d = tempfile::tempdir().unwrap();
-        let r = call(d.path(), rpc(1, "tools/list", Value::Null));
-        let tools = r["result"]["tools"].as_array().unwrap();
-        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            [
-                "threads",
-                "thread_map",
-                "thread_read",
-                "native_read",
-                "usage",
-                "feed",
-                "memory",
-                "goals",
-                "delegate",
-                "integrations"
-            ]
-        );
-        let size = serde_json::to_string(tools).unwrap().len();
-        assert!(
-            size < 4000,
-            "tool list costs tokens every turn: {size} bytes"
-        );
-        for t in tools {
-            assert!(t["description"].as_str().unwrap().len() < 120);
-            assert_eq!(t["inputSchema"]["type"], "object");
-            if matches!(
-                t["name"].as_str(),
-                Some(
-                    "threads"
-                        | "thread_map"
-                        | "thread_read"
-                        | "native_read"
-                        | "usage"
-                        | "memory"
-                        | "integrations"
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let thread = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let count = stream.read(&mut chunk).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..count]);
+                    let Some(header_end) = bytes
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|index| index + 4)
+                    else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("Content-Length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + content_length {
+                        break;
+                    }
+                }
+                let wire = String::from_utf8(bytes).unwrap();
+                assert!(wire.contains("synthetic-token"));
+                use std::io::Write;
+                if wire.contains("notifications/initialized") {
+                    write!(
+                        stream,
+                        "HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .unwrap();
+                    continue;
+                }
+                let body = if wire.contains("\"method\":\"initialize\"") {
+                    format!(
+                        r#"{{"jsonrpc":"2.0","id":0,"result":{{"protocolVersion":"{LATEST_PROTOCOL}","capabilities":{{}},"serverInfo":{{"name":"synthetic","version":"0"}}}}}}"#
+                    )
+                } else {
+                    r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic result"}]}}"#.into()
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
                 )
-            ) {
-                assert_eq!(
-                    t["annotations"],
-                    json!({"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})
-                );
-            } else if matches!(t["name"].as_str(), Some("goals" | "delegate")) {
-                assert_ne!(
-                    t["annotations"]["readOnlyHint"], true,
-                    "proposal tools must not claim source-read-only behavior"
-                );
+                .unwrap();
             }
-        }
-        let (catalog, error) = tool(d.path(), "integrations", json!({}));
-        assert!(!error, "{catalog}");
-        assert!(catalog.contains("native_registration"));
-        assert!(tool(d.path(), "integrations", json!({"execute":"anything"})).1);
-        assert!(tool(d.path(), "integrations", json!({"offset":-1})).1);
-        assert!(tool(d.path(), "memory", json!({"action":"group-link"})).1);
-        assert!(
-            tool(
-                d.path(),
-                "memory",
-                json!({"action":"recall","query":"needle","offset":1})
-            )
-            .1
-        );
-        let (result, error) = tool(
-            d.path(),
-            "memory",
-            json!({"action":"recall","query":"needle"}),
-        );
-        assert!(!error, "{result}");
-        let report: Value = serde_json::from_str(&result).unwrap();
-        assert!(report["hits"].is_array());
-        assert!(report["incomplete"].is_boolean());
-    }
-
-    #[test]
-    fn threads_map_and_read_reuse_the_thread_log() {
-        let d = tempfile::tempdir().unwrap();
-        let (none, err) = tool(d.path(), "threads", json!({}));
-        assert!(!err && none.contains("no recorded threads"));
-        let id = seed(d.path());
-        let (list, _) = tool(d.path(), "threads", json!({}));
-        assert!(list.contains(&id) && list.contains("fix the login redirect"));
-        let (map, err) = tool(d.path(), "thread_map", json!({"id":"3f9a"}));
-        assert!(!err && map.starts_with("[concordia map] thread 3f9a0000"));
-        assert!(map.contains(&format!("concordia thread read {id}")));
-        let (tail, _) = tool(d.path(), "thread_read", json!({"id":"3f9a","tail":1}));
-        assert!(tail.contains("add a test") && !tail.contains("Done:"));
-        let (g, _) = tool(
-            d.path(),
-            "thread_read",
-            json!({"id":id,"grep":"query string"}),
-        );
-        assert!(g.contains("keeps the query string") && !g.contains("add a test"));
-        let (rg, _) = tool(d.path(), "thread_read", json!({"id":id,"range":"1-1"}));
-        assert!(rg.contains("#1 user") && !rg.contains("#2"));
-        let (small, _) = tool(d.path(), "thread_read", json!({"id":id,"max_chars":1}));
-        assert!(
-            small.chars().count() < 500,
-            "max_chars is clamped to a floor, not ignored"
-        );
-    }
-
-    #[test]
-    fn bad_ids_and_arguments_are_tool_errors_not_protocol_errors() {
-        let d = tempfile::tempdir().unwrap();
-        seed(d.path());
-        let (m, err) = tool(d.path(), "thread_map", json!({"id":"zzzz"}));
-        assert!(err && m.contains("no thread matches"));
-        let (m, err) = tool(d.path(), "thread_read", json!({"id":"3f9a","range":"x"}));
-        assert!(err && m.contains("--range"));
-        let (_, err) = tool(d.path(), "thread_map", json!({}));
-        assert!(err);
-        let r = call(d.path(), rpc(1, "tools/call", json!({"name":"nope"})));
-        assert_eq!(r["error"]["code"], -32602);
-    }
-
-    #[test]
-    fn usage_reads_only_the_cache() {
-        let d = tempfile::tempdir().unwrap();
-        let (m, err) = tool(d.path(), "usage", json!({}));
-        assert!(!err && m.contains("no cached usage"));
-        let dir = d.path().join("usage-cache");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("claude-2.json"),
-            json!({"fetched_at": threads::now_secs(), "windows":[
-                {"label":"5h","used_pct":41.0,"resets":"3h"},
-                {"label":"7d","used_pct":10.0,"resets":null}]})
-            .to_string(),
-        )
-        .unwrap();
-        std::fs::write(dir.join("broken.json"), "{").unwrap();
-        let (m, _) = tool(d.path(), "usage", json!({}));
-        assert!(
-            m.contains("identity unknown (legacy cache claude-2) [recent cache"),
-            "{m}"
-        );
-        assert!(m.contains("5h 59% left (41% used, resets 3h)") && m.contains("7d 90% left"));
-        assert!(!m.contains("broken"));
-    }
-
-    #[test]
-    fn usage_labels_bound_identity_freshness_and_expired_windows_without_refreshing() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = d.path().join("usage-cache");
-        std::fs::create_dir_all(&dir).unwrap();
-        let now = threads::now_secs();
-        std::fs::write(
-            dir.join("recent.json"),
-            json!({
-                "fetched_at": now,
-                "identity":{"account":"claude-personal","provider":"claude","home":"/synthetic/claude-personal"},
-                "windows":[{"label":"5h","used_pct":88.0,"resets":"already reset (chat to refresh)"}]
-            }).to_string(),
-        ).unwrap();
-        std::fs::write(
-            dir.join("old.json"),
-            json!({
-                "fetched_at": now.saturating_sub(crate::usage::USAGE_TTL_SECS + 60),
-                "identity":{"account":"cursor-work","provider":"cursor","home":"/synthetic/cursor-work"},
-                "windows":[{"label":"Included","used_pct":27.0,"resets":null}]
-            }).to_string(),
-        ).unwrap();
-        std::fs::write(
-            dir.join("legacy.json"),
-            json!({"windows":[{"label":"7d","used_pct":4.0,"resets":null}]}).to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("future.json"),
-            json!({
-                "fetched_at": now.saturating_add(60),
-                "identity":{"account":"codex-test","provider":"codex","home":"/synthetic/codex-test"},
-                "windows":[{"label":"7d","used_pct":12.0,"resets":null}]
-            }).to_string(),
-        ).unwrap();
-
-        let (out, err) = tool(d.path(), "usage", json!({}));
-        assert!(!err);
-        assert!(
-            out.contains("claude account claude-personal [recent cache, read now]"),
-            "{out}"
-        );
-        assert!(
-            out.contains("5h reset since report (current usage unknown)"),
-            "{out}"
-        );
-        assert!(!out.contains("5h 12% left"), "{out}");
-        assert!(
-            out.contains("cursor account cursor-work [stale cache"),
-            "{out}"
-        );
-        assert!(
-            out.contains("identity unknown (legacy cache legacy) [cache age unknown"),
-            "{out}"
-        );
-        assert!(
-            out.contains("codex account codex-test [cache age unknown"),
-            "{out}"
-        );
-        assert!(out.contains("7d 96% left"), "{out}");
-        assert!(out.contains("7d 88% left"), "{out}");
-        assert!(
-            std::fs::read_dir(dir).unwrap().count() == 4,
-            "MCP usage must not refresh or write cache data"
-        );
-    }
-
-    #[test]
-    fn delegate_and_goal_tools_only_write_reviewable_proposals() {
-        let d = tempfile::tempdir().unwrap();
-        let (m, err) = tool(d.path(), "delegate", json!({"to":"codex-2","task":"t"}));
-        assert!(err && m.contains("delegation is off"));
-        assert!(
-            !proposals_dir(d.path()).exists(),
-            "nothing is written while delegation is off"
-        );
-        crate::store::set_delegation_protocol(d.path(), true).unwrap();
-        let (m, err) = tool(
-            d.path(),
-            "delegate",
-            json!({"to":"codex-2","task":"run the tests","from_thread":"3f9a"}),
-        );
-        assert!(!err && m.contains("the user must approve"));
-        let files: Vec<_> = std::fs::read_dir(proposals_dir(d.path()))
-            .unwrap()
-            .flatten()
-            .filter(|file| {
-                file.path()
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .collect();
-        assert_eq!(files.len(), 1);
-        let p: Proposal =
-            serde_json::from_str(&std::fs::read_to_string(files[0].path()).unwrap()).unwrap();
-        assert_eq!(
-            p,
-            Proposal {
-                to: "codex-2".into(),
-                task: "run the tests".into(),
-                from_thread: "3f9a".into()
-            }
-        );
-        assert!(has_proposals(d.path()));
-        assert_eq!(take_proposals(d.path()), vec![p]);
-        assert!(!has_proposals(d.path()), "taken proposals are consumed");
-        let (_, err) = tool(d.path(), "delegate", json!({"to":"x"}));
-        assert!(err);
-        let (m, err) = tool(
-            d.path(),
-            "delegate",
-            json!({"to":"x","task":"y".repeat(5000)}),
-        );
-        assert!(err && m.contains("longer"));
-        crate::store::set_delegation_protocol(d.path(), false).unwrap();
-        let request = uuid::Uuid::new_v4().to_string();
-        let revision = crate::goals::revision(&[]).unwrap();
-        let arguments = json!({"action":"propose_add","request_id":request,"revision":revision,"text":"Goal proposed through MCP"});
-        let (proposed, error) = tool(d.path(), "goals", arguments.clone());
-        assert!(!error, "{proposed}");
-        assert!(proposed.contains("proposal_recorded"));
-        assert!(
-            !d.path().join("goals.json").exists(),
-            "MCP cannot mutate goals directly"
-        );
-        assert_eq!(pending_proposal_files(d.path()).len(), 1);
-        assert!(!tool(d.path(), "goals", arguments.clone()).1);
-        assert_eq!(
-            pending_proposal_files(d.path()).len(),
-            1,
-            "same request does not duplicate pending work"
-        );
-        assert!(
-            take_proposals(d.path()).is_empty(),
-            "legacy delegate-only consumers leave goal proposals untouched"
-        );
-        let pending = take_pending(d.path(), false, 1);
-        let [PendingProposal::Goal(goal)] = pending.as_slice() else {
-            panic!("typed goal proposal expected");
+        });
+        let root = tempfile::tempdir().unwrap();
+        let mut registry = crate::mcp_registry::Registry {
+            servers: std::collections::BTreeMap::new(),
+            projects: std::collections::BTreeMap::new(),
         };
-        assert!(crate::goals::read_goals(d.path()).unwrap().is_empty());
-        let mut forged = arguments.clone();
-        forged["actor"] = json!("verified native agent");
-        assert!(tool(d.path(), "goals", forged).1);
-        assert!(
-            tool(
-                d.path(),
-                "goals",
-                json!({"action":"apply","request_id":request,"revision":revision})
-            )
-            .1
+        registry.servers.insert(
+            "synthetic".into(),
+            crate::mcp_registry::Server {
+                enabled: true,
+                transport: crate::mcp_registry::Transport::Remote {
+                    url: format!("http://{address}/mcp"),
+                    headers: std::collections::BTreeMap::from([(
+                        String::from("Authorization"),
+                        crate::mcp_registry::SecretRef::Credential {
+                            credential: target_name.into(),
+                        },
+                    )]),
+                },
+            },
         );
-        crate::goals::changes::apply(d.path(), goal).unwrap();
-        assert_eq!(crate::goals::read_goals(d.path()).unwrap().len(), 1);
-        let (repeated, error) = tool(d.path(), "goals", arguments);
-        assert!(!error && repeated.contains("applied"));
-        assert!(
-            pending_proposal_files(d.path()).is_empty(),
-            "resolved request never requeues itself"
-        );
-        let (status, error) = tool(
-            d.path(),
-            "goals",
-            json!({"action":"status","request_id":request}),
-        );
-        assert!(!error && status.contains("unverified MCP client"));
-        let current = crate::goals::revision(&crate::goals::read_goals(d.path()).unwrap()).unwrap();
-        assert!(tool(d.path(), "goals", json!({"action":"propose_add","request_id":uuid::Uuid::new_v4().to_string(),"revision":current,"text":"x".repeat(513)})).1);
-    }
-
-    #[test]
-    fn too_many_pending_proposals_are_refused() {
-        let d = tempfile::tempdir().unwrap();
-        crate::store::set_delegation_protocol(d.path(), true).unwrap();
-        for _ in 0..MAX_PENDING_PROPOSALS {
-            assert!(!tool(d.path(), "delegate", json!({"to":"a","task":"b"})).1);
+        crate::mcp_registry::save(root.path(), &registry).unwrap();
+        let line = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"synthetic/tool","arguments":{}}}"#;
+        let reply: Value = serde_json::from_str(&handle_line(root.path(), line).unwrap()).unwrap();
+        assert_eq!(reply["result"]["content"][0]["text"], "synthetic result");
+        thread.join().unwrap();
+        unsafe {
+            CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0);
         }
-        let (m, err) = tool(d.path(), "delegate", json!({"to":"a","task":"b"}));
-        assert!(err && m.contains("too many"));
-    }
-
-    #[test]
-    fn take_proposals_discards_junk_and_oversized_files() {
-        let d = tempfile::tempdir().unwrap();
-        let dir = proposals_dir(d.path());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("a.json"), "not json").unwrap();
-        std::fs::write(dir.join("b.json"), "x".repeat(20_000)).unwrap();
-        std::fs::write(dir.join("c.txt"), "ignored").unwrap();
-        assert!(take_proposals(d.path()).is_empty());
-        assert!(!dir.join("a.json").exists() && !dir.join("b.json").exists());
-        assert!(dir.join("c.txt").exists());
-    }
-
-    #[test]
-    fn protocol_errors_use_the_standard_codes() {
-        let d = tempfile::tempdir().unwrap();
-        let r = call(d.path(), rpc(5, "resources/list", Value::Null));
-        assert_eq!(r["error"]["code"], -32601);
-        assert_eq!(r["id"], 5);
-        let r: Value = serde_json::from_str(&handle_line(d.path(), "{not json").unwrap()).unwrap();
-        assert_eq!(r["error"]["code"], -32700);
-        assert_eq!(r["id"], Value::Null);
-        let r: Value = serde_json::from_str(&handle_line(d.path(), "[1,2]").unwrap()).unwrap();
-        assert_eq!(r["error"]["code"], -32600);
-        let big = format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"ping","pad":"{}"}}"#,
-            "x".repeat(MAX_REQUEST_BYTES)
-        );
-        let r: Value = serde_json::from_str(&handle_line(d.path(), &big).unwrap()).unwrap();
-        assert_eq!(r["error"]["code"], -32600);
-    }
-
-    #[test]
-    fn serve_answers_line_by_line_and_survives_an_oversized_line() {
-        let d = tempfile::tempdir().unwrap();
-        let mut input = String::new();
-        input.push_str(&rpc(1, "ping", Value::Null).to_string());
-        input.push('\n');
-        input.push_str(&"y".repeat(MAX_REQUEST_BYTES * 3));
-        input.push('\n');
-        input.push_str(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}).to_string());
-        input.push('\n');
-        input.push_str(&rpc(2, "ping", Value::Null).to_string());
-        input.push('\n');
-        let mut out = Vec::new();
-        serve(std::io::Cursor::new(input.into_bytes()), &mut out, d.path()).unwrap();
-        let lines: Vec<Value> = String::from_utf8(out)
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0]["id"], 1);
-        assert_eq!(lines[1]["error"]["code"], -32600);
-        assert_eq!(lines[2]["id"], 2);
-    }
-
-    #[test]
-    fn results_are_capped() {
-        let d = tempfile::tempdir().unwrap();
-        let id = "aaaa1111-0000-0000-0000-000000000000";
-        std::fs::create_dir_all(crate::threads::threads_dir(d.path())).unwrap();
-        let legacy =
-            (serde_json::to_string(&ThreadEvent::with_text("assistant", &"z".repeat(5000)))
-                .unwrap()
-                + "\n")
-                .repeat(30);
-        std::fs::write(
-            crate::threads::threads_dir(d.path()).join(format!("{id}.jsonl")),
-            legacy,
-        )
-        .unwrap();
-        let (t, _) = tool(
-            d.path(),
-            "thread_read",
-            json!({"id":"aaaa","max_chars":999_999}),
-        );
-        assert!(t.chars().count() <= MAX_RESULT_CHARS + 40);
-    }
-
-    #[test]
-    fn mcp_results_are_flagged_when_redacted_on_the_fly() {
-        let result = text_result("token=ghp_abcdefghijklmnop".into(), false);
-        assert_eq!(result["redacted"], true);
-        assert!(result["content"].as_array().unwrap().iter().any(|part| {
-            part["text"]
-                .as_str()
-                .is_some_and(|text| text.contains("Some stored text was redacted"))
-        }));
     }
 }

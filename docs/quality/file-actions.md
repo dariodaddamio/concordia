@@ -1,19 +1,18 @@
 # File actions and independent editor
 
 Workspace/input W3/W4 share `file_open::resolve_action`. File links, browser selections, search
-results and explicit editor commands use the same argument-array planning and identity checks.
-The actions are **Preview here**, **Split off**, and **Open in editor**. Preview remains the
-default. Explicit `/open` and `/preview` retain their internal-pane behavior.
+results and the file action picker use the same argument-array planning and identity checks.
+The actions are **Preview here** and **Open in editor**. Preview remains the default. Explicit
+`/open` retains its internal-pane behavior.
 
 Press F4 on a selected file-browser row or focused file pane to choose an action. Alt-clicking
 a transcript file link opens the same menu. Its Always choices persist an opening preference
 in Concordia-owned settings; they do not rewrite config.toml. The optional `[ui].file_action`
-default accepts `preview`, `split` or `editor`; an explicit stored preference wins. Closing the
+default accepts `preview` or `editor`; an explicit stored preference wins. Closing the
 menu preserves the draft. Search retains its exact verified snapshot for an internal preview;
 failed actions retain the search screen and display the error.
 
-Split off starts `concordia file-edit FILE` through the existing WezTerm host adapter, carrying
-the canonical path and one-based line/column as arguments. Missing host support is visible.
+Opening an editor carries the canonical path and one-based line/column as arguments.
 The new process draws the same file panes at full width and reuses their editing, undo, syntax,
 formatted/raw modes, save conflicts and recovery. It does not enter the chat dispatcher, probe
 providers or start a model turn. Ctrl+Q requests close; dirty files use the existing explicit
@@ -28,7 +27,7 @@ editor's lease cannot be claimed by another process. Recovery never uses the lat
 pane, another conversation's lease, or an automatic model continuation.
 
 `[editor].launch` is `terminal` by default; existing terminal configuration keeps its meaning.
-Explicit `gui` launches a configured native executable directly, without requiring WezTerm:
+Explicit `gui` launches a configured native executable directly:
 
 ```toml
 [editor]

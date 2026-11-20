@@ -1,15 +1,15 @@
 //! Unified provider turns with tracked cancel (Ctrl+C).
 
 use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
-use crate::provider::codex::{
-    self, apply_stream_parts, extract_stream_chunk, plan_turn_argv, TurnRequest as CodexReq,
-};
+use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
 use crate::provider::enforcement;
+use crate::provider::grok::{plan_grok_turn, GrokTurnRequest};
 use crate::provider::interaction::InteractionOwner;
 pub use crate::provider::interaction::NativeRequest;
 use crate::provider::launch::prepare;
-use crate::provider::stream_cards::{parse_codex_stream_chunk, StreamCard, StreamPart, TurnUsage};
+use crate::provider::standing_context;
+use crate::provider::stream_cards::{classify_codex_event, StreamCard, StreamPart, TurnUsage};
 use crate::provider::stream_json::{Flavor, StreamParser};
 #[path = "turn_acp.rs"]
 mod acp;
@@ -20,7 +20,7 @@ mod claude_native;
 use crate::store::{ProviderKind, TrustMode};
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -38,8 +38,63 @@ const KILL_GRACE: Duration = Duration::from_millis(2000);
 const STDERR_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 /// A single provider output line is kept up to this size; the rest of it is discarded.
 const LINE_MAX: usize = 1024 * 1024;
-/// Raw stream kept for the Codex fallback parse.
-const RAW_MAX: usize = 4 * 1024 * 1024;
+
+pub const VISIBLE_TEXT_MAX: usize = 4 * 1024 * 1024;
+pub const PROGRESS_CAPACITY: usize = 64;
+const VISIBLE_TEXT_KEEP: usize = 3 * 1024 * 1024;
+const OMITTED_TEXT: &str = "[Earlier output omitted from this view; inspect the original native session for full output.]\n";
+
+/// Keep a bounded, explicitly incomplete display projection; native records remain authoritative.
+pub fn append_visible_text(text: &mut String, fragment: &str) {
+    if text.len().saturating_add(fragment.len()) <= VISIBLE_TEXT_MAX {
+        text.push_str(fragment);
+        return;
+    }
+    if fragment.len() >= VISIBLE_TEXT_KEEP {
+        let mut start = fragment.len() - VISIBLE_TEXT_KEEP;
+        while !fragment.is_char_boundary(start) {
+            start += 1;
+        }
+        text.clear();
+        text.push_str(OMITTED_TEXT);
+        text.push_str(&fragment[start..]);
+    } else {
+        let mut start = text
+            .len()
+            .saturating_sub(VISIBLE_TEXT_KEEP - fragment.len());
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text.drain(..start);
+        text.insert_str(0, OMITTED_TEXT);
+        text.push_str(fragment);
+    }
+}
+pub(crate) async fn send_progress(
+    progress: &Option<mpsc::Sender<TurnProgress>>,
+    mut event: TurnProgress,
+    handle: &RunningTurn,
+) -> bool {
+    let Some(tx) = progress else { return false };
+    if let TurnProgress::Card(card) = &mut event {
+        crate::provider::stream_cards::bound_card(card);
+    }
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        _ = handle.wake.notified() => false,
+        result = tx.send(event) => {
+            if result.is_err() {
+                handle.cancel();
+                false
+            } else {
+                true
+            }
+        }
+    }
+}
 
 /// A native history-write failure is not evidence of quota exhaustion or a deleted rollout.
 pub fn thread_recording_failed(provider: ProviderKind, stderr: &str) -> bool {
@@ -57,12 +112,15 @@ pub struct ProviderTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
+    /// The selected provider-reported reasoning effort. Providers may encode this in model IDs.
+    pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub context_prefix: Option<&'a str>,
     /// When set, the prompt opens with this time and the relative times it mentions resolved
     /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
+    /// Native compaction is provider-owned; retained only in fixtures and observation records.
     pub compaction: crate::capacity::Compaction,
 }
 
@@ -79,6 +137,55 @@ pub struct PlannedTurn {
     pub env_remove: Vec<String>,
     pub cwd: String,
     pub provider: ProviderKind,
+    pub standing_context: Option<String>,
+}
+
+/// Inspect planner-owned options, excluding the final prompt and option values.
+/// Prompt/model text must never become a native permission flag.
+pub(super) fn planned_options(argv: &[String]) -> impl Iterator<Item = (&str, Option<&str>)> {
+    let mut arguments = argv[..argv.len().saturating_sub(1)].iter();
+    std::iter::from_fn(move || {
+        let argument = arguments.next()?.as_str();
+        let (flag, inline) = argument
+            .split_once('=')
+            .map_or((argument, None), |(flag, value)| (flag, Some(value)));
+        if matches!(
+            flag,
+            "-m" | "--model"
+                | "-s"
+                | "--sandbox"
+                | "-c"
+                | "--config"
+                | "--mode"
+                | "--output-format"
+                | "--permission-mode"
+                | "--session-id"
+                | "--resume"
+                | "resume"
+        ) {
+            Some((
+                flag,
+                inline.or_else(|| arguments.next().map(String::as_str)),
+            ))
+        } else {
+            Some((argument, None))
+        }
+    })
+}
+
+/// Authoritative terminal state for a provider turn.
+///
+/// This is derived from structured provider terminal events, app-server turn status,
+/// cancellation, and the child process status. It is deliberately independent of
+/// rendered error text so worker control can make a decision without prose parsing.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum TurnTerminalOutcome {
+    Success,
+    Quota,
+    Crash,
+    Cancelled,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -92,6 +199,21 @@ pub struct TurnOutcome {
     pub cards: Vec<StreamCard>,
     /// Last lines the provider wrote to stderr (why it failed, when it did).
     pub stderr_tail: String,
+    /// Structured terminal signal for worker orchestration and recovery.
+    pub terminal_outcome: TurnTerminalOutcome,
+}
+
+impl TurnOutcome {
+    /// Stable machine-readable label for worker control and external receipts.
+    pub fn terminal_outcome_label(&self) -> &'static str {
+        match self.terminal_outcome {
+            TurnTerminalOutcome::Success => "success",
+            TurnTerminalOutcome::Quota => "quota",
+            TurnTerminalOutcome::Crash => "crash",
+            TurnTerminalOutcome::Cancelled => "cancelled",
+            TurnTerminalOutcome::Unknown => "unknown",
+        }
+    }
 }
 
 /// Apply native image inputs after normal launch planning; payloads never pass through a shell.
@@ -140,6 +262,9 @@ pub fn attach_images(
             ));
         }
         ProviderKind::Cursor => anyhow::bail!("Cursor image input requires ACP"),
+        ProviderKind::Grok | ProviderKind::Opencode => {
+            anyhow::bail!("ACP image input requires the ACP transport")
+        }
     }
     Ok(())
 }
@@ -148,9 +273,17 @@ pub fn attach_images(
 pub enum TurnProgress {
     Artifact(Box<crate::artifacts::Record>),
     Interaction(Box<NativeRequest>),
+    Question(crate::ask_bridge::DeferredQuestion),
     Session(String),
+    Commands {
+        owner: InteractionOwner,
+        session_id: String,
+        commands: Vec<super::AvailableCommand>,
+    },
     Text(String),
     TextDelta(String),
+    /// The provider finished a distinct assistant message within the active turn.
+    TextBoundary,
     Card(StreamCard),
     Error(String),
     Thinking(String),
@@ -186,10 +319,9 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         trust,
         ..req.clone()
     };
-    let mut plan = plan_provider_turn_raw(req)?;
-    crate::capacity::apply(&mut plan, &req.compaction).map_err(anyhow::Error::msg)?;
-    // A CLI that lacks a flag (found by `provider::compat`) gets the older, plainer argv.
-    crate::provider::compat::degrade_planned(&mut plan, req.trust)?;
+    let plan = plan_provider_turn_raw(req)?;
+    // Current structured/native controls stay explicit; unsupported observed interfaces fail.
+    crate::provider::compat::validate_planned(&plan, req.trust)?;
     // A turn the gate made read-only must still be read-only, or it does not start.
     if lowered.is_some() {
         enforcement::ensure_read_only(plan.provider, &plan.argv)?;
@@ -198,12 +330,19 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
 }
 
 fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> {
+    if let Some(effort) = req.effort.map(str::trim).filter(|e| !e.is_empty()) {
+        anyhow::ensure!(
+            crate::text_safe::valid_effort(effort),
+            "unsupported provider effort value"
+        );
+    }
     let document_message = pdf_message(req)?;
     let raw_prompt = document_message
         .as_ref()
         .map_or(req.prompt, |message| message.text.as_str());
-    let mut prompt = match req.context_prefix {
-        Some(prefix) if !prefix.is_empty() => format!("{prefix}\n{raw_prompt}"),
+    let (standing_context, retrieval_prefix) = standing_context::extract(req.context_prefix);
+    let mut prompt = match (!retrieval_prefix.is_empty()).then_some(retrieval_prefix.as_str()) {
+        Some(prefix) => format!("{prefix}\n{raw_prompt}"),
         _ => raw_prompt.to_string(),
     };
     if req
@@ -232,23 +371,37 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 codex_home: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
+                standing_context,
             })?;
-            codex::assert_safe_argv(&plan.argv)?;
+            let mut argv = plan.argv;
+            let overrides =
+                crate::mcp_registry::codex_overrides(&crate::store::default_store_root(), req.cwd);
+            if !overrides.is_empty() {
+                let prompt = argv.pop().expect("provider prompt is always present");
+                for override_value in overrides {
+                    argv.push("-c".into());
+                    argv.push(override_value);
+                }
+                argv.push(prompt);
+            }
+            codex::assert_safe_argv(&argv[..argv.len() - 1])?;
             let mut env = Vec::new();
             if let Some(home) = req.home_path {
                 env.push(("CODEX_HOME".into(), home.to_string_lossy().into_owned()));
             }
             Ok(PlannedTurn {
                 command: plan.command,
-                argv: plan.argv,
+                argv,
                 env,
                 env_remove: Vec::new(),
                 cwd: plan.cwd,
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Codex,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Claude => {
@@ -257,18 +410,34 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 config_dir: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
+                standing_context,
             })?;
+            let mut argv = plan.argv;
+            if let Some(config) = crate::mcp_registry::claude_config_path(
+                &crate::store::default_store_root(),
+                req.cwd,
+            ) {
+                let prompt = argv.pop().expect("provider prompt is always present");
+                argv.extend([
+                    "--mcp-config".into(),
+                    config.to_string_lossy().into_owned(),
+                    "--strict-mcp-config".into(),
+                    prompt,
+                ]);
+            }
             Ok(PlannedTurn {
                 command: plan.command,
-                argv: plan.argv,
+                argv,
                 env: plan.env,
                 env_remove: Vec::new(),
                 cwd: plan.cwd,
                 prompt: prompt.clone(),
                 new_session_id: plan.new_session_id,
                 provider: ProviderKind::Claude,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
         ProviderKind::Cursor => {
@@ -277,6 +446,7 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 cwd: req.cwd,
                 home_path: req.home_path,
                 model: req.model,
+                effort: req.effort,
                 native_session_id: req.native_session_id,
                 trust: req.trust,
             })?;
@@ -289,9 +459,60 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
                 prompt: prompt.clone(),
                 new_session_id: None,
                 provider: ProviderKind::Cursor,
+                standing_context: standing_context.map(str::to_owned),
+            })
+        }
+        ProviderKind::Grok => {
+            let plan = plan_grok_turn(&GrokTurnRequest {
+                prompt: &prompt,
+                cwd: req.cwd,
+                home_path: req.home_path,
+                model: req.model,
+                effort: req.effort,
+                native_session_id: req.native_session_id,
+                trust: req.trust,
+            })?;
+            Ok(PlannedTurn {
+                command: plan.command,
+                argv: plan.argv,
+                env: plan.env,
+                env_remove: plan.env_remove,
+                cwd: plan.cwd,
+                prompt: prompt.clone(),
+                new_session_id: None,
+                provider: ProviderKind::Grok,
+                standing_context: standing_context.map(str::to_owned),
+            })
+        }
+        ProviderKind::Opencode => {
+            let command = crate::provider::locate_real(ProviderKind::Opencode)
+                .map(|located| located.path.to_string_lossy().into_owned())
+                .map_err(|e| {
+                    anyhow::anyhow!(crate::doctor::format_not_found_turn_error(
+                        ProviderKind::Opencode,
+                        &e
+                    ))
+                })?;
+            Ok(PlannedTurn {
+                command,
+                argv: vec!["acp".into()],
+                env: Vec::new(),
+                env_remove: Vec::new(),
+                cwd: req.cwd.to_string_lossy().into_owned(),
+                prompt: prompt.clone(),
+                new_session_id: None,
+                provider: ProviderKind::Opencode,
+                standing_context: standing_context.map(str::to_owned),
             })
         }
     }
+}
+
+/// Text to add to a running turn. The transport answers on `reply` once the provider accepts or
+/// refuses it; a dropped reply means the turn ended before an answer arrived.
+pub(crate) struct SteerRequest {
+    pub text: String,
+    pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,
 }
 
 pub struct RunningTurn {
@@ -300,6 +521,8 @@ pub struct RunningTurn {
     /// Pid of the spawned process (0 until spawn); used to kill the whole tree.
     pid: Arc<AtomicU32>,
     wake: Arc<Notify>,
+    /// Set only by a transport that can steer the active turn, and only while that turn runs.
+    steering: std::sync::Mutex<Option<mpsc::Sender<SteerRequest>>>,
 }
 
 impl RunningTurn {
@@ -309,7 +532,40 @@ impl RunningTurn {
             child: Arc::new(Mutex::new(None)),
             pid: Arc::new(AtomicU32::new(0)),
             wake: Arc::new(Notify::new()),
+            steering: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(crate) fn set_steering(&self, sender: Option<mpsc::Sender<SteerRequest>>) {
+        if let Ok(mut slot) = self.steering.lock() {
+            *slot = sender;
+        }
+    }
+
+    /// Whether the active turn can take a message mid-run.
+    pub fn can_steer(&self) -> bool {
+        self.steering
+            .lock()
+            .is_ok_and(|slot| slot.as_ref().is_some_and(|tx| !tx.is_closed()))
+    }
+
+    /// Hand `text` to the running turn. The returned receiver resolves with the provider's answer.
+    pub fn steer(
+        &self,
+        text: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, String> {
+        let slot = self
+            .steering
+            .lock()
+            .map_err(|_| "steering is unavailable".to_owned())?;
+        let sender = slot
+            .as_ref()
+            .ok_or_else(|| "this provider cannot steer a running turn".to_owned())?;
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        sender
+            .try_send(SteerRequest { text, reply })
+            .map_err(|_| "steering is pending or the turn has ended".to_owned())?;
+        Ok(answer)
     }
 
     /// Process id of the provider child, once it has been spawned.
@@ -354,14 +610,11 @@ pub(crate) fn kill_process_tree(pid: u32) {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let _ = crate::process_ui::command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
             .spawn();
     }
     #[cfg(not(windows))]
@@ -382,7 +635,7 @@ pub async fn run_provider_turn(
 pub async fn run_provider_turn_with_progress(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     run_provider_turn_inner(
         req,
@@ -391,6 +644,7 @@ pub async fn run_provider_turn_with_progress(
         on_started,
         on_progress,
         idle_timeout_from_config(),
+        std::env::current_exe().ok(),
     )
     .await
 }
@@ -399,7 +653,7 @@ pub async fn run_provider_turn_with_progress(
 pub async fn run_provider_turn_with_idle_timeout(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
     idle_timeout: Duration,
 ) -> Result<TurnOutcome> {
     run_provider_turn_inner(
@@ -409,6 +663,7 @@ pub async fn run_provider_turn_with_idle_timeout(
         on_started,
         on_progress,
         idle_timeout,
+        std::env::current_exe().ok(),
     )
     .await
 }
@@ -418,7 +673,7 @@ pub async fn run_provider_turn_with_owner(
     req: &ProviderTurnRequest<'_>,
     owner: InteractionOwner,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
 ) -> Result<TurnOutcome> {
     run_provider_turn_with_transport(
         req,
@@ -426,6 +681,7 @@ pub async fn run_provider_turn_with_owner(
         crate::native_input::Mode::Standard,
         on_started,
         on_progress,
+        None,
     )
     .await
 }
@@ -435,13 +691,17 @@ pub async fn run_provider_turn_with_transport(
     owner: InteractionOwner,
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
+    ask_server_executable: Option<&Path>,
 ) -> Result<TurnOutcome> {
     let owner = owner
         .validate_for(req.provider, req.cwd, req.home_path)
         .map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
         (mode != crate::native_input::Mode::CursorAcp || req.provider == ProviderKind::Cursor)
+            && (mode != crate::native_input::Mode::GrokAcp || req.provider == ProviderKind::Grok)
+            && (mode != crate::native_input::Mode::OpencodeAcp
+                || req.provider == ProviderKind::Opencode)
             && (mode != crate::native_input::Mode::CodexAppServer
                 || req.provider == ProviderKind::Codex)
             && (mode != crate::native_input::Mode::ClaudeStdio
@@ -455,6 +715,9 @@ pub async fn run_provider_turn_with_transport(
         on_started,
         on_progress,
         idle_timeout_from_config(),
+        ask_server_executable
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_exe().ok()),
     )
     .await
 }
@@ -493,10 +756,13 @@ async fn run_provider_turn_inner(
     owner: Option<InteractionOwner>,
     mode: crate::native_input::Mode,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
-    on_progress: Option<mpsc::UnboundedSender<TurnProgress>>,
+    on_progress: Option<mpsc::Sender<TurnProgress>>,
     idle_timeout: Duration,
+    ask_server_executable: Option<PathBuf>,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
+    // Idle notices are advisory. Bound even direct API durations before Instant arithmetic.
+    let idle_timeout = idle_timeout.min(Duration::from_secs(365 * 24 * 60 * 60));
     let source_started = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
@@ -508,7 +774,147 @@ async fn run_provider_turn_inner(
             super::session_guard::acquire(&crate::store::default_store_root(), req.home_path, id)
         })
         .transpose()?;
+    let handle = Arc::new(RunningTurn::new());
+    let setup_store = crate::store::default_store_root();
+    if crate::harness::shared::needs_setup(&setup_store, req.provider, req.home_path, req.cwd)
+        .map_err(anyhow::Error::msg)?
+        || crate::harness::skills::needs_setup(&setup_store, req.home_path)
+            .map_err(anyhow::Error::msg)?
+    {
+        // Setup adapters run before the provider. Publish their cancellation owner too;
+        // aborting this future must kill the tracked adapter rather than orphan it.
+        if let Some(started) = &on_started {
+            if started.send(handle.clone()).is_err() {
+                return Ok(TurnOutcome {
+                    cancelled: true,
+                    ..Default::default()
+                });
+            }
+        }
+        struct CancelSetupOnDrop(Option<Arc<AtomicBool>>);
+        impl Drop for CancelSetupOnDrop {
+            fn drop(&mut self) {
+                if let Some(cancel) = &self.0 {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut setup_guard = CancelSetupOnDrop(Some(handle.cancel_flag.clone()));
+        let setup_cancel = handle.cancel_flag.clone();
+        let setup_provider = req.provider;
+        let setup_home = req.home_path.map(Path::to_path_buf);
+        let setup_project = req.cwd.to_path_buf();
+        let setup = tokio::task::spawn_blocking(move || {
+            let mut lines = crate::harness::skills::reconcile(
+                &setup_store,
+                setup_home.as_deref(),
+                &setup_cancel,
+            )?;
+            lines.extend(crate::harness::shared::reconcile_account(
+                &setup_store,
+                setup_provider,
+                setup_home.as_deref(),
+                &setup_project,
+                &|argv| {
+                    crate::harness::run::run_command_cancellable(
+                        argv,
+                        &setup_project,
+                        crate::harness::run::DEFAULT_TIMEOUT,
+                        &setup_cancel,
+                    )
+                },
+            )?);
+            Ok::<_, String>(lines)
+        })
+        .await?;
+        setup_guard.0.take();
+        if handle.cancel_flag.load(Ordering::SeqCst) {
+            return Ok(TurnOutcome {
+                cancelled: true,
+                ..Default::default()
+            });
+        }
+        if let Some(progress) = &on_progress {
+            let lines =
+                setup.unwrap_or_else(|error| vec![format!("Shared setup stopped: {error}")]);
+            for line in lines {
+                if !send_progress(&Some(progress.clone()), TurnProgress::Notice(line), &handle)
+                    .await
+                {
+                    return Ok(TurnOutcome {
+                        cancelled: true,
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
     let mut plan = plan_provider_turn(req)?;
+    plan.env.retain(|(key, _)| key != "HABENA_RUNTIME_CONTEXT");
+    plan.env_remove
+        .retain(|key| key != "HABENA_RUNTIME_CONTEXT");
+    if owner.is_some() {
+        let question_tool = match (req.provider, mode) {
+            (ProviderKind::Claude, crate::native_input::Mode::ClaudeStdio) => "AskUserQuestion",
+            (ProviderKind::Codex, crate::native_input::Mode::CodexAppServer) => "ask_user",
+            (ProviderKind::Codex, crate::native_input::Mode::Standard)
+                if std::env::var_os("CONCORDIA_CODEX_BIN").is_none() =>
+            {
+                "ask_user"
+            }
+            (
+                ProviderKind::Cursor,
+                crate::native_input::Mode::Standard | crate::native_input::Mode::CursorAcp,
+            )
+            | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+            | (ProviderKind::Opencode, crate::native_input::Mode::OpencodeAcp) => "ask_user",
+            _ => "unavailable",
+        };
+        let blocks = !matches!(
+            (req.provider, mode),
+            (ProviderKind::Cursor, crate::native_input::Mode::Standard)
+        );
+        plan.env.push((
+            "HABENA_RUNTIME_CONTEXT".into(),
+            serde_json::json!({
+                "version":1,"client":"concordia","provider":req.provider.as_str(),
+                "question_tool":question_tool,"question_blocks":blocks
+            })
+            .to_string(),
+        ));
+    } else {
+        plan.env_remove.push("HABENA_RUNTIME_CONTEXT".into());
+    }
+    // Bind MCP child provenance to the already-validated app owner. Never derive these values
+    // from model parameters or allow stale inherited identities on unbound/manual turns.
+    const OWNER_ENV: [&str; 3] = [
+        "CONCORDIA_PARENT_CONVERSATION",
+        "CONCORDIA_PARENT_RUN",
+        "CONCORDIA_PROJECT_DIR",
+    ];
+    plan.env_remove
+        .retain(|key| !OWNER_ENV.contains(&key.as_str()));
+    plan.env
+        .retain(|(key, _)| !OWNER_ENV.contains(&key.as_str()));
+    if let Some(owner) = &owner {
+        plan.env.extend([
+            (
+                "CONCORDIA_PARENT_CONVERSATION".into(),
+                owner.conversation_id.clone(),
+            ),
+            ("CONCORDIA_PARENT_RUN".into(), owner.run_id.clone()),
+            (
+                "CONCORDIA_PROJECT_DIR".into(),
+                owner.workspace.to_string_lossy().into_owned(),
+            ),
+        ]);
+    } else {
+        plan.env_remove
+            .extend(OWNER_ENV.into_iter().map(str::to_owned));
+    }
+    if req.provider == ProviderKind::Claude {
+        super::claude::add_effort_if_supported(&mut plan.argv, req.effort)?;
+    }
     let documents = pdf_message(req)?;
     if documents.is_some() && mode == crate::native_input::Mode::Standard {
         let program = plan.command.clone();
@@ -517,14 +923,26 @@ async fn run_provider_turn_inner(
         })
         .await?
         .map_err(anyhow::Error::msg)?;
-        anyhow::ensure!(super::compat::version_token(&version).as_deref() == Some(claude_native::SUPPORTED_VERSION),
-            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained", claude_native::SUPPORTED_VERSION);
+        let observed_version = super::compat::version_token(&version)
+            .ok_or_else(|| anyhow::anyhow!("Claude native PDF input returned no version"))?;
+        anyhow::ensure!(
+            super::compat::version_at_least(&observed_version, claude_native::SUPPORTED_VERSION),
+            "Native PDF input requires qualified Claude CLI {}; original draft and snapshots were retained",
+            claude_native::SUPPORTED_VERSION
+        );
     }
     if let (Some(tx), Some(notice)) = (&on_progress, enforcement_notice(req)) {
-        let _ = tx.send(TurnProgress::Notice(notice));
+        tx.send(TurnProgress::Notice(notice))
+            .await
+            .map_err(|_| anyhow::anyhow!("progress receiver closed before provider startup"))?;
     }
-    if req.provider == ProviderKind::Cursor
-        && (!req.images.is_empty() || mode == crate::native_input::Mode::CursorAcp)
+    if matches!(
+        req.provider,
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode
+    ) && (!req.images.is_empty()
+        || mode == crate::native_input::Mode::CursorAcp
+        || mode == crate::native_input::Mode::GrokAcp
+        || mode == crate::native_input::Mode::OpencodeAcp)
     {
         let out = acp::run(
             req,
@@ -532,6 +950,10 @@ async fn run_provider_turn_inner(
             owner.clone(),
             on_started.clone(),
             on_progress.clone(),
+            handle.clone(),
+            ask_server_executable
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("Concordia executable path is unavailable"))?,
         )
         .await?;
         if !(out.failed
@@ -542,37 +964,120 @@ async fn run_provider_turn_inner(
         }
     }
     // codex exec has no response channel for request_user_input; the app-server transport does.
-    // Only an interactive owner can answer, so ownerless (worker) turns stay on exec.
+    // Only an interactive owner can answer, so ownerless turns stay on exec.
     if mode == crate::native_input::Mode::CodexAppServer
         || (req.provider == ProviderKind::Codex
             && mode == crate::native_input::Mode::Standard
             && owner.is_some()
             // Test/diagnostic launchers speak the exec stream contract, not Codex app-server.
             // Keep them on the stream path; real Codex uses the native popup transport.
-            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none()
-            && crate::config::ui_question_popups())
+            && std::env::var_os("CONCORDIA_CODEX_BIN").is_none())
     {
-        return appserver::run(req, &plan, owner, on_started, on_progress).await;
+        let fallback_progress = on_progress.clone();
+        let out = appserver::run(
+            req,
+            &plan,
+            owner.clone(),
+            on_started.clone(),
+            on_progress.clone(),
+            handle.clone(),
+        )
+        .await;
+        // Only a missing or changed app-server falls back; policy and identity refusals stand.
+        let out = match out {
+            Ok(out) => out,
+            Err(error) if format!("{error:#}").contains("Could not start Codex app-server") => {
+                TurnOutcome {
+                    failed: true,
+                    stderr_tail: format!("{}: {error:#}", appserver::UNAVAILABLE),
+                    ..Default::default()
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        if !(out.failed && out.stderr_tail.starts_with(appserver::UNAVAILABLE)) {
+            return Ok(out);
+        }
+        if out.stderr_tail.contains(appserver::INCOMPATIBLE)
+            || out.stderr_tail.contains(appserver::UNKNOWN_COMPATIBILITY)
+        {
+            if let Some(progress) = on_progress.as_ref() {
+                let detail = out
+                    .stderr_tail
+                    .strip_prefix(appserver::UNAVAILABLE)
+                    .unwrap_or(out.stderr_tail.as_str())
+                    .trim_start_matches(|c| c == ':' || c == ' ');
+                let _ = progress
+                    .send(TurnProgress::Notice(format!(
+                        "Codex app-server refused this turn before prompt delivery: detected {detail}. The prompt and native session were preserved; no fallback was started. Disable Codex native transport with /native, then retry explicitly."
+                    )))
+                    .await;
+            }
+            return Ok(out);
+        }
+        // A Codex update must not stop the chat: run this turn on Codex's standard transport.
+        crate::logging::info(&out.stderr_tail);
+        if let Some(progress) = fallback_progress {
+            let _ = progress
+                .send(TurnProgress::Notice(
+                    "Codex's native protocol did not answer as expected, so this turn runs on Codex's standard transport; questions and approvals use that transport."
+                        .into(),
+                ))
+                .await;
+        }
     }
     if mode == crate::native_input::Mode::ClaudeStdio {
-        return claude_native::run(req, &plan, owner, on_started, on_progress).await;
+        return claude_native::run(req, &plan, owner, on_started, on_progress, handle).await;
     }
     // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
-    // it explicitly. If that does not work the turn runs unbound, exactly as before.
+    // it explicitly. Refuse an unbound turn if native session creation fails.
     if plan.provider == ProviderKind::Cursor
         && req.native_session_id.is_none_or(|s| s.trim().is_empty())
     {
-        if let Some(id) =
-            crate::provider::cursor::create_chat(&plan.command, &plan.env, &plan.cwd).await
-        {
-            let at = plan.argv.len() - 1; // the prompt stays last
-            plan.argv.insert(at, id.clone());
-            plan.argv.insert(at, "--resume".into());
-            plan.new_session_id = Some(id);
+        let id = crate::provider::cursor::create_chat(
+            &plan.command,
+            &plan.env,
+            &plan.env_remove,
+            &plan.cwd,
+        )
+        .await
+        .context("Cursor did not create an exact native chat; the turn was not started")?;
+        let at = plan.argv.len() - 1; // the prompt stays last
+        plan.argv.insert(at, id.clone());
+        plan.argv.insert(at, "--resume".into());
+        plan.new_session_id = Some(id);
+    }
+    let (question_tx, mut question_rx) = mpsc::unbounded_channel();
+    let _question_plugin =
+        if plan.provider == ProviderKind::Cursor && owner.is_some() && on_progress.is_some() {
+            let plugin = crate::ask_bridge::SessionPlugin::start(
+                ask_server_executable
+                    .as_deref()
+                    .context("Concordia question executable is unavailable")?,
+                question_tx,
+            )
+            .await
+            .context("Cursor question plugin could not be prepared; the turn was not started")?;
+            let at = plan.argv.len() - 1;
+            plan.argv.splice(
+                at..at,
+                [
+                    "--plugin-dir".into(),
+                    plugin.path().to_string_lossy().into_owned(),
+                ],
+            );
+            Some(plugin)
+        } else {
+            None
+        };
+    if plan.provider == ProviderKind::Cursor {
+        if let Some(context) = plan.standing_context.as_deref() {
+            plan.prompt = format!("{context}\n{}", plan.prompt);
+            if let Some(prompt) = plan.argv.last_mut() {
+                *prompt = plan.prompt.clone();
+            }
         }
     }
-    let plain_output =
-        super::compat::caps_for(plan.provider).is_some_and(|caps| caps.known && !caps.stream_json);
     let mut launch = prepare(&plan)?;
     if let Some(message) = documents {
         anyhow::ensure!(
@@ -593,8 +1098,6 @@ async fn run_provider_turn_inner(
     } else {
         attach_images(&mut launch, plan.provider, req.images, &plan.prompt)?;
     }
-    let handle = Arc::new(RunningTurn::new());
-
     let mut cmd = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut cmd);
     #[cfg(unix)]
@@ -639,6 +1142,12 @@ async fn run_provider_turn_inner(
     // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
+    if handle.cancel_flag.load(Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -652,7 +1161,8 @@ async fn run_provider_turn_inner(
         }
         Err(error) => return Err(error).with_context(|| format!("spawn {}", launch.program)),
     };
-    crate::process_lifetime::bind_to_concordia(&child);
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     // Counted in the footer stats (when on) until this turn ends.
@@ -670,23 +1180,9 @@ async fn run_provider_turn_inner(
     let last_activity_ms = Arc::new(AtomicU64::new(timing.elapsed().as_millis() as u64));
     let stderr_activity = last_activity_ms.clone();
     // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
-    let mut stderr_task = tokio::spawn(async move {
-        let mut tail: VecDeque<String> = VecDeque::new();
-        let mut reader = BufReader::new(stderr);
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
-            // stderr is retained as a bounded tail; recording is independently opt-in.
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, move || {
+        stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
+    }));
     {
         let mut slot = handle.child.lock().await;
         *slot = Some(child);
@@ -702,13 +1198,15 @@ async fn run_provider_turn_inner(
     let mut reader = BufReader::new(stdout);
     let mut line_buf: Vec<u8> = Vec::new();
     let mut out = TurnOutcome::default();
-    let mut raw = String::new();
     let flavor = match plan.provider {
         ProviderKind::Claude => Some(Flavor::Claude),
-        ProviderKind::Cursor => Some(Flavor::Cursor),
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => Some(Flavor::Cursor),
         ProviderKind::Codex => None,
     };
     let mut json_parser = flavor.map(|f| StreamParser::new(f).with_cwd(req.cwd));
+    let mut invalid_protocol = false;
+    let mut terminal_seen = None;
+    let mut quota_signal = false;
     let mut completed_events = CompletedEvents::default();
     let mut artifacts = crate::artifacts::Collector::default();
     let mut first_event_ms = None;
@@ -727,6 +1225,15 @@ async fn run_provider_turn_inner(
                 out.cancelled = true;
                 break;
             }
+            Some(request) = question_rx.recv(), if _question_plugin.is_some() => {
+                if let (Some(owner), Some(session)) = (&owner, req.native_session_id.or(plan.new_session_id.as_deref())) {
+                    let event = crate::ask_bridge::DeferredQuestion::new(owner.clone(), session.into(), request);
+                    if !send_progress(&on_progress, TurnProgress::Question(event.clone()), &handle).await {
+                        event.acknowledge(Err("the owning task is unavailable".into()));
+                    }
+                }
+                continue;
+            }
             n = read_line_bounded(&mut reader, &mut line_buf) => {
                 n.map(|n| (n > 0).then(|| decode_line(&line_buf)))
             }
@@ -735,9 +1242,9 @@ async fn run_provider_turn_inner(
                 let activity_ms = last_activity_ms.load(Ordering::SeqCst);
                 let silent_for = Duration::from_millis(elapsed_ms.saturating_sub(activity_ms));
                 if silent_for >= idle_timeout {
-                    if let Some(tx) = &on_progress {
+                    if on_progress.is_some() {
                         let minutes = silent_for.as_secs().div_ceil(60).max(1);
-                        let _ = tx.send(TurnProgress::Idle { provider: plan.provider, minutes, silent_for });
+                        let _ = send_progress(&on_progress, TurnProgress::Idle { provider: plan.provider, minutes, silent_for }, &handle).await;
                     }
                     idle.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
                 } else {
@@ -758,24 +1265,26 @@ async fn run_provider_turn_inner(
                 }
                 first_event_ms.get_or_insert_with(|| timing.elapsed().as_millis());
                 let parsing = Instant::now();
-                if !plain_output && completed_events.repeated(&line) {
+                if completed_events.repeated(&line) {
                     continue;
                 }
                 if let Some(failed) = terminal_failure(&line) {
                     out.failed = failed;
+                    terminal_seen = Some(failed);
                 }
-                if raw.len() < RAW_MAX {
-                    raw.push_str(&line);
-                    raw.push('\n');
+                if structured_quota_signal(&line) {
+                    quota_signal = true;
                 }
                 {
-                    let mut parts = if plain_output {
-                        vec![StreamPart::Text(line.clone())]
-                    } else {
-                        match json_parser.as_mut() {
-                            Some(p) => p.parse_line(&line),
-                            None => parse_codex_stream_chunk(&line),
-                        }
+                    let mut parts = match json_parser.as_mut() {
+                        Some(p) => p.parse_line(&line),
+                        None => match serde_json::from_str::<serde_json::Value>(&line) {
+                            Ok(event) if event.is_object() => classify_codex_event(&event),
+                            _ => {
+                                invalid_protocol = true;
+                                vec![StreamPart::Error("Codex returned invalid structured JSON output; current JSON events are required.".into())]
+                            }
+                        },
                     };
                     if plan.provider == ProviderKind::Claude && req.native_session_id.is_some() {
                         // Recent Claude versions restore earlier session cost into result totals.
@@ -786,7 +1295,7 @@ async fn run_provider_turn_inner(
                             }
                         }
                     }
-                    emit_progress(&parts, &on_progress);
+                    emit_progress(&parts, &on_progress, &handle).await;
                     let mut chunk = codex::StreamOutcome::default();
                     apply_stream_parts(parts, &mut chunk);
                     if let Some(sid) = chunk.session_id {
@@ -802,43 +1311,52 @@ async fn run_provider_turn_inner(
                         }
                         out.session_id = Some(sid);
                     }
-                    if !plain_output {
+                    {
                         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
                             if plan.provider == ProviderKind::Codex
                                 && event["type"] == "item.completed"
                             {
-                                artifacts.report(
-                                    owner.as_ref(),
-                                    out.session_id.as_deref().or(req.native_session_id),
-                                    None,
-                                    &event["item"],
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report(
+                                        owner.as_ref(),
+                                        out.session_id.as_deref().or(req.native_session_id),
+                                        None,
+                                        &event["item"],
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             } else if plan.provider == ProviderKind::Cursor {
-                                artifacts.report_cursor(
-                                    owner.as_ref(),
-                                    req.native_session_id
-                                        .or(plan.new_session_id.as_deref())
-                                        .or(out.session_id.as_deref()),
-                                    None,
-                                    &event,
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report_cursor(
+                                        owner.as_ref(),
+                                        req.native_session_id
+                                            .or(plan.new_session_id.as_deref())
+                                            .or(out.session_id.as_deref()),
+                                        None,
+                                        &event,
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             } else if plan.provider == ProviderKind::Claude {
-                                artifacts.report_claude(
-                                    owner.as_ref(),
-                                    req.native_session_id
-                                        .or(plan.new_session_id.as_deref())
-                                        .or(out.session_id.as_deref()),
-                                    None,
-                                    &event,
-                                    &on_progress,
-                                );
+                                artifacts
+                                    .report_claude(
+                                        owner.as_ref(),
+                                        req.native_session_id
+                                            .or(plan.new_session_id.as_deref())
+                                            .or(out.session_id.as_deref()),
+                                        None,
+                                        &event,
+                                        &on_progress,
+                                        &handle,
+                                    )
+                                    .await;
                             }
                         }
                     }
                     if !chunk.text.is_empty() {
-                        out.text.push_str(&chunk.text);
+                        append_visible_text(&mut out.text, &chunk.text);
                     }
                     for card in chunk.cards {
                         crate::provider::stream_cards::upsert_card(&mut out.cards, card);
@@ -894,14 +1412,22 @@ async fn run_provider_turn_inner(
         if out.text.is_empty() {
             out.text = "cancelled".into();
         }
-    } else if out.text.is_empty() && out.cards.is_empty() && plan.provider == ProviderKind::Codex {
-        let chunk = extract_stream_chunk(&raw);
-        out.text = chunk.text;
-        out.cards = chunk.cards;
-        if out.session_id.is_none() {
-            out.session_id = chunk.session_id;
-        }
     }
+    out.failed |= invalid_protocol
+        || json_parser
+            .as_ref()
+            .is_some_and(|parser| parser.invalid_output());
+    out.terminal_outcome = if out.cancelled {
+        TurnTerminalOutcome::Cancelled
+    } else if quota_signal {
+        TurnTerminalOutcome::Quota
+    } else if terminal_seen == Some(false) && out.exit_code == Some(0) && !out.failed {
+        TurnTerminalOutcome::Success
+    } else if out.failed || out.exit_code.is_some_and(|code| code != 0) {
+        TurnTerminalOutcome::Crash
+    } else {
+        TurnTerminalOutcome::Unknown
+    };
     if plan.provider == ProviderKind::Codex
         && !out.cancelled
         && super::edit_display::needs_codex_patch(&out.cards)
@@ -926,8 +1452,9 @@ async fn run_provider_turn_inner(
                 if let Ok(patches) = patches {
                     for card in super::edit_display::enrich_codex(&mut out.cards, &patches, req.cwd)
                     {
-                        if let Some(tx) = &on_progress {
-                            let _ = tx.send(TurnProgress::Card(card));
+                        if on_progress.is_some() {
+                            let _ = send_progress(&on_progress, TurnProgress::Card(card), &handle)
+                                .await;
                         }
                     }
                 }
@@ -936,8 +1463,12 @@ async fn run_provider_turn_inner(
     }
     crate::logging::info(&format!(
         "provider-timing provider={} setup_ms={setup_ms} spawn_ms={spawn_ms} first_event_ms={} parse_us={} events={events} total_ms={}",
-        plan.provider.as_str(), first_event_ms.map(|n| n.to_string()).unwrap_or_else(|| "unknown".into()),
-        parse_time.as_micros(), timing.elapsed().as_millis()
+        plan.provider.as_str(),
+        first_event_ms
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "unknown".into()),
+        parse_time.as_micros(),
+        timing.elapsed().as_millis()
     ));
     Ok(out)
 }
@@ -965,6 +1496,37 @@ fn terminal_failure(line: &str) -> Option<bool> {
         ),
         _ => None,
     }
+}
+
+/// Detect quota/rate-limit terminal signals only from structured provider output.
+fn structured_quota_signal(line: &str) -> bool {
+    let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    let matched = [
+        event.get("code"),
+        event.get("type"),
+        event.get("subtype"),
+        event.pointer("/error/code"),
+        event.pointer("/error/type"),
+        event.pointer("/error/codexErrorInfo"),
+        event.pointer("/error/codexErrorInfo/code"),
+        event.pointer("/result/code"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|value| value.as_str())
+    .any(|value| {
+        matches!(
+            value,
+            "quota_exceeded"
+                | "rate_limit_exceeded"
+                | "usage_limit_exceeded"
+                | "usage_limit_reached"
+                | "usageLimitExceeded"
+        )
+    });
+    matched
 }
 
 /// Replayed complete snapshots with explicit event/message identity are safe to omit.
@@ -1054,12 +1616,41 @@ mod replay_tests {
     }
 }
 
+/// Drain every transport's stderr without blocking the child; retain only a bounded tail.
+async fn read_stderr_tail(
+    stderr: tokio::process::ChildStderr,
+    mut on_line: impl FnMut(),
+) -> String {
+    let mut reader = BufReader::new(stderr);
+    let mut tail = VecDeque::new();
+    let mut line = Vec::new();
+    while read_line_bounded(&mut reader, &mut line)
+        .await
+        .is_ok_and(|n| n > 0)
+    {
+        on_line();
+        if tail.len() == STDERR_KEEP_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(decode_line(&line));
+    }
+    tail.into_iter().collect::<Vec<_>>().join("\n")
+}
+
 /// Read one line into `buf` (cleared first), keeping at most `LINE_MAX` bytes and discarding the
 /// remainder of an over-long line. Returns the bytes consumed; 0 means end of stream. Unlike
 /// `lines()`, invalid UTF-8 is not an error (the caller decodes lossily) and memory is bounded.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
+) -> std::io::Result<usize> {
+    read_line_bounded_with_limit(r, buf, LINE_MAX).await
+}
+
+async fn read_line_bounded_with_limit<R: AsyncBufRead + Unpin>(
+    r: &mut R,
+    buf: &mut Vec<u8>,
+    limit: usize,
 ) -> std::io::Result<usize> {
     buf.clear();
     let mut total = 0usize;
@@ -1072,11 +1663,11 @@ async fn read_line_bounded<R: AsyncBufRead + Unpin>(
             Some(i) => (i + 1, true),
             None => (available.len(), false),
         };
-        if buf.len() < LINE_MAX {
-            let take = (LINE_MAX - buf.len()).min(used);
+        if buf.len() < limit {
+            let take = (limit - buf.len()).min(used);
             buf.extend_from_slice(&available[..take]);
         }
-        total += used;
+        total = total.saturating_add(used);
         r.consume(used);
         if done {
             return Ok(total);
@@ -1095,10 +1686,11 @@ fn decode_line(buf: &[u8]) -> String {
     line
 }
 
-fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSender<TurnProgress>>) {
-    let Some(tx) = on_progress else {
-        return;
-    };
+async fn emit_progress(
+    parts: &[StreamPart],
+    on_progress: &Option<mpsc::Sender<TurnProgress>>,
+    handle: &RunningTurn,
+) {
     for part in parts {
         let ev = match part {
             StreamPart::Session(id) => TurnProgress::Session(id.clone()),
@@ -1110,7 +1702,7 @@ fn emit_progress(parts: &[StreamPart], on_progress: &Option<mpsc::UnboundedSende
             StreamPart::ThinkingDelta(t) => TurnProgress::ThinkingDelta(t.clone()),
             StreamPart::Usage(u) => TurnProgress::Usage(u.clone()),
         };
-        let _ = tx.send(ev);
+        let _ = send_progress(on_progress, ev, handle).await;
     }
 }
 
@@ -1243,8 +1835,9 @@ mod gate_tests {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: Some("<concordia_context>last week</concordia_context>"),
             local_time: Some(now),
             compaction: Default::default(),
@@ -1276,6 +1869,7 @@ mod gate_tests {
             cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
             trust,
             context_prefix: None,
@@ -1317,8 +1911,9 @@ mod gate_tests {
             cwd: dir.path(),
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
@@ -1346,7 +1941,7 @@ mod gate_tests {
             Caps {
                 known: true,
                 plan_mode: false,
-                ..Caps::assume_all()
+                ..Caps::unknown()
             },
         );
         let req = ProviderTurnRequest {
@@ -1356,6 +1951,7 @@ mod gate_tests {
             cwd: dir.path(),
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: None,
             trust: TrustMode::Full,
             context_prefix: None,
@@ -1363,10 +1959,7 @@ mod gate_tests {
             compaction: Default::default(),
         };
         let result = plan_provider_turn(&req);
-        set_caps(
-            ProviderKind::Cursor,
-            before.unwrap_or_else(Caps::assume_all),
-        );
+        set_caps(ProviderKind::Cursor, before.unwrap_or_else(Caps::unknown));
         let text = result
             .expect_err("must refuse to plan a write-capable turn")
             .to_string();

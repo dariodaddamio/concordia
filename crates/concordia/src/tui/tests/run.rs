@@ -125,6 +125,70 @@ fn update_check_failure_is_visible_on_the_page() {
 }
 
 #[test]
+fn a_background_update_queues_an_automatic_restart_without_opening_the_update_panel() {
+    let mut h = Harness::new(90, 28);
+    h.app.background_update = true;
+    h.app.job = Some(spawn_job(JobKind::Update, |_| {
+        JR::Update(Ok(UO::Installed(crate::update::UpdateResult {
+            install_path: std::path::PathBuf::from("prepared.exe"),
+            built_from: std::path::PathBuf::from("fixture"),
+            log_tail: String::new(),
+            summary: String::new(),
+        })))
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h.app.job.is_some() && Instant::now() < deadline {
+        h.app.poll_job();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        h.app.restart_when_idle,
+        "the window restarts by itself once idle"
+    );
+    assert!(h.app.picker.is_none());
+    assert_eq!(
+        h.app.ready_update_path.as_deref(),
+        Some(std::path::Path::new("prepared.exe"))
+    );
+}
+
+#[test]
+fn background_update_preparation_does_not_offer_restart_before_install_finishes() {
+    let mut h = Harness::new(90, 28);
+    h.app.background_update_checks = true;
+    h.app.job = Some(spawn_job(JobKind::Check, |_| {
+        JR::Check(Ok(update_preview(true, 0)))
+    }));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while h
+        .app
+        .job
+        .as_ref()
+        .is_some_and(|job| job.kind == JobKind::Check)
+        && Instant::now() < deadline
+    {
+        h.app.poll_job();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let text = h.transcript_text();
+    assert!(text.contains("Preparing it in the background"), "{text}");
+    assert!(!text.contains("restart now (R) or Later (L)"), "{text}");
+    assert!(h.app.ready_update_path.is_none());
+    assert!(h.app.background_update);
+    h.app.job.as_ref().unwrap().cancel();
+}
+
+#[test]
+fn update_notice_does_not_swallow_l_while_composing() {
+    let mut h = Harness::new(90, 28);
+    h.type_str("draft ");
+    h.app.ready_update_path = Some(std::path::PathBuf::from("prepared.exe"));
+    h.key(KeyCode::Char('l'), KeyModifiers::NONE);
+    assert_eq!(h.app.editor.text(), "draft l");
+    assert!(h.app.ready_update_path.is_some());
+}
+
+#[test]
 fn the_update_screen_wraps_bullets_under_their_text() {
     let mut h = Harness::new(70, 30);
     update_screen(&mut h, update_preview(true, 0));
@@ -257,21 +321,13 @@ fn update_blocks_background_workers_and_never_queues_an_install() {
 }
 
 #[test]
-fn workers_cannot_start_during_an_update() {
+fn removed_delegation_commands_do_not_start_work_during_an_update() {
     let mut h = Harness::new(100, 24);
     h.app.job = Some(fake_update_job());
     let (command, _) =
         crate::commands::parse_slash("/delegate synthetic-worker check files").unwrap();
-    assert!(h.app.try_delegate_slash(&command));
-    assert!(h
-        .transcript_text()
-        .contains("Workers are paused while Concordia updates"));
+    assert!(matches!(command, crate::commands::SlashCommand::Unknown(_)));
     assert!(!h.app.deleg.d.any_active());
-    let (command, _) = crate::commands::parse_slash("/delegate use").unwrap();
-    assert!(h.app.try_delegate_slash(&command));
-    assert!(h
-        .transcript_text()
-        .contains("Worker results cannot be sent"));
     assert!(!h.app.deleg.has_pending_prompt());
     h.app.job.as_ref().unwrap().cancel();
 }
@@ -659,7 +715,14 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     assert!(h.screen().contains("Thinking - Expand"));
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
-    assert!(h.screen().contains("Thinking - Collapse"));
+    // Ctrl+O expands the last collapsed item of the latest reply (the late edit card),
+    // not an earlier thinking block (F01).
+    assert!(
+        !h.app.activity.is_expanded(thought_index, false),
+        "Ctrl+O must not reopen earlier thinking when a later card is collapsed"
+    );
+    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Collapse"));
     assert!(h.app.activity.detail.is_none());
     h.app.messages.clear();
     h.app.messages.push(ChatLine {
@@ -747,7 +810,12 @@ fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
         "the page owns progress; footer has controls only: {screen}"
     );
     assert!(screen.contains("Compiling concordia"), "{screen}");
-    assert!(screen.contains("Esc cancels the update"), "{screen}");
+    assert!(screen.contains("Esc cancel"), "{screen}");
+    h.key(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(h.app.update_details);
+    assert!(h.screen().contains("Build details"));
+    h.key(KeyCode::Char('d'), KeyModifiers::NONE);
+    assert!(!h.app.update_details);
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.picker.is_none());
     assert!(h
@@ -755,6 +823,97 @@ fn the_update_screen_turns_into_progress_and_esc_cancels_the_update() {
         .job
         .as_ref()
         .is_some_and(crate::update::Job::is_cancelled));
+
+    let snapshot = crate::update::JobSnapshot {
+        stage: Some(crate::update::UpdateStage::Building),
+        status: "Building Concordia".into(),
+        detail: "Using Cargo's build cache".into(),
+        warning_count: 1,
+        diagnostics: vec![crate::update::JobDiagnostic {
+            severity: "warning".into(),
+            message: "unused variable: fixture".into(),
+            code: Some("unused_variables".into()),
+            source: Some("src/fixture.rs".into()),
+            detail: "warning: unused variable: fixture\n --> src/fixture.rs:2:5".into(),
+        }],
+        ..Default::default()
+    };
+    let evidence = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/preview/model-effort-update");
+    std::fs::create_dir_all(&evidence).unwrap();
+    for (width, height) in [(40, 12), (90, 28), (150, 45)] {
+        let mut h = Harness::new(width, height);
+        h.app.job = Some(fake_update_job());
+        update_screen(
+            &mut h,
+            update_ui::running(&snapshot, Duration::from_secs(14), false),
+        );
+        let screen = h.screen();
+        assert!(
+            screen.contains("Building") && screen.contains("Concordia"),
+            "{screen}"
+        );
+        assert!(
+            !screen.contains("unused variable"),
+            "warnings must not replace progress: {screen}"
+        );
+        std::fs::write(
+            evidence.join(format!("progress-{width}x{height}.txt")),
+            screen,
+        )
+        .unwrap();
+        std::fs::write(
+            evidence.join(format!("progress-{width}x{height}.svg")),
+            screenshots::buffer_to_svg(h.term.backend().buffer(), "Update progress"),
+        )
+        .unwrap();
+        h.app.update_details = true;
+        update_screen(
+            &mut h,
+            update_ui::running(&snapshot, Duration::from_secs(14), true),
+        );
+        let screen = h.screen();
+        assert!(
+            screen.contains("Warnings") && screen.contains("Build details"),
+            "{screen}"
+        );
+        std::fs::write(
+            evidence.join(format!("details-{width}x{height}.txt")),
+            screen,
+        )
+        .unwrap();
+        std::fs::write(
+            evidence.join(format!("details-{width}x{height}.svg")),
+            screenshots::buffer_to_svg(h.term.backend().buffer(), "Compiler details"),
+        )
+        .unwrap();
+        h.app.no_color = true;
+        h.draw();
+        assert!(h.screen().contains("Warnings") && h.screen().contains("Build details"));
+        h.key(KeyCode::End, KeyModifiers::NONE);
+        assert!(
+            h.screen().contains("unused variable: fixture"),
+            "details must be reachable: {}",
+            h.screen()
+        );
+        h.app.job.as_ref().unwrap().cancel();
+        h.app.job = None;
+        update_screen(
+            &mut h,
+            update_ui::failed(&snapshot, "cargo build failed (101)"),
+        );
+        assert!(h.screen().contains("Update could not finish"));
+        h.key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(h.app.picker.is_none() && !h.app.should_quit);
+        h.app.model = "provider-reported-model-with-a-long-name".into();
+        h.app.effort = Some("high".into());
+        h.draw();
+        assert!(
+            h.app.areas.header_effort.is_some(),
+            "effort must stay visible at {width}: {}",
+            h.screen()
+        );
+    }
 }
 
 #[test]
@@ -799,36 +958,4 @@ fn landing_chats_wrap_up_and_down() {
         !h.screen().contains("chat first"),
         "Down wraps to the first folder, which Enter collapses"
     );
-}
-
-#[test]
-fn landing_goals_wrap_in_both_directions() {
-    let mut h = landing_harness();
-    let goals: Vec<_> = ["first goal", "last goal"]
-        .iter()
-        .enumerate()
-        .map(|(i, text)| landing::Goal {
-            id: format!("goal-{i}"),
-            text: text.to_string(),
-            done: false,
-            added_at: "fixture".into(),
-            closed_at: None,
-            ..Default::default()
-        })
-        .collect();
-    landing::save_goals(&h.app.state_root, &goals).unwrap();
-    let here = h.app.cwd.clone();
-    landing::open_with(
-        &mut h.app,
-        vec![landing_session("acct-x", &here, "first", 1)],
-        None,
-    );
-    h.key(KeyCode::Tab, KeyModifiers::NONE);
-    h.key(KeyCode::Up, KeyModifiers::NONE);
-    h.key(KeyCode::Down, KeyModifiers::NONE);
-    h.enter();
-    h.enter();
-    let saved = landing::load_goals(&h.app.state_root);
-    assert!(saved[0].done);
-    assert!(!saved[1].done);
 }

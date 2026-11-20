@@ -3,10 +3,14 @@ use super::*;
 use image::ImageDecoder;
 use ratatui::widgets::Wrap;
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+
+#[path = "document_preview.rs"]
+mod documents;
 
 const EDGE: u32 = 4096;
 const PIXELS: u64 = 16_000_000;
@@ -16,6 +20,8 @@ const CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 struct Thumbnail {
     hash: String,
+    page: u32,
+    pages: u32,
     width: u32,
     height: u32,
     pixels: image::RgbaImage,
@@ -23,6 +29,7 @@ struct Thumbnail {
 }
 struct View {
     inline: bool,
+    page: u32,
     snapshot: Option<String>,
     path: PathBuf,
     conversation: String,
@@ -47,21 +54,22 @@ impl State {
     }
     pub fn close(&mut self) {
         self.view = None;
+        self.native_draws.borrow_mut().clear();
         if let Some(job) = &self.job {
             job.cancelled.store(true, Ordering::Relaxed);
         }
     }
-    pub fn poll(&mut self) {
-        let Some(job) = &self.job else { return };
+    pub fn poll(&mut self) -> bool {
+        let Some(job) = &self.job else { return false };
         let result = match job.rx.try_recv() {
             Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
             Err(_) => Err("Image decoder stopped; use the system viewer".into()),
         };
         let cancelled = job.cancelled.load(Ordering::Relaxed);
         self.job = None;
         if cancelled {
-            return;
+            return false;
         }
         if let (Err(error), Some(hash)) = (
             &result,
@@ -74,7 +82,11 @@ impl State {
             }
         }
         let result = result.map(|thumb| {
-            if let Some(index) = self.cache.iter().position(|old| old.hash == thumb.hash) {
+            if let Some(index) = self
+                .cache
+                .iter()
+                .position(|old| old.hash == thumb.hash && old.page == thumb.page)
+            {
                 let old = self.cache.remove(index).unwrap();
                 if old.original.len() >= thumb.original.len() {
                     old
@@ -103,6 +115,7 @@ impl State {
         if let Some(view) = &mut self.view {
             view.result = Some(result);
         }
+        true
     }
 }
 impl Drop for State {
@@ -116,12 +129,44 @@ fn decode(
     expected: Option<&str>,
     cached: &[Arc<Thumbnail>],
     cancelled: &AtomicBool,
+    page: u32,
 ) -> Result<Thumbnail, String> {
     let before = std::fs::metadata(path).map_err(|_| "Image file is unavailable")?;
     if !before.is_file() {
         return Err("Preview requires a regular image file".into());
     }
-    let bytes = crate::attachments::read(path)?;
+    let pdf = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+    let svg = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+    let bytes = if pdf {
+        use std::io::Read;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| e.to_string())?
+            .take(crate::attachments::MAX_PDF_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > crate::attachments::MAX_PDF_BYTES {
+            return Err("PDF preview limit is 8 MiB".into());
+        }
+        bytes
+    } else if svg {
+        crate::attachments::read_svg(path)?
+    } else {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| format!("Image file unavailable: {e}"))?
+            .take(crate::attachments::MAX_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("Image file read failed: {e}"))?;
+        if bytes.len() > crate::attachments::MAX_BYTES {
+            return Err("Image preview limit is 4 MiB".into());
+        }
+        bytes
+    };
     let hash = format!("{:x}", Sha256::digest(&bytes));
     if expected.is_some_and(|expected| expected != hash) {
         return Err("Attachment snapshot changed; preview refused".into());
@@ -129,41 +174,52 @@ fn decode(
     if cancelled.load(Ordering::Relaxed) {
         return Err("Preview cancelled".into());
     }
-    if let Some(old) = cached
-        .iter()
-        .find(|old| old.hash == hash && old.original.dimensions() == (old.width, old.height))
-    {
+    if let Some(old) = cached.iter().find(|old| {
+        old.hash == hash && old.page == page && old.original.dimensions() == (old.width, old.height)
+    }) {
         return Ok(Thumbnail {
             hash,
+            page: old.page,
+            pages: old.pages,
             width: old.width,
             height: old.height,
             pixels: old.pixels.clone(),
             original: old.original.clone(),
         });
     }
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|_| "Unknown image format")?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(EDGE);
-    limits.max_image_height = Some(EDGE);
-    limits.max_alloc = Some(96 * 1024 * 1024);
-    reader.limits(limits);
-    let decoder = reader
-        .into_decoder()
-        .map_err(|error| format!("Image cannot be decoded: {error}"))?;
-    let (width, height) = decoder.dimensions();
-    if width == 0
-        || height == 0
-        || u64::from(width) * u64::from(height) > PIXELS
-        || decoder.total_bytes() > 64 * 1024 * 1024
-    {
-        return Err(
-            "Image exceeds preview limits (4096 per edge / 16 megapixels / 64 MiB pixels)".into(),
-        );
-    }
-    let image = image::DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("Image cannot be decoded: {error}"))?;
+    let (image, pages) = if pdf {
+        let (pixels, pages) = documents::pdf(&bytes, page)?;
+        (image::DynamicImage::ImageRgba8(pixels), pages)
+    } else if svg {
+        (image::DynamicImage::ImageRgba8(documents::svg(&bytes)?), 1)
+    } else {
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|_| "Unknown image format")?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(EDGE);
+        limits.max_image_height = Some(EDGE);
+        limits.max_alloc = Some(96 * 1024 * 1024);
+        reader.limits(limits);
+        let decoder = reader
+            .into_decoder()
+            .map_err(|error| format!("Image cannot be decoded: {error}"))?;
+        let (width, height) = decoder.dimensions();
+        if width == 0
+            || height == 0
+            || u64::from(width) * u64::from(height) > PIXELS
+            || decoder.total_bytes() > 64 * 1024 * 1024
+        {
+            return Err(
+                "Image exceeds preview limits (4096 per edge / 16 megapixels / 64 MiB pixels)"
+                    .into(),
+            );
+        }
+        let image = image::DynamicImage::from_decoder(decoder)
+            .map_err(|error| format!("Image cannot be decoded: {error}"))?;
+        (image, 1)
+    };
+    let (width, height) = (image.width(), image.height());
     if cancelled.load(Ordering::Relaxed) {
         return Err("Preview cancelled".into());
     }
@@ -171,6 +227,8 @@ fn decode(
     let original = Arc::new(image.into_rgba8());
     Ok(Thumbnail {
         hash,
+        page,
+        pages,
         width,
         height,
         pixels,
@@ -179,7 +237,11 @@ fn decode(
 }
 impl App {
     pub(super) fn start_raster(&mut self, path: PathBuf, expected: Option<String>) {
-        self.start_raster_mode(path, expected, false);
+        self.start_raster_mode(path, expected, false, 0);
+    }
+
+    pub(super) fn start_raster_in_pane(&mut self, path: PathBuf) {
+        self.start_raster_mode(path, None, true, 0);
     }
     pub(super) fn ensure_inline_raster(&mut self) {
         if self.raster.active() {
@@ -209,7 +271,11 @@ impl App {
                 .iter()
                 .any(|item| matches!(item, crate::attachments::Attachment::Image(_)))
             {
-                self.raster.close();
+                // A file-pane preview also uses the raster worker, but it is not an
+                // inline composer thumbnail. Keep it alive when the draft has no images.
+                if self.raster.view.as_ref().is_some_and(|view| view.inline) {
+                    self.raster.close();
+                }
             }
             return;
         };
@@ -221,20 +287,24 @@ impl App {
             return;
         }
         self.raster.close();
-        self.start_raster_mode(image.path, Some(image.sha256), true);
+        self.start_raster_mode(image.path, Some(image.sha256), true, 0);
     }
-    fn start_raster_mode(&mut self, path: PathBuf, expected: Option<String>, inline: bool) {
+    fn start_raster_mode(
+        &mut self,
+        path: PathBuf,
+        expected: Option<String>,
+        inline: bool,
+        page: u32,
+    ) {
         self.raster.poll();
-        if self.raster.job.is_some() {
-            if !inline {
-                self.flash("An image preview is still finishing; try shortly");
-            }
-            return;
+        if let Some(job) = self.raster.job.take() {
+            job.cancelled.store(true, Ordering::Relaxed);
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
         self.raster.view = Some(View {
             inline,
+            page,
             snapshot: expected.clone(),
             path: path.clone(),
             conversation: self.deleg.d.conversation_id().into(),
@@ -247,7 +317,7 @@ impl App {
         let cached = self.raster.cache.iter().cloned().collect::<Vec<_>>();
         std::thread::spawn(move || {
             let result =
-                decode(&path, expected.as_deref(), &cached, &cancelled).map(|mut image| {
+                decode(&path, expected.as_deref(), &cached, &cancelled, page).map(|mut image| {
                     // Four composer previews must fit the shared cache without eviction
                     // repeatedly restarting their decoders. The explicit viewer decodes
                     // the original again when a full-resolution entry is not cached.
@@ -262,7 +332,16 @@ impl App {
     }
 }
 pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
-    if !app.raster.active() {
+    if app.raster.view.is_none() {
+        return false;
+    }
+    let inline = app.raster.view.as_ref().is_some_and(|view| view.inline);
+    if inline
+        && !matches!(
+            key.code,
+            KeyCode::Esc | KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown
+        )
+    {
         return false;
     }
     if worker_input::active(app) {
@@ -279,6 +358,24 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
     }
     match key.code {
         KeyCode::Esc => app.raster.close(),
+        KeyCode::Left | KeyCode::Right | KeyCode::PageUp | KeyCode::PageDown
+            if app.raster.job.is_none() =>
+        {
+            let view = app.raster.view.as_ref().unwrap();
+            let pages = view
+                .result
+                .as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .map_or(1, |t| t.pages);
+            let page = if matches!(key.code, KeyCode::Left | KeyCode::PageUp) {
+                view.page.saturating_sub(1)
+            } else {
+                (view.page + 1).min(pages.saturating_sub(1))
+            };
+            if page != view.page {
+                app.start_raster_mode(view.path.clone(), view.snapshot.clone(), inline, page);
+            }
+        }
         KeyCode::Char('e' | 'E') => {
             let path = app
                 .raster
@@ -304,7 +401,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     app.raster.native_draws.borrow_mut().clear();
     let area = f.area();
     f.render_widget(Clear, area);
-    let block = Block::bordered().title(" Image preview · Esc back · E system viewer ");
+    let block = Block::bordered().title(" File preview | Esc back | E system viewer ");
     let inner = block.inner(area);
     f.render_widget(block, area);
     if let Some(rect) = modal::draw_close_button(f, area) {
@@ -324,7 +421,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         ..inner
     };
     let Some(result) = &view.result else {
-        f.render_widget(Paragraph::new("Preparing bounded image preview…"), content);
+        f.render_widget(Paragraph::new("Preparing bounded file preview…"), content);
         return;
     };
     let thumb = match result {
@@ -343,10 +440,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         thumb.width,
         thumb.height,
         &thumb.hash[..12],
-        if app.raster.native && !app.no_color {
-            "image preview"
+        if thumb.pages > 1 {
+            format!(
+                "Page {} / {} | Left/Right or PgUp/PgDn",
+                view.page + 1,
+                thumb.pages
+            )
         } else {
-            "cell preview"
+            "preview".into()
         }
     );
     f.render_widget(
@@ -357,6 +458,76 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             ..inner
         },
     );
+}
+
+pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) {
+    let Some(view) = &app.raster.view else { return };
+    if !view.inline || !same_preview_path(&view.path, path) || area.width < 3 || area.height < 4 {
+        return;
+    }
+    let content = Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(2),
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(4),
+    };
+    f.render_widget(Clear, content);
+    let Some(result) = &view.result else {
+        f.render_widget(Paragraph::new("Preparing bounded file preview..."), content);
+        return;
+    };
+    let thumb = match result {
+        Ok(thumb) => thumb,
+        Err(error) => {
+            f.render_widget(
+                Paragraph::new(error.as_str()).wrap(Wrap { trim: false }),
+                content,
+            );
+            return;
+        }
+    };
+    // File panes must remain visible in both the native window and the text-grid
+    // capture path. The dedicated full-screen/composer image paths may use native
+    // blits, but a pane owns its cell content and renders it directly.
+    paint(f, content, thumb, app.no_color);
+    f.render_widget(
+        Paragraph::new(format!(
+            "Image preview · {} × {}",
+            thumb.width, thumb.height
+        ))
+        .style(Style::default().fg(Color::DarkGray)),
+        Rect {
+            x: content.x,
+            y: content.y,
+            width: content.width,
+            height: 1,
+        },
+    );
+    if thumb.pages > 1 {
+        f.render_widget(
+            Paragraph::new(format!(
+                "Page {} / {} | Left/Right or PgUp/PgDn",
+                view.page + 1,
+                thumb.pages
+            )),
+            Rect {
+                x: area.x + 1,
+                y: area.bottom().saturating_sub(2),
+                width: area.width.saturating_sub(2),
+                height: 1,
+            },
+        );
+    }
+}
+
+fn same_preview_path(left: &Path, right: &Path) -> bool {
+    fn normalized(path: &Path) -> String {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    }
+    normalized(left) == normalized(right)
 }
 
 #[cfg(test)]
@@ -430,28 +601,36 @@ pub(super) fn draw_attachment(
 }
 
 pub(super) fn draw_brand(f: &mut Frame, area: Rect, app: &App, pixels: Arc<image::RgbaImage>) {
-    let thumb = Thumbnail {
+    // The logo never changes: build its thumbnail once instead of copying the image per frame.
+    static BRAND: std::sync::OnceLock<Thumbnail> = std::sync::OnceLock::new();
+    let thumb = BRAND.get_or_init(|| Thumbnail {
+        page: 0,
+        pages: 1,
         hash: String::new(),
         width: pixels.width(),
         height: pixels.height(),
         pixels: (*pixels).clone(),
         original: pixels,
-    };
-    paint_view(f, area, &thumb, app);
+    });
+    paint_view(f, area, thumb, app);
 }
 
 fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
     if app.raster.native && !app.no_color {
         // A marker confined to blank image cells lets later modal widgets suppress
         // the overlay, including a Clear widget that covers only part of the image.
+        let [red, green, blue] = super::theme::image_background();
+        let marker = Color::Rgb(red, green, blue);
         for y in content.y..content.bottom() {
             for x in content.x..content.right() {
                 f.buffer_mut()[(x, y)].reset();
-                f.buffer_mut()[(x, y)]
-                    .set_fg(Color::Rgb(20, 23, 31))
-                    .set_bg(Color::Rgb(20, 23, 31));
+                f.buffer_mut()[(x, y)].set_fg(marker).set_bg(marker);
             }
         }
+        // Keep the bounded cell preview in the buffer as an observable fallback. The native
+        // window paints the original pixels over these cells after the frame is submitted, so
+        // this does not change native image fidelity or aspect-ratio fitting.
+        paint(f, content, thumb, false);
         app.raster
             .native_draws
             .borrow_mut()
@@ -476,16 +655,11 @@ pub(super) fn native_images(f: &mut Frame, app: &App) -> Vec<super::native_windo
             if area.is_empty() || area.intersection(f.area()) != area {
                 return None;
             }
-            for y in area.y..area.bottom() {
-                for x in area.x..area.right() {
-                    let cell = &f.buffer_mut()[(x, y)];
-                    if cell.symbol() != " "
-                        || cell.fg != super::theme::image_marker()
-                        || cell.bg != super::theme::image_marker()
-                    {
-                        return None;
-                    }
-                }
+            let cleared = (area.y..area.bottom()).all(|y| {
+                (area.x..area.right()).all(|x| f.buffer_mut()[(x, y)].symbol().trim().is_empty())
+            });
+            if cleared {
+                return None;
             }
             Some(super::native_window::RasterImage {
                 area,
@@ -558,22 +732,22 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
         .save(&path)
         .unwrap();
     let cancel = AtomicBool::new(false);
-    let thumb = decode(&path, None, &[], &cancel).unwrap();
+    let thumb = decode(&path, None, &[], &cancel, 0).unwrap();
     assert_eq!((thumb.width, thumb.height), (12, 8));
-    assert!(decode(&path, Some("wrong"), &[], &cancel).is_err());
+    assert!(decode(&path, Some("wrong"), &[], &cancel, 0).is_err());
     let hash = thumb.hash.clone();
     assert_eq!(
-        decode(&path, Some(&hash), &[Arc::new(thumb)], &cancel)
+        decode(&path, Some(&hash), &[Arc::new(thumb)], &cancel, 0)
             .unwrap()
             .hash,
         hash
     );
     let huge = dir.join("too-wide.png");
     image::RgbaImage::new(EDGE + 1, 1).save(&huge).unwrap();
-    assert!(decode(&huge, None, &[], &cancel).is_err());
+    assert!(decode(&huge, None, &[], &cancel, 0).is_err());
     let bad = dir.join("bad.png");
     std::fs::write(&bad, b"\x89PNG\r\n\x1a\nnot pixels").unwrap();
-    assert!(decode(&bad, None, &[], &cancel).is_err());
+    assert!(decode(&bad, None, &[], &cancel, 0).is_err());
     let sharp = dir.join("sharp-pattern.png");
     image::RgbaImage::from_fn(512, 256, |x, y| {
         if (x + y) % 2 == 0 {
@@ -584,7 +758,7 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
     })
     .save(&sharp)
     .unwrap();
-    let sharp = decode(&sharp, None, &[], &cancel).unwrap();
+    let sharp = decode(&sharp, None, &[], &cancel, 0).unwrap();
     assert_eq!(sharp.original.dimensions(), (512, 256));
     assert_eq!(sharp.original.get_pixel(1, 0).0, [0, 0, 0, 255]);
     assert_eq!(sharp.original.get_pixel(2, 0).0, [255, 255, 255, 255]);

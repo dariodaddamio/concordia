@@ -412,14 +412,17 @@ pub fn save(path: &Path, expected: &str, replacement: &str) -> Result<(), String
         ));
     }
     #[cfg(windows)]
-    if std::fs::read(&backup)
-        .map_err(|e| format!("save backup check: {e}; retain {}", backup.display()))?
-        != expected.as_bytes()
     {
-        return Err(format!(
-            "file changed at replacement; external contents retained at {}; inspect before retry",
-            backup.display()
-        ));
+        let mut bytes = Vec::new();
+        std::fs::File::open(&backup)
+            .and_then(|file| file.take(MAX_BYTES as u64 + 1).read_to_end(&mut bytes))
+            .map_err(|e| format!("save backup check: {e}; retain {}", backup.display()))?;
+        if bytes != expected.as_bytes() {
+            return Err(format!(
+                "file changed at replacement; external contents retained at {}; inspect before retry",
+                backup.display()
+            ));
+        }
     }
     let _ = std::fs::remove_file(&backup);
     Ok(())

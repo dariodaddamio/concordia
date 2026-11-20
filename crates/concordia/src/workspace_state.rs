@@ -1,7 +1,6 @@
 //! Bounded, read-only workspace facts used by continuity handoffs.
 
 use std::path::Path;
-use std::sync::mpsc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -38,25 +37,17 @@ pub fn attach_workers<'a>(
 const FILE_CAP: usize = 20;
 
 fn git(root: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let root = root.to_owned();
-    let args = args.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut c = crate::process_ui::command("git");
-        c.args(&args)
-            .current_dir(root)
-            .env("GIT_OPTIONAL_LOCKS", "0");
-        let result = c.output().map_err(|e| e.to_string()).and_then(|o| {
-            if o.status.success() {
-                Ok(String::from_utf8_lossy(&o.stdout).into_owned())
-            } else {
-                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
-            }
-        });
-        let _ = tx.send(result);
-    });
-    rx.recv_timeout(timeout)
-        .map_err(|_| String::from("timed out"))?
+    let mut command = crate::process_ui::command("git");
+    command
+        .args(args)
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    let output = crate::process_lifetime::capture(command, timeout, 1024 * 1024)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
 }
 
 pub fn collect(root: &Path) -> Option<WorkspaceState> {
@@ -114,8 +105,10 @@ where
         for l in diff.lines() {
             let p = l.split('\t').collect::<Vec<_>>();
             if p.len() >= 2 {
-                state.added += p[0].parse::<u32>().unwrap_or(0);
-                state.removed += p[1].parse::<u32>().unwrap_or(0);
+                state.added = state.added.saturating_add(p[0].parse::<u32>().unwrap_or(0));
+                state.removed = state
+                    .removed
+                    .saturating_add(p[1].parse::<u32>().unwrap_or(0));
             }
         }
     }

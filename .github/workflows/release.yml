@@ -17,11 +17,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   windows-exe:
+    needs: deny
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check hidden child-process constructors
+        shell: pwsh
+        run: ./scripts/check-hidden-process-spawns.ps1
+      - name: Check module dependency cycles
+        shell: pwsh
+        run: ./scripts/check-module-cycles.ps1
+      - name: OSS gates
+        shell: pwsh
+        run: ./scripts/verify-oss-gates.ps1
 
       - uses: Swatinem/rust-cache@v2
 
@@ -77,7 +99,7 @@ jobs:
 
       - name: Generate CycloneDX SBOM
         shell: pwsh
-        run: ./scripts/generate-sbom.ps1 -Output bom.json
+        run: ./scripts/generate-sbom.ps1 -Output bom.json -RequireComplete
 
       - name: Stage assets
         shell: pwsh
@@ -113,6 +135,7 @@ jobs:
           # SHA256SUMS keeps its name and the exe line: the in-app updater (release.rs) reads it.
           Set-Content -Path SHA256SUMS -Value @("$exeHash  $name", "$zipHash  $zipName") -Encoding ascii
           # Per-asset checksum file that install.ps1 downloads next to the zip.
+          Set-Content -Path "$name.sha256" -Value "$exeHash  $name" -Encoding ascii
           Set-Content -Path "$zipName.sha256" -Value "$zipHash  $zipName" -Encoding ascii
           Get-Content SHA256SUMS
           Get-Content "$zipName.sha256"
@@ -162,6 +185,7 @@ jobs:
         with:
           files: |
             concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.exe.sha256
             concordia-x86_64-pc-windows-msvc.zip
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS
@@ -180,7 +204,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: concordia-x86_64-pc-windows-msvc.exe
+          subject-path: |
+            concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.zip
 
       - name: Keep the rehearsal artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -189,6 +215,7 @@ jobs:
           name: concordia-rehearsal
           path: |
             concordia-x86_64-pc-windows-msvc.exe
+            concordia-x86_64-pc-windows-msvc.exe.sha256
             concordia-x86_64-pc-windows-msvc.zip
             concordia-x86_64-pc-windows-msvc.zip.sha256
             SHA256SUMS

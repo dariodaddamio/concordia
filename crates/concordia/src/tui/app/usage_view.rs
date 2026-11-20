@@ -1,9 +1,16 @@
 use super::super::*;
 
+/// One footer for the usage page, however it was opened or refreshed.
+pub(in crate::tui) const USAGE_FOOTER: &str =
+    "←↑↓→ move · PgUp/PgDn scroll card · r refresh · t tokens · Esc";
+
 impl App {
     pub(in crate::tui) fn refresh_usage(&mut self) {
         let home = self.home_path.clone().or_else(|| {
             get_use_selection(&self.state_root)
+                .filter(|selection| {
+                    selection.provider == self.provider && selection.account == self.account
+                })
                 .and_then(|s| s.home_path)
                 .map(PathBuf::from)
         });
@@ -56,19 +63,55 @@ impl App {
         self.usage_block = Some(self.messages.len() - 1);
     }
     pub(in crate::tui) fn usage_block_text(&self, snap: &crate::usage::UsageSnapshot) -> String {
-        let mut details = format!(
-            "{}\nCredit spend: not reported separately\n\nSubscription limits\n{}",
+        let identity = self
+            .home_path
+            .as_deref()
+            .map(|home| crate::identity::inspect_provider(self.provider, home));
+        let email = identity
+            .as_ref()
+            .and_then(|profile| profile.login.as_deref())
+            .filter(|login| login.contains('@'))
+            .unwrap_or("not reported");
+        let plan = identity
+            .as_ref()
+            .and_then(|profile| profile.plan.as_deref())
+            .or(snap.plan.as_deref())
+            .filter(|plan| !plan.trim().is_empty() && *plan != "unknown")
+            .map(|plan| match plan.to_ascii_lowercase().as_str() {
+                "free" => "Free",
+                "plus" => "Plus",
+                "pro" => "Pro",
+                "max" => "Max",
+                "team" => "Team",
+                "business" => "Business",
+                "enterprise" => "Enterprise",
+                "edu" => "Education",
+                "individual" => "Individual",
+                _ => plan,
+            })
+            .unwrap_or("not reported");
+        let workspace = identity
+            .as_ref()
+            .and_then(|profile| profile.team.as_deref())
+            .filter(|team| !team.trim().is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                self.cwd
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "current project".into())
+            });
+        let heading = format!(
+            "{} · Email: {email} · Plan: {plan} · Workspace: {workspace}",
+            self.account_label()
+        );
+        let details = format!(
+            "Plan: {plan} · Workspace: {workspace}\n{}\n\nSubscription limits\n{}",
             snap.credits_text(),
             snap.detail.trim()
         );
-        if self.provider == ProviderKind::Codex {
-            details.push_str(&format!(
-                "\nCredit balance details: {}",
-                crate::usage::CREDIT_DASHBOARD_URL
-            ));
-        }
         let body = details.trim();
-        format!("{} - limits\n{}", self.account_label(), body)
+        format!("{heading} - limits\n{body}")
     }
     pub(in crate::tui) fn update_usage_block(&mut self) {
         let Some(idx) = self.usage_block else {
@@ -92,6 +135,16 @@ impl App {
     }
     pub(in crate::tui) fn account_label(&self) -> String {
         self.named_account(self.provider, &self.account)
+    }
+    /// Header, settings Accounts row, and `/use` share this chip (no lowercase provider id).
+    pub(in crate::tui) fn account_heading(&self) -> String {
+        crate::accounts::format_account_heading(
+            self.provider,
+            &self.account,
+            self.account_names
+                .get(&self.account)
+                .map(|name| name.as_str()),
+        )
     }
     pub(in crate::tui) fn named_account(&self, provider: ProviderKind, account: &str) -> String {
         let default = display_account_name(provider, account);
@@ -128,6 +181,12 @@ impl App {
         if let Some(picker) = &mut self.picker {
             picker.filter = old.filter;
             picker.state = old.state;
+            picker.usage_scroll = old.usage_scroll;
+            picker.usage_cols = old.usage_cols;
+            // A background refresh must not swap the heading the panel was opened with.
+            if picker.kind == PickerKind::Usage {
+                picker.title = old.title;
+            }
         }
     }
     pub(in crate::tui) fn show_credit_details(&mut self, force: bool) {
@@ -221,6 +280,6 @@ impl App {
                 .collect()
         };
         self.show_picker(PickerKind::Usage, "usage".into(), rows, false);
-        self.footer_left = "↑↓ Enter · r refresh · t tokens · Esc".into();
+        self.footer_left = USAGE_FOOTER.into();
     }
 }

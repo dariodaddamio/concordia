@@ -1,13 +1,13 @@
 use super::super::*;
 
 impl App {
-    pub(in crate::tui) fn poll_pending_login(&mut self) {
+    pub(in crate::tui) fn poll_pending_login(&mut self) -> bool {
         let Some(p) = self.pending_login.as_mut() else {
-            return;
+            return false;
         };
         p.ticks += 1;
         if p.ticks % LOGIN_POLL_TICKS != 0 {
-            return;
+            return false;
         }
         if is_logged_in(p.provider, &p.home) {
             let p = self.pending_login.take().expect("checked above");
@@ -20,6 +20,7 @@ impl App {
                 p.provider.as_str()
             ));
         }
+        true
     }
     pub(in crate::tui) fn finish_login(&mut self, p: PendingLogin) {
         crate::logging::info(&format!(
@@ -38,34 +39,14 @@ impl App {
             self.flash(format!("{} connected", p.label));
             return;
         };
-        let owned = crate::connect::removable(&self.state_root)
-            .iter()
-            .any(|r| r.id == p.account && r.owned);
         let advice = format!(
             "to add another account, sign in with a different one (/use add {})",
             p.provider.as_str()
         );
-        if owned {
-            match crate::connect::remove_account(
-                &self.state_root,
-                &p.account,
-                crate::connect::RemoveMode::DeleteData,
-            ) {
-                Ok(_) => self.push_system(format!(
-                    "{who} is already connected as {}, so nothing new was added and the duplicate slot was removed - {advice}",
-                    existing.label
-                )),
-                Err(e) => self.push_system(format!(
-                    "{} is the same login as {} ({who}) but could not be removed: {e} - use /use remove",
-                    p.label, existing.label
-                )),
-            }
-        } else {
-            self.push_system(format!(
-                "{} is the same login as {} ({who}) - use /use remove to drop one of them",
-                p.label, existing.label
-            ));
-        }
+        self.push_system(format!(
+            "{} is the same login as {} ({who}). Both account homes and their histories were kept. Use /use remove to explicitly remove an account; {advice}.",
+            p.label, existing.label
+        ));
         self.flash("duplicate account");
     }
 }

@@ -1,11 +1,13 @@
 //! Control-plane fixtures: fail if argv construction, session parsing or usage reading drift.
 
 use concordia::context::should_attempt_native_resume;
+use concordia::mcp::registered_tool_names;
 use concordia::provider::claude::{assert_safe_claude_argv, plan_claude_turn, ClaudeTurnRequest};
 use concordia::provider::codex::{
     assert_safe_argv, extract_stream_chunk, plan_turn_argv, TurnRequest,
 };
 use concordia::provider::cursor::{assert_safe_cursor_argv, plan_cursor_turn, CursorTurnRequest};
+use concordia::provider::standing_context::{render, State as StandingContextState};
 use concordia::provider::turn::{plan_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use concordia::usage::read_codex_usage;
@@ -28,8 +30,10 @@ fn codex_workspace_argv_is_stable() {
         cwd: &cwd,
         codex_home: Some(&home),
         model: Some("gpt-5.6-sol"),
+        effort: None,
         native_session_id: Some("sess-1"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
+        standing_context: None,
     })
     .unwrap();
     assert_eq!(
@@ -62,8 +66,10 @@ fn codex_full_and_ask_trust_flags() {
         cwd: &cwd,
         codex_home: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Full,
+        standing_context: None,
     })
     .unwrap();
     assert!(full
@@ -76,14 +82,81 @@ fn codex_full_and_ask_trust_flags() {
         cwd: &cwd,
         codex_home: None,
         model: None,
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Ask,
+        standing_context: None,
     })
     .unwrap();
     assert!(ask
         .argv
         .windows(2)
         .any(|w| w[0] == "-s" && w[1] == "read-only"));
+}
+
+#[test]
+fn standing_context_uses_native_claude_and_codex_channels_once() {
+    let cwd = PathBuf::from(".");
+    let context = "You are running inside Concordia. Use agents.";
+    let claude = plan_claude_turn(&ClaudeTurnRequest {
+        prompt: "hello",
+        cwd: &cwd,
+        config_dir: None,
+        model: None,
+        effort: None,
+        native_session_id: None,
+        trust: TrustMode::Edit,
+        standing_context: Some(context),
+    })
+    .unwrap();
+    assert_eq!(claude.argv.iter().filter(|arg| *arg == context).count(), 1);
+    assert!(claude
+        .argv
+        .windows(2)
+        .any(|w| w == ["--append-system-prompt", context]));
+
+    let codex = plan_turn_argv(&TurnRequest {
+        prompt: "hello",
+        cwd: &cwd,
+        codex_home: None,
+        model: None,
+        effort: None,
+        native_session_id: None,
+        trust: TrustMode::Edit,
+        standing_context: Some(context),
+    })
+    .unwrap();
+    assert_eq!(codex.argv.iter().filter(|arg| *arg == context).count(), 0);
+    assert!(codex
+        .argv
+        .iter()
+        .any(|arg| arg
+            == r#"developer_instructions="You are running inside Concordia. Use agents.""#));
+}
+
+#[test]
+fn every_provider_context_names_the_registered_tools_within_budget() {
+    let tools = registered_tool_names();
+    for provider in [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Cursor,
+        ProviderKind::Grok,
+        ProviderKind::Opencode,
+    ] {
+        let context = render(&StandingContextState {
+            provider,
+            account: "account-a",
+            role: "worker",
+            tools: &tools,
+            handoff_map: None,
+        });
+        assert!(context.contains("inside Concordia"), "{provider:?}");
+        for tool in &tools {
+            assert!(context.contains(tool), "{provider:?} omitted {tool}");
+        }
+        assert!(context.split_whitespace().count() < 150, "{provider:?}");
+    }
 }
 
 #[test]
@@ -164,8 +237,10 @@ fn claude_workspace_argv_and_resume() {
         cwd: &cwd,
         config_dir: Some(&home),
         model: Some("sonnet"),
+        effort: None,
         native_session_id: Some("sess-claude"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
+        standing_context: None,
     })
     .unwrap();
     assert!(plan
@@ -191,8 +266,9 @@ fn cursor_print_argv_requires_explicit_resume() {
         cwd: &cwd,
         home_path: None,
         model: None,
+        effort: None,
         native_session_id: Some("chat-1"),
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
     })
     .unwrap();
     assert!(plan.argv.contains(&"--print".into()));
@@ -213,6 +289,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: Some("chat-1"),
             trust,
         })
@@ -238,7 +315,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
         ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
     assert_eq!(
-        plan(TrustMode::Workspace),
+        plan(TrustMode::Edit),
         ask.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
     let mut full = common;
@@ -247,7 +324,7 @@ fn cursor_trust_modes_have_explicit_safe_argv() {
         plan(TrustMode::Full),
         full.iter().map(|s| s.to_string()).collect::<Vec<_>>()
     );
-    assert!(!plan(TrustMode::Workspace).contains(&"disabled".to_string()));
+    assert!(!plan(TrustMode::Edit).contains(&"disabled".to_string()));
 }
 
 #[test]
@@ -265,8 +342,9 @@ fn unified_planner_never_emits_last() {
             cwd: &cwd,
             home_path: None,
             model: None,
+            effort: None,
             native_session_id: Some("id-1"),
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
@@ -311,8 +389,10 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
             cwd: &cwd,
             config_dir: None,
             model: None,
+            effort: None,
             native_session_id: sid,
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
+            standing_context: None,
         })
         .unwrap()
     };

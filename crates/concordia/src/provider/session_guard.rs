@@ -4,12 +4,22 @@ use std::fs::{File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
-pub(super) fn acquire(root: &Path, home: Option<&Path>, session: &str) -> Result<File> {
+pub(crate) fn acquire(root: &Path, home: Option<&Path>, session: &str) -> Result<File> {
     let mut key = std::collections::hash_map::DefaultHasher::new();
+    let home = home.map(|home| {
+        home.canonicalize()
+            .map(|path| {
+                std::path::PathBuf::from(crate::file_links::normalized_local_path(
+                    &path.to_string_lossy(),
+                ))
+            })
+            .unwrap_or_else(|_| home.to_owned())
+    });
     home.hash(&mut key);
     session.hash(&mut key);
     let dir = root.join("session-locks");
     std::fs::create_dir_all(&dir)?;
+    crate::workspaces::directory_id(&dir).map_err(anyhow::Error::msg)?;
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)

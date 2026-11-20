@@ -4,20 +4,15 @@
 //! explicit transitions; consumers can render one queue regardless of which provider owns a run.
 
 use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    Running,
-    Waiting,
-    Idle,
-    Failed,
-}
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 pub enum ItemKind {
     Approval,
     Question,
     PausedQueue,
+    InterruptedRequest,
     IdleNotice,
     WorkerResult,
     SignedOut,
@@ -29,9 +24,22 @@ impl ItemKind {
             Self::Approval => "permission",
             Self::Question => "question",
             Self::PausedQueue => "paused queue",
+            Self::InterruptedRequest => "interrupted request",
             Self::IdleNotice => "idle",
             Self::WorkerResult => "worker result",
             Self::SignedOut => "signed out",
+        }
+    }
+
+    pub fn notification_phrase(self) -> &'static str {
+        match self {
+            Self::Approval => "is waiting for approval",
+            Self::Question => "has a question for you",
+            Self::PausedQueue => "has prompts waiting in its queue",
+            Self::InterruptedRequest => "has an interrupted request waiting for review",
+            Self::IdleNotice => "is waiting for your decision",
+            Self::WorkerResult => "has a worker result waiting",
+            Self::SignedOut => "is waiting for account confirmation",
         }
     }
 }
@@ -42,23 +50,54 @@ pub struct Item {
     pub session_id: String,
     pub title: String,
     pub kind: ItemKind,
+    pub project: String,
+    pub chat: String,
+    pub agent: String,
+    pub request: String,
+    pub context: String,
+    pub source: String,
+    pub created: Instant,
+}
+
+impl Item {
+    /// Whether this item represents an outstanding user action rather than a passive notice.
+    pub fn is_actionable(&self) -> bool {
+        !matches!(self.kind, ItemKind::IdleNotice)
+    }
+
+    pub fn notification_text(&self) -> String {
+        format!("{} {}", self.chat, self.kind.notification_phrase())
+    }
+}
+
+static GLOBAL: OnceLock<Mutex<Queue>> = OnceLock::new();
+
+fn global() -> &'static Mutex<Queue> {
+    GLOBAL.get_or_init(|| Mutex::new(Queue::default()))
+}
+
+/// Publish a live request for panels belonging to any chat in this process.
+pub fn publish(item: Item) {
+    global().lock().unwrap_or_else(|e| e.into_inner()).add(item);
+}
+
+pub fn withdraw(id: &str) {
+    global()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(id);
+}
+
+pub fn snapshot() -> Queue {
+    global().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct Queue {
-    sessions: BTreeMap<String, SessionState>,
     items: BTreeMap<String, Item>,
 }
 
 impl Queue {
-    pub fn set_state(&mut self, session_id: impl Into<String>, state: SessionState) {
-        self.sessions.insert(session_id.into(), state);
-    }
-
-    pub fn state(&self, session_id: &str) -> Option<SessionState> {
-        self.sessions.get(session_id).copied()
-    }
-
     pub fn add(&mut self, item: Item) {
         self.items.insert(item.id.clone(), item);
     }
@@ -70,6 +109,21 @@ impl Queue {
     pub fn remove_suffix(&mut self, suffix: &str) {
         let suffix = format!(":{suffix}");
         self.items.retain(|id, _| !id.ends_with(&suffix));
+    }
+
+    pub fn remove_prefix(&mut self, prefix: &str) -> Vec<String> {
+        let removed = self
+            .items
+            .keys()
+            .filter(|id| id.starts_with(prefix))
+            .cloned()
+            .collect();
+        self.items.retain(|id, _| !id.starts_with(prefix));
+        removed
+    }
+
+    pub fn remove_kind(&mut self, kind: ItemKind) {
+        self.items.retain(|_, item| item.kind != kind);
     }
 
     pub fn items(&self) -> impl Iterator<Item = &Item> {
@@ -99,6 +153,13 @@ mod tests {
             session_id: session.into(),
             title: id.into(),
             kind,
+            project: "project".into(),
+            chat: session.into(),
+            agent: "agent".into(),
+            request: id.into(),
+            context: String::new(),
+            source: "conversation".into(),
+            created: Instant::now(),
         }
     }
 
@@ -138,15 +199,28 @@ mod tests {
     }
 
     #[test]
-    fn per_session_drafts_and_queues_are_independent() {
+    fn notification_names_the_chat_and_waiting_action() {
+        let question = item("question", "chat", ItemKind::Question);
+        let approval = item("approval", "chat", ItemKind::Approval);
+        assert_eq!(question.notification_text(), "chat has a question for you");
+        assert_eq!(approval.notification_text(), "chat is waiting for approval");
+    }
+
+    #[test]
+    fn idle_notice_is_not_an_actionable_attention_item() {
+        assert!(!item("idle", "chat", ItemKind::IdleNotice).is_actionable());
+        assert!(item("question", "chat", ItemKind::Question).is_actionable());
+    }
+
+    #[test]
+    fn attention_items_keep_their_session_owner_when_another_session_resolves() {
         let mut q = Queue::default();
-        q.set_state("codex", SessionState::Running);
-        q.set_state("claude", SessionState::Waiting);
         q.add(item("codex-q", "codex", ItemKind::PausedQueue));
         q.add(item("claude-q", "claude", ItemKind::Question));
-        assert_eq!(q.state("codex"), Some(SessionState::Running));
-        assert_eq!(q.state("claude"), Some(SessionState::Waiting));
         assert_eq!(q.item(0).unwrap().session_id, "claude");
         assert_eq!(q.item(1).unwrap().session_id, "codex");
+        q.remove_kind(ItemKind::Question);
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.item(0).unwrap().session_id, "codex");
     }
 }

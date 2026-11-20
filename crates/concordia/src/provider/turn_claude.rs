@@ -6,24 +6,24 @@
 use super::*;
 use crate::provider::interaction::InteractionConnection;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
-/// The installed, source-matched Claude Code CLI version qualified for this bridge.
+/// Current installed Claude control schema matched to the official SDK protocol.
 pub(crate) const SUPPORTED_VERSION: &str = crate::capacity::claude_capacity::CLI_VERSION;
 
 const MAX_ID: usize = 512;
 const MAX_TOOL: usize = 256;
 const MAX_INPUT: usize = 256 * 1024;
 const DEFERRED_TASK_LIMIT: usize = 256;
-const RUN_END_CEILING: Duration = Duration::from_secs(600);
 
-fn native_task_card(
+async fn native_task_card(
     identity: (&str, Option<&str>, Option<&str>),
     title: &str,
     status: crate::provider::stream_cards::CardStatus,
     detail: Option<String>,
     out: &mut TurnOutcome,
-    progress: &Option<tokio::sync::mpsc::UnboundedSender<TurnProgress>>,
+    progress: &Option<tokio::sync::mpsc::Sender<TurnProgress>>,
+    handle: &RunningTurn,
 ) {
     let id = format!(
         "native-agent:claude:{}",
@@ -45,7 +45,7 @@ fn native_task_card(
         ),
         status,
     };
-    emit_progress(&[StreamPart::Card(card.clone())], progress);
+    emit_progress(&[StreamPart::Card(card.clone())], progress, handle).await;
     crate::provider::stream_cards::upsert_card(&mut out.cards, card);
 }
 
@@ -353,7 +353,8 @@ pub(super) async fn run(
     plan: &PlannedTurn,
     owner: Option<crate::provider::interaction::InteractionOwner>,
     started: Option<tokio::sync::mpsc::UnboundedSender<std::sync::Arc<RunningTurn>>>,
-    progress: Option<tokio::sync::mpsc::UnboundedSender<TurnProgress>>,
+    progress: Option<tokio::sync::mpsc::Sender<TurnProgress>>,
+    handle: std::sync::Arc<RunningTurn>,
 ) -> anyhow::Result<TurnOutcome> {
     let _new_session_guard = if req.native_session_id.is_none() {
         plan.new_session_id
@@ -394,8 +395,10 @@ pub(super) async fn run(
     })
     .await?
     .map_err(anyhow::Error::msg)?;
+    let observed_version = crate::provider::compat::version_token(&version)
+        .ok_or_else(|| anyhow::anyhow!("Claude native permission transport returned no version"))?;
     anyhow::ensure!(
-        crate::provider::compat::version_token(&version).as_deref() == Some(SUPPORTED_VERSION),
+        crate::provider::compat::version_at_least(&observed_version, SUPPORTED_VERSION),
         "Claude native permission transport requires CLI {SUPPORTED_VERSION}"
     );
     let mut launch = crate::provider::launch::prepare(plan)?;
@@ -416,11 +419,15 @@ pub(super) async fn run(
     launch.args.extend([
         "--input-format".into(),
         "stream-json".into(),
+        "--permission-prompts".into(),
+        "host".into(),
         "--permission-prompt-tool".into(),
         "stdio".into(),
     ]);
     let mut command = crate::process_ui::tokio_command(&launch.program);
     crate::process_ui::background(&mut command);
+    #[cfg(unix)]
+    command.process_group(0);
     command
         .args(&launch.args)
         .envs(plan.env.clone())
@@ -433,10 +440,17 @@ pub(super) async fn run(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if handle.cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(TurnOutcome {
+            cancelled: true,
+            ..Default::default()
+        });
+    }
     let mut child = command
         .spawn()
         .context("could not start Claude native stdio")?;
-    let handle = std::sync::Arc::new(RunningTurn::new());
+    let _process_tree =
+        crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     handle
         .pid
         .store(child.id().unwrap_or(0), std::sync::atomic::Ordering::SeqCst);
@@ -444,21 +458,7 @@ pub(super) async fn run(
     let mut output =
         tokio::io::BufReader::new(child.stdout.take().context("Claude stdout unavailable")?);
     let stderr = child.stderr.take().context("Claude stderr unavailable")?;
-    let mut stderr_task = tokio::spawn(async move {
-        let mut reader = tokio::io::BufReader::new(stderr);
-        let mut tail = VecDeque::new();
-        let mut line = Vec::new();
-        while read_line_bounded(&mut reader, &mut line)
-            .await
-            .is_ok_and(|n| n > 0)
-        {
-            if tail.len() == STDERR_KEEP_LINES {
-                tail.pop_front();
-            }
-            tail.push_back(decode_line(&line));
-        }
-        tail.into_iter().collect::<Vec<_>>().join("\n")
-    });
+    let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, || {}));
     *handle.child.lock().await = Some(child);
     if let Some(tx) = started {
         if tx.send(handle.clone()).is_err() {
@@ -471,6 +471,9 @@ pub(super) async fn run(
         ..Default::default()
     };
     let artifact_owner = owner.clone();
+    // Claude announces its slash commands for this session; the palette offers exactly those.
+    let command_owner = owner.clone();
+    let mut command_help: std::collections::HashMap<String, String> = Default::default();
     let mut artifacts = crate::artifacts::Collector::default();
     let mut interactions = InteractionConnection::new(owner, handle.cancel_flag.clone());
     let mut parser = crate::provider::stream_json::StreamParser::new(
@@ -480,17 +483,16 @@ pub(super) async fn run(
     let mut initialized = false;
     let mut sent_prompt = false;
     let mut pending: HashMap<String, PendingPermission> = HashMap::new();
-    let mut seen_native = HashSet::new();
+    let mut seen_native: HashSet<String> = HashSet::new();
     let mut poll = tokio::time::interval(std::time::Duration::from_millis(10));
-    let mut stream_bytes = 0usize;
     let mut result_seen = false;
-    let mut result_deadline = None;
     let mut session_state = None::<String>;
     let mut deferred_tasks = HashSet::new();
     let mut seen_deferred_tasks = HashSet::new();
     let mut deferred_task_titles = HashMap::new();
     let mut deferred_task_tools = HashMap::new();
     let mut deferred_work_seen = false;
+    let mut last_compaction = None::<String>;
     let initialize_id = uuid::Uuid::new_v4().to_string();
     let initialize_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let result: anyhow::Result<()> = async {
@@ -506,11 +508,6 @@ pub(super) async fn run(
                 _ = handle.wake.notified() => anyhow::bail!("cancelled"),
                 n = &mut read => break n?,
                 _ = tokio::time::sleep_until(initialize_deadline), if !initialized => anyhow::bail!("Claude native initialize timed out before prompt dispatch"),
-                _ = async {
-                    if let Some(deadline) = result_deadline {
-                        tokio::time::sleep_until(deadline).await;
-                    }
-                }, if result_seen && result_deadline.is_some() => anyhow::bail!("Claude native run-end ceiling expired with deferred work"),
                 _ = poll.tick() => {
                     let mut finished = Vec::new();
                     for (id, request) in pending.iter_mut() {
@@ -554,8 +551,6 @@ pub(super) async fn run(
                 anyhow::bail!("Claude stdio closed before deferred work settled");
             }
             anyhow::ensure!(n <= LINE_MAX, "Claude native output line exceeds its bound");
-            stream_bytes = stream_bytes.saturating_add(n);
-            anyhow::ensure!(stream_bytes <= 16 * 1024 * 1024, "Claude native output exceeds its bound");
             let text = decode_line(&line);
             let value = match serde_json::from_str::<Value>(&text) { Ok(v) => v, Err(_) => continue };
             if value.get("session_id").and_then(Value::as_str).is_some_and(|reported| {
@@ -567,8 +562,16 @@ pub(super) async fn run(
                 if value.pointer("/response/request_id").and_then(Value::as_str) == Some(initialize_id.as_str()) {
                     anyhow::ensure!(value["type"] == "control_response" && value["response"]["subtype"] == "success"
                         && value["response"]["response"].is_object(), "Claude native initialize was rejected");
+                    anyhow::ensure!(value.pointer("/response/response/claude_code_version").and_then(Value::as_str)
+                        .is_some_and(|version| crate::provider::compat::version_at_least(version, SUPPORTED_VERSION)),
+                        "Claude native initialize version differs from the selected CLI");
                     initialized = true;
-                    interactions.initialized_claude(SUPPORTED_VERSION).map_err(anyhow::Error::msg)?;
+                    for command in value.pointer("/response/response/commands").and_then(Value::as_array).into_iter().flatten().take(256) {
+                        if let (Some(name), Some(help)) = (command["name"].as_str(), command["description"].as_str()) {
+                            command_help.insert(name.trim_start_matches('/').to_ascii_lowercase(), help.to_owned());
+                        }
+                    }
+                    interactions.initialized_claude(observed_version.as_str()).map_err(anyhow::Error::msg)?;
                     write_frame(&mut input, &message).await?;
                     sent_prompt = true;
                 }
@@ -576,6 +579,65 @@ pub(super) async fn run(
             }
             if value["type"] == "system" {
                 match value["subtype"].as_str() {
+                    Some("compact_boundary") => {
+                        let id = value
+                            .get("uuid")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.pointer("/compact_metadata/user_message_id").and_then(Value::as_str))
+                            .unwrap_or("claude-compact-boundary");
+                        if crate::provider::standing_context::should_reinject_context(
+                            &mut last_compaction,
+                            id,
+                        ) {
+                            if let Some(context) = plan.standing_context.as_deref() {
+                                write_frame(&mut input, &user_message(context)).await?;
+                            }
+                        }
+                    }
+                    Some("init") => {
+                        if let (Some(owner), Some(session)) = (command_owner.as_ref(), session) {
+                            if let Some(listed) = value["slash_commands"].as_array() {
+                                let mut seen = std::collections::HashSet::new();
+                                let commands = listed
+                                    .iter()
+                                    .take(256)
+                                    .filter_map(|name| {
+                                        let name = name.as_str()?.trim_start_matches('/');
+                                        if name.is_empty()
+                                            || name.len() > 128
+                                            || name.chars().any(|c| c.is_whitespace() || c.is_control())
+                                            || !seen.insert(name.to_ascii_lowercase())
+                                        {
+                                            return None;
+                                        }
+                                        let help = command_help.get(&name.to_ascii_lowercase()).map(String::as_str).unwrap_or_default();
+                                        Some(crate::provider::AvailableCommand {
+                                            name: format!("/{name}"),
+                                            description: crate::text_safe::terminal_safe(help)
+                                                .split_whitespace()
+                                                .collect::<Vec<_>>()
+                                                .join(" ")
+                                                .chars()
+                                                .take(400)
+                                                .collect(),
+                                        })
+                                    })
+                                    .collect();
+                                // The catalog belongs to this session, so name it first.
+                                send_progress(&progress, TurnProgress::Session(session.to_owned()), &handle).await;
+                                send_progress(
+                                    &progress,
+                                    TurnProgress::Commands {
+                                        owner: owner.clone(),
+                                        session_id: session.to_owned(),
+                                        commands,
+                                    },
+                                    &handle,
+                                )
+                                .await;
+                            }
+                        }
+                    }
                     Some("session_state_changed") => {
                         if let Some(state) = value["state"].as_str() {
                             if matches!(state, "running" | "idle") {
@@ -620,7 +682,7 @@ pub(super) async fn run(
                                 None,
                                 &mut out,
                                 &progress,
-                            );
+                             &handle).await;
                         }
                     }
                     Some("task_notification") => {
@@ -650,7 +712,7 @@ pub(super) async fn run(
                                         )),
                                         &mut out,
                                         &progress,
-                                    );
+                                     &handle).await;
                                 }
                             }
                         }
@@ -678,7 +740,7 @@ pub(super) async fn run(
                                         None,
                                         &mut out,
                                         &progress,
-                                    );
+                                     &handle).await;
                                 }
                             }
                     }
@@ -701,10 +763,6 @@ pub(super) async fn run(
                 continue;
             }
             if let Some(request) = permission_request(&value).map_err(anyhow::Error::msg)? {
-                anyhow::ensure!(seen_native.len() < 1024, "Claude native request budget exceeded");
-                if !seen_native.insert(request.request_id.clone()) {
-                    continue;
-                }
                 if request.tool_name == "AskUserQuestion" {
                     let session = session.context("Claude native session identity is unavailable")?;
                     let params = match claude_question_params(&request, session) {
@@ -715,13 +773,14 @@ pub(super) async fn run(
                         }
                     };
                     let (native, rx) = match interactions.request(session, json!(request.request_id), "claude/ask_question".into(), params) {
-                        Ok(pair) => pair,
+                        Ok(Some(pair)) => pair,
+                        Ok(None) => continue,
                         Err(reason) => {
                             write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
                             continue;
                         }
                     };
-                    if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
+                    if !send_progress(&progress, TurnProgress::Interaction(Box::new(native.clone())), &handle).await { native.cancel(); }
                     if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: true, native, rx }).is_some() {
                         anyhow::bail!("duplicate Claude native request identity");
                     }
@@ -729,8 +788,15 @@ pub(super) async fn run(
                 }
                 let session = session.context("Claude native session identity is unavailable")?;
                 let params = json!({"sessionId":session,"toolCall":{"title":request.title.as_deref().unwrap_or(&request.tool_name),"toolCallId":request.tool_use_id,"rawInput":request.input},"options":[{"optionId":"allow","name":"Allow once","kind":"allow_once"},{"optionId":"deny","name":"Deny","kind":"reject_once"}]});
-                let (native, rx) = interactions.request(session, json!(request.request_id), "claude/can_use_tool".into(), params).map_err(anyhow::Error::msg)?;
-                if !progress.as_ref().is_some_and(|tx| tx.send(TurnProgress::Interaction(Box::new(native.clone()))).is_ok()) { native.cancel(); }
+                let (native, rx) = match interactions.request(session, json!(request.request_id), "claude/can_use_tool".into(), params) {
+                    Ok(Some(pair)) => pair,
+                    Ok(None) => continue,
+                    Err(reason) => {
+                        write_frame(&mut input, &permission_response(&request.request_id, &request.input, false, &reason)).await?;
+                        continue;
+                    }
+                };
+                if !send_progress(&progress, TurnProgress::Interaction(Box::new(native.clone())), &handle).await { native.cancel(); }
                 if pending.insert(request.request_id.clone(), PendingPermission { request_id: request.request_id, input: request.input, question: false, native, rx }).is_some() {
                     anyhow::bail!("duplicate Claude native request identity");
                 }
@@ -738,7 +804,6 @@ pub(super) async fn run(
             }
             if result_seen && matches!(value["type"].as_str(), Some("assistant" | "stream_event")) {
                 result_seen = false;
-                result_deadline = None;
                 if session_state.is_some() {
                     session_state = Some("running".into());
                 }
@@ -752,16 +817,16 @@ pub(super) async fn run(
                 }
                 continue;
             }
-            artifacts.report_claude(artifact_owner.as_ref(), session, None, &value, &progress);
+            artifacts.report_claude(artifact_owner.as_ref(), session, None, &value, &progress, &handle).await;
             for mut part in parser.parse_line(&text) {
                 if req.native_session_id.is_some() {
                     if let StreamPart::Usage(usage) = &mut part { usage.cost_usd = None; }
                 }
                 if matches!(&part, StreamPart::Error(_)) { out.failed = true; }
-                emit_progress(std::slice::from_ref(&part), &progress);
+                emit_progress(std::slice::from_ref(&part), &progress, &handle).await;
                 let mut chunk = crate::provider::codex::StreamOutcome::default();
                 crate::provider::codex::apply_stream_parts(vec![part], &mut chunk);
-                out.text.push_str(&chunk.text);
+                append_visible_text(&mut out.text, &chunk.text);
                 for card in chunk.cards {
                     crate::provider::stream_cards::upsert_card(&mut out.cards, card);
                 }
@@ -773,7 +838,9 @@ pub(super) async fn run(
                 anyhow::ensure!(pending.is_empty(), "Claude ended with unresolved native permissions; completion is uncertain");
                 out.failed |= value["is_error"] == true || value["subtype"].as_str() != Some("success");
                 result_seen = true;
-                result_deadline.get_or_insert(tokio::time::Instant::now() + RUN_END_CEILING);
+                // Deferred background work may legitimately outlive the result by any amount of
+                // time (a long build). The turn stays open until Claude reports it idle or the
+                // user cancels; there is no wall-clock ceiling.
                 if out.failed
                     || (deferred_tasks.is_empty()
                         && ((!deferred_work_seen && session_state.as_deref() != Some("running"))
@@ -789,7 +856,7 @@ pub(super) async fn run(
             if let (Some(owner), Some(session)) = (artifact_owner.as_ref(), session) {
                 if let Err(reason) = capture_context(&mut input, &mut output, owner, session,
                     interactions.capabilities.permissions.connection_id.as_deref().unwrap_or_default(), &handle, req).await {
-                    if let Some(tx) = &progress { let _ = tx.send(TurnProgress::Notice(format!("Native context remains unknown: {reason}"))); }
+                    let _ = send_progress(&progress, TurnProgress::Notice(format!("Native context remains unknown: {reason}")), &handle).await;
                 }
             }
         }
@@ -823,7 +890,9 @@ pub(super) async fn run(
                 Some("interrupted before delegated task completion".into()),
                 &mut out,
                 &progress,
-            );
+                &handle,
+            )
+            .await;
         }
     }
     for (_, request) in pending.drain() {
@@ -992,7 +1061,22 @@ async fn capture_context(
                 request_id,
                 response_sha256: format!("{:x}", Sha256::digest(&response)),
             },
-            &req.compaction,
+            &crate::capacity::Compaction::Native,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn duplicate_compaction_boundaries_reinject_once_per_boundary() {
+        let mut last = None;
+        let mut reinjections = 0;
+        for id in ["compact-1", "compact-1", "compact-2"] {
+            if crate::provider::standing_context::should_reinject_context(&mut last, id) {
+                reinjections += 1;
+            }
+        }
+        assert_eq!(reinjections, 2);
     }
 }

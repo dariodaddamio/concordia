@@ -133,11 +133,7 @@ pub(super) fn key(app: &mut App, key: &KeyEvent) -> bool {
         }
         return true;
     }
-    if app.deleg.input.is_none()
-        && key.code == KeyCode::F(8)
-        && app.picker.is_none()
-        && !app.project_search.active()
-    {
+    if app.deleg.input.is_none() && key.code == KeyCode::F(8) && app.picker.is_none() {
         if let Some(id) = app.deleg.selected.filter(|id| {
             app.deleg
                 .d

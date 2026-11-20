@@ -15,7 +15,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 /// How long a fetched Claude reading is trusted before it is refreshed in the background.
 pub const USAGE_TTL_SECS: u64 = 120;
@@ -34,9 +34,21 @@ pub struct UsageWindow {
     pub used_pct: f64,
     /// When the window resets, already human-readable (`3h`, `Oct 21, 9am`).
     pub resets: Option<String>,
+    /// The provider's own name for an extra limit bucket, such as a separate allowance for one
+    /// model. `None` for the account's main limits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
 }
 
 impl UsageWindow {
+    /// The label people read: the bucket name, when there is one, then the window.
+    pub fn name(&self) -> String {
+        match &self.bucket {
+            Some(bucket) => format!("{bucket} {}", self.label),
+            None => self.label.clone(),
+        }
+    }
+
     /// The reading predates the window's reset, so its percentage no longer applies.
     fn expired(&self) -> bool {
         self.expired_at(local_now())
@@ -84,7 +96,7 @@ impl UsageWindow {
         if self.expired() {
             return format!(
                 "{} · {} · current usage unavailable (last reading {}% used)",
-                self.label,
+                self.name(),
                 self.resets
                     .as_deref()
                     .map(reset_phrase)
@@ -94,7 +106,7 @@ impl UsageWindow {
         }
         format!(
             "{} {}% left ({}% used)",
-            self.label,
+            self.name(),
             self.left_i(),
             self.used_i()
         )
@@ -194,9 +206,11 @@ impl UsageSnapshot {
     }
 
     fn max_used(&self) -> Option<f64> {
+        // An extra bucket running out limits one model, not the account, so it does not set the
+        // account's tone.
         self.windows
             .iter()
-            .filter(|window| !window.expired())
+            .filter(|window| !window.expired() && window.bucket.is_none())
             .map(|w| w.used_pct)
             .reduce(f64::max)
             .or_else(|| match (self.primary_pct, self.weekly_pct) {
@@ -367,7 +381,6 @@ fn local_now() -> Option<WallTime> {
 }
 
 #[cfg(windows)]
-#[cfg_attr(test, allow(dead_code))]
 fn system_now() -> Option<WallTime> {
     #[repr(C)]
     #[derive(Default)]
@@ -397,13 +410,16 @@ fn system_now() -> Option<WallTime> {
 }
 
 #[cfg(not(windows))]
-#[cfg_attr(test, allow(dead_code))]
 fn system_now() -> Option<WallTime> {
     None
 }
 
 fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
-    let width = windows.iter().map(|w| w.label.len()).max().unwrap_or(0);
+    let width = windows
+        .iter()
+        .map(|w| w.name().chars().count())
+        .max()
+        .unwrap_or(0);
     windows
         .iter()
         .map(|w| {
@@ -412,7 +428,7 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
             }
             let mut line = format!(
                 "{:<width$}  {:>3}% left · {:>3}% used",
-                w.label,
+                w.name(),
                 w.left_i(),
                 w.used_i(),
             );
@@ -434,15 +450,24 @@ fn snapshot_from_windows(
     extras: Vec<String>,
     source: &str,
 ) -> UsageSnapshot {
+    let windows: Vec<_> = windows
+        .into_iter()
+        .filter(|window| window.used_pct.is_finite() && (0.0..=100.0).contains(&window.used_pct))
+        .collect();
     let mut parts = Vec::new();
     if let Some(kind) = &limit_kind {
         parts.push(format!("LIMIT · {kind}"));
     }
     for w in &windows {
+        // The footer summary covers the main limits; extra buckets are listed in the detail.
+        if w.bucket.is_some() && windows.iter().any(|w| w.bucket.is_none()) {
+            continue;
+        }
+        let label = w.name();
         parts.push(if w.expired() {
-            format!("{} reset · usage unknown", w.label)
+            format!("{label} reset · usage unknown")
         } else {
-            format!("{} {}% left", w.label, w.left_i())
+            format!("{label} {}% left", w.left_i())
         });
     }
     parts.extend(extras.iter().cloned());
@@ -460,11 +485,15 @@ fn snapshot_from_windows(
     if !source.is_empty() {
         lines.push(source.to_string());
     }
-    let primary_pct = windows.first().filter(|w| !w.expired()).map(|w| w.used_pct);
+    let primary_pct = windows
+        .iter()
+        .find(|w| w.bucket.is_none())
+        .filter(|w| !w.expired())
+        .map(|w| w.used_pct);
     let weekly_pct = windows
         .iter()
-        .find(|w| w.label.starts_with("7d"))
-        .or_else(|| windows.get(1))
+        .find(|w| w.bucket.is_none() && w.label.starts_with("7d"))
+        .or_else(|| windows.iter().filter(|w| w.bucket.is_none()).nth(1))
         .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
@@ -487,9 +516,35 @@ struct CodexRateLimits {
     plan_type: Option<String>,
     #[serde(alias = "limitId")]
     limit_id: Option<String>,
+    /// The provider's display name for this bucket (`limitName`).
+    #[serde(default, alias = "limitName")]
+    limit_name: Option<String>,
+    /// The model a model-specific bucket applies to (`normalModelSlug`).
+    #[serde(default, alias = "normalModelSlug")]
+    normal_model_slug: Option<String>,
     #[serde(alias = "rateLimitReachedType")]
     rate_limit_reached_type: Option<String>,
     credits: Option<Credits>,
+    /// Every other bucket the provider reported beside the main `codex` one
+    /// (`rateLimitsByLimitId`), in limit-id order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    extra: Vec<CodexRateLimits>,
+}
+
+impl CodexRateLimits {
+    /// The name shown for an extra bucket: the provider's name, else its model, else its id.
+    fn bucket_name(&self) -> String {
+        [&self.limit_name, &self.normal_model_slug, &self.limit_id]
+            .into_iter()
+            .flatten()
+            .map(|name| name.trim())
+            .find(|name| !name.is_empty())
+            .unwrap_or("extra limit")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(60)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -545,16 +600,6 @@ pub fn cursor_usage() -> UsageSnapshot {
         "not shown by Cursor CLI",
         "Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage",
     )
-}
-
-/// Limits for one account without ever blocking. Claude needs the fetcher (see
-/// [`UsageFetcher::snapshot`]); here it only reports that nothing has been read yet.
-pub fn read_provider_usage(provider: crate::store::ProviderKind, home: &Path) -> UsageSnapshot {
-    match provider {
-        crate::store::ProviderKind::Codex => read_codex_usage(home),
-        crate::store::ProviderKind::Claude => claude_waiting(),
-        crate::store::ProviderKind::Cursor => cursor_waiting(),
-    }
 }
 
 fn cursor_waiting() -> UsageSnapshot {
@@ -644,40 +689,62 @@ pub fn profiled_picker_row(
 ) -> UsageRow {
     let mut row = picker_row(id, provider, snap);
     if !snap.windows.is_empty() {
-        row.detail = snap.detail.lines().last().unwrap_or_default().to_owned();
+        // The card already contains every provider-reported bucket. Keep diagnostic detail out
+        // of the bucket scroll range so End lands on the final bucket rather than a note below it.
+        row.detail.clear();
     }
-    let email = identity
-        .login
-        .as_deref()
-        .filter(|s| s.contains('@'))
-        .unwrap_or("not reported");
+    let email = identity.login.as_deref().filter(|s| s.contains('@'));
     let plan = identity
         .plan
         .as_deref()
         .or(snap.plan.as_deref())
         .filter(|p| !p.trim().is_empty() && *p != "unknown")
-        .unwrap_or("not reported");
-    let plan = match plan.to_ascii_lowercase().as_str() {
-        "free" => "Free",
-        "plus" => "Plus",
-        "pro" => "Pro",
-        "max" => "Max",
-        "team" => "Team",
-        "business" => "Business",
-        "enterprise" => "Enterprise",
-        "edu" => "Education",
-        "individual" => "Individual",
-        _ => plan,
-    };
+        .map(|plan| match plan.to_ascii_lowercase().as_str() {
+            "free" => "Free",
+            "plus" => "Plus",
+            "pro" => "Pro",
+            "max" => "Max",
+            "team" => "Team",
+            "business" => "Business",
+            "enterprise" => "Enterprise",
+            "edu" => "Education",
+            "individual" => "Individual",
+            _ => plan,
+        });
     let head = crate::accounts::display_account_name(provider, id);
     let limits = row
         .label
         .split_once('\n')
         .map(|(_, limits)| limits.to_string())
         .unwrap_or_else(|| snap.used_left_text());
-    let mut label = format!("{head} \u{b7} Email: {email} \u{b7} Plan: {plan}");
-    if let Some(team) = &identity.team {
-        label.push_str(&format!("\nWorkspace: {team}"));
+    let mut head_parts = vec![head];
+    if let Some(email) = email {
+        head_parts.push(format!("Email: {email}"));
+    }
+    if let Some(plan) = plan {
+        head_parts.push(format!("Plan: {plan}"));
+    }
+    let credits = match &snap.credits {
+        Some(credits) if credits.unlimited == Some(true) => Some("Credits: unlimited".into()),
+        Some(credits) if credits.balance.is_some() => {
+            Some(format!("Credits: {} balance", credits.balance.unwrap()))
+        }
+        Some(credits) if credits.has_credits == Some(false) => {
+            Some("Credits: none available".into())
+        }
+        // "not reported" / "balance not reported" stay off the card.
+        _ => None,
+    };
+    if let Some(credits) = credits.as_deref() {
+        head_parts.push(credits.to_string());
+    }
+    let mut label = head_parts.join(" \u{b7} ");
+    if let Some(workspace) = identity
+        .team
+        .as_deref()
+        .filter(|team| !team.trim().is_empty())
+    {
+        label.push_str(&format!("\nWorkspace: {workspace}"));
     }
     if !limits.is_empty() {
         label.push('\n');
@@ -751,6 +818,7 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
             label: claude_label(name),
             used_pct,
             resets,
+            bucket: None,
         });
     }
     if windows.is_empty() {
@@ -834,9 +902,10 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
             // A redrawn screen repeats rows: the last reading wins.
             windows.retain(|w| w.label != label);
             windows.push(UsageWindow {
-                label: label.to_string(),
+                label,
                 used_pct,
                 resets: None,
+                bucket: None,
             });
         } else if label == "On-Demand" && lower.contains("disabled") {
             on_demand_off = true;
@@ -858,8 +927,10 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
     Some((windows, note.join(", ")))
 }
 
-/// `(canonical label, text after it)` for a usage-table row.
-fn cursor_row(line: &str) -> Option<(&'static str, &str)> {
+/// `(label, text after it)` for a usage-table row. Known rows get their canonical spelling; any
+/// other row that reports a percentage keeps the name Cursor printed (a per-model or temporary
+/// allowance), taken from the text before the first wide gap.
+fn cursor_row(line: &str) -> Option<(String, &str)> {
     for (name, label) in [
         ("included", "Included"),
         ("auto", "Auto"),
@@ -870,11 +941,17 @@ fn cursor_row(line: &str) -> Option<(&'static str, &str)> {
         if line.len() >= name.len() && line.is_char_boundary(name.len()) {
             let (head, rest) = line.split_at(name.len());
             if head.eq_ignore_ascii_case(name) && rest.starts_with(char::is_whitespace) {
-                return Some((label, rest));
+                return Some((label.to_owned(), rest));
             }
         }
     }
-    None
+    let (head, rest) = line.split_once("  ")?;
+    let head = head.trim();
+    let named = head.chars().next().is_some_and(char::is_alphabetic)
+        && head.chars().count() <= 40
+        && !head.chars().any(char::is_control)
+        && !head.eq_ignore_ascii_case("category");
+    (named && rest.to_ascii_lowercase().contains("% used")).then(|| (head.to_owned(), rest))
 }
 
 fn claude_label(name: &str) -> String {
@@ -955,35 +1032,11 @@ pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = crate::process_lifetime::capture(cmd, timeout, 1024 * 1024)?;
+    if !out.status.success() {
+        return Err(format!("Claude usage reader exited with {}", out.status));
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not start claude: {e}"))?;
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        String::from_utf8_lossy(&buf).into_owned()
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() >= timeout => {
-                crate::provider::turn::kill_process_tree(child.id());
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out after {}s", timeout.as_secs()));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(40)),
-            Err(e) => return Err(format!("wait failed: {e}")),
-        }
-    }
-    reader.join().map_err(|_| "reader thread panicked".into())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1002,7 +1055,9 @@ impl UsageIdentity {
                 .unwrap_or_else(|_| PathBuf::from("."))
                 .join(home)
         };
-        let mut normalized = home.to_string_lossy().replace('\\', "/");
+        let home = home.canonicalize().unwrap_or(home);
+        let raw = home.to_string_lossy();
+        let mut normalized = crate::file_links::normalized_local_path(&raw).replace('\\', "/");
         if cfg!(windows) {
             normalized.make_ascii_lowercase();
         }
@@ -1046,9 +1101,7 @@ struct CachedUsage {
     /// Plan and similar, shown after the windows (Cursor).
     #[serde(default)]
     note: String,
-    /// Missing on legacy cache files; such readings are not bound to an account identity.
-    #[serde(default)]
-    identity: Option<UsageIdentity>,
+    identity: UsageIdentity,
 }
 
 #[derive(Debug, Clone)]
@@ -1057,6 +1110,29 @@ pub struct CachedObservation {
     pub fresh: bool,
     pub exhausted: bool,
     pub remaining_pct: Option<f64>,
+    pub reset: Option<String>,
+    pub reset_passed: bool,
+}
+
+pub struct CachedUsageView {
+    pub observed_at: u64,
+    pub fresh: bool,
+    pub windows: Vec<String>,
+}
+
+/// Exact account/provider/home cache only: no directory scan, provider launch or refresh.
+pub fn cached_usage_view(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+) -> Option<CachedUsageView> {
+    let cached = load_cache(root, &UsageIdentity::new(provider, account, home))?;
+    Some(CachedUsageView {
+        observed_at: cached.fetched_at,
+        fresh: unix_now().saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
+        windows: window_lines(&cached.windows),
+    })
 }
 
 /// Local, identity-bound cache inspection only. Never constructs a fetcher or starts a provider.
@@ -1066,31 +1142,50 @@ pub fn peek_cached_usage(
     account: &str,
     home: &Path,
 ) -> Option<CachedObservation> {
-    use std::io::Read;
+    peek_cached_usage_for_model(root, provider, account, home, None)
+}
+
+/// [`peek_cached_usage`] for one model. Cursor reports separate pools: Auto and Composer models
+/// draw on `Auto`, every other model on `API`, so the other pool running out does not limit this
+/// model.
+pub fn peek_cached_usage_for_model(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+    model: Option<&str>,
+) -> Option<CachedObservation> {
     let identity = UsageIdentity::new(provider, account, home);
-    let file = fs::File::open(identity.cache_path(root)).ok()?;
-    let mut bytes = Vec::new();
-    file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 64 * 1024 {
-        return None;
-    }
-    let cached: CachedUsage = serde_json::from_slice(&bytes).ok()?;
+    let cached = load_cache(root, &identity)?;
     let now = unix_now();
-    if cached.identity.as_ref() != Some(&identity)
-        || cached.fetched_at > now
-        || cached.windows.len() > 16
-        || cached
-            .windows
-            .iter()
-            .any(|window| !window.used_pct.is_finite() || !(0.0..=100.0).contains(&window.used_pct))
-    {
-        return None;
-    }
+    let other_pool = match model {
+        Some(model) if provider == crate::store::ProviderKind::Cursor => {
+            let auto_pool = model.eq_ignore_ascii_case("auto")
+                || model.to_ascii_lowercase().starts_with("composer");
+            Some(if auto_pool { "API" } else { "Auto" })
+        }
+        _ => None,
+    };
+    let windows: Vec<&UsageWindow> = cached
+        .windows
+        .iter()
+        .filter(|window| other_pool != Some(window.label.as_str()))
+        .collect();
     Some(CachedObservation {
         observed_at: cached.fetched_at,
         fresh: now.saturating_sub(cached.fetched_at) < USAGE_TTL_SECS,
-        exhausted: cached.windows.iter().any(|window| window.used_pct >= 100.0),
-        remaining_pct: cached.windows.first().map(UsageWindow::left_pct),
+        exhausted: windows
+            .iter()
+            .any(|window| !window.expired() && window.used_pct >= 100.0),
+        remaining_pct: windows
+            .iter()
+            .find(|window| !window.expired())
+            .map(|window| window.left_pct()),
+        reset: windows
+            .iter()
+            .find(|window| !window.expired())
+            .and_then(|window| window.resets.clone()),
+        reset_passed: cached.windows.iter().any(UsageWindow::expired),
     })
 }
 
@@ -1102,23 +1197,74 @@ fn unix_now() -> u64 {
 }
 
 fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage> {
-    let raw = fs::read_to_string(identity.cache_path(state_root)).ok()?;
+    let path = identity.cache_path(state_root);
+    let directory = path.parent()?.canonicalize().ok()?;
+    if crate::workspaces::directory_id(path.parent()?).is_err()
+        || !crate::fs_safe::regular_owned_file(&path, &directory)
+    {
+        return None;
+    }
+    let raw = crate::fs_safe::read_text_bounded(&path, 64 * 1024)?;
     let cached: CachedUsage = serde_json::from_str(&raw).ok()?;
-    (cached.identity.as_ref() == Some(identity) && cached.fetched_at <= unix_now())
-        .then_some(cached)
+    (cached.identity == *identity
+        && cached.fetched_at <= unix_now()
+        && cached.windows.len() <= 16
+        && cached.note.len() <= 4096
+        && cached.windows.iter().all(|window| {
+            window.used_pct.is_finite()
+                && (0.0..=100.0).contains(&window.used_pct)
+                && window.label.len() <= 128
+                && window
+                    .resets
+                    .as_ref()
+                    .is_none_or(|reset| reset.len() <= 512)
+        }))
+    .then_some(cached)
 }
 
 fn save_cache(state_root: &Path, c: &CachedUsage) {
-    let Some(identity) = c.identity.as_ref() else {
-        return;
-    };
-    let path = identity.cache_path(state_root);
+    let path = c.identity.cache_path(state_root);
     if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+        if fs::create_dir_all(dir).is_err() || crate::workspaces::directory_id(dir).is_err() {
+            return;
+        }
+        if path.exists()
+            && !dir
+                .canonicalize()
+                .is_ok_and(|dir| crate::fs_safe::regular_owned_file(&path, &dir))
+        {
+            return;
+        }
     }
     if let Ok(json) = serde_json::to_string(c) {
-        let _ = fs::write(path, json);
+        if json.len() <= 64 * 1024 {
+            let _ = crate::state_io::write_atomic(&path, json.as_bytes());
+        }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_cached_usage(
+    root: &Path,
+    provider: crate::store::ProviderKind,
+    account: &str,
+    home: &Path,
+) {
+    save_cache(
+        root,
+        &CachedUsage {
+            fetched_at: unix_now(),
+            identity: UsageIdentity::new(provider, account, home),
+            windows: vec![UsageWindow {
+                label: "fixture".into(),
+                used_pct: 10.0,
+                resets: None,
+                bucket: None,
+            }],
+            codex_limits: None,
+            note: String::new(),
+        },
+    );
 }
 
 /// Produces the raw `/usage` text for a Claude config dir. Swapped for a fake in tests.
@@ -1189,55 +1335,33 @@ impl UsageFetcher {
         self
     }
 
-    /// Limits for an account right now. Claude returns the cached reading (or a "checking"
-    /// placeholder) and starts a background refresh when the cache is missing or older than the TTL.
+    /// Cached limits for an account, with a background refresh when missing or stale.
     pub fn snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
     ) -> UsageSnapshot {
-        match provider {
-            crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, false, true)
-            }
-            p => self.fetched_snapshot(p, account, home, false, true),
-        }
+        self.fetched_snapshot(provider, account, home, false)
     }
 
-    /// Return the cached reading without starting a provider usage read.
-    pub fn cached_snapshot(
-        &mut self,
-        provider: crate::store::ProviderKind,
-        account: &str,
-        home: &Path,
-    ) -> UsageSnapshot {
-        self.fetched_snapshot(provider, account, home, false, false)
-    }
-
-    /// Like [`snapshot`](Self::snapshot) but refreshes Claude even if the cache is fresh (`/usage`).
+    /// Like [`snapshot`](Self::snapshot), but refreshes even a fresh cache (`/usage`).
     pub fn snapshot_refresh(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
     ) -> UsageSnapshot {
-        match provider {
-            crate::store::ProviderKind::Codex => {
-                self.fetched_snapshot(provider, account, home, true, true)
-            }
-            p => self.fetched_snapshot(p, account, home, true, true),
-        }
+        self.fetched_snapshot(provider, account, home, true)
     }
 
-    /// Claude and Cursor: cached reading plus a background refresh when stale.
+    /// All providers share identity, freshness and refresh scheduling here.
     fn fetched_snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
         account: &str,
         home: &Path,
         force: bool,
-        allow_start: bool,
     ) -> UsageSnapshot {
         let cursor = provider == crate::store::ProviderKind::Cursor;
         let codex = provider == crate::store::ProviderKind::Codex;
@@ -1258,14 +1382,14 @@ impl UsageFetcher {
         let usable_cache = e
             .cached
             .as_ref()
-            .filter(|c| c.identity.as_ref() == Some(&identity) && c.fetched_at <= now)
+            .filter(|c| c.identity == identity && c.fetched_at <= now)
             .cloned();
         let stale = usable_cache
             .as_ref()
             .is_none_or(|c| now.saturating_sub(c.fetched_at) >= USAGE_TTL_SECS);
         let stale = stale || e.dirty;
         let retry_ok = force || e.dirty || now.saturating_sub(e.last_attempt) >= USAGE_TTL_SECS;
-        let start = allow_start && !e.pending && (force || (stale && retry_ok));
+        let start = !e.pending && (force || (stale && retry_ok));
         if start {
             e.pending = true;
             e.dirty = false;
@@ -1276,8 +1400,10 @@ impl UsageFetcher {
             (None, true, _) | (None, false, None) => Err(None),
             (None, false, Some(err)) => Err(Some(err.clone())),
         };
+        // A settled reading keeps its age note while a background refresh runs; do not append
+        // "cached; refreshing". Surface refresh failure only after the refresh actually failed.
         let cache_state = if e.pending {
-            Some("cached; refreshing")
+            None
         } else if e.error.is_some() {
             Some("cached; refresh failed")
         } else {
@@ -1360,7 +1486,10 @@ impl UsageFetcher {
             Err(Some(_)) if cursor => cursor_usage(),
             Err(Some(err)) => UsageSnapshot::no_data(
                 "limits unavailable",
-                format!("could not read Claude limits ({err}); /usage tries again"),
+                format!(
+                    "could not read {} limits ({err}); /usage tries again",
+                    crate::accounts::display_account_name(provider, provider.as_str())
+                ),
             ),
         }
     }
@@ -1391,9 +1520,10 @@ impl UsageFetcher {
         let root = self.state_root.clone();
         std::thread::spawn(move || {
             let result = runner(&home).and_then(|text| {
-                let codex_limits = codex.then(|| parse_rate_limits_blob(&text)).flatten();
+                let parsed_limits = codex.then(|| parse_rate_limits_blob(&text)).flatten();
+                let codex_limits = parsed_limits.clone();
                 let (windows, note) = if codex {
-                    parse_rate_limits_blob(&text).map(|limits| {
+                    parsed_limits.map(|limits| {
                         let snap = format_limits(&limits, "Codex live limits");
                         (snap.windows, snap.plan.unwrap_or_default())
                     })
@@ -1408,7 +1538,7 @@ impl UsageFetcher {
                     windows,
                     codex_limits,
                     note,
-                    identity: Some(identity.clone()),
+                    identity: identity.clone(),
                 })
             });
             if cursor {
@@ -1446,19 +1576,23 @@ impl UsageFetcher {
 
 fn read_tmp_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let tmp = codex_home.join("tmp");
-    if !tmp.is_dir() {
+    if crate::fs_safe::resolved_directory(&tmp).is_none() {
         return None;
     }
     let mut files: Vec<_> = fs::read_dir(&tmp)
         .ok()?
+        .take(4096)
         .flatten()
-        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            fs::symlink_metadata(e.path())
+                .is_ok_and(|metadata| metadata.is_file() && !crate::workspaces::linked(&metadata))
+        })
         .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .collect();
     files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
     files.reverse();
     for entry in files.into_iter().take(8) {
-        let Ok(raw) = fs::read_to_string(entry.path()) else {
+        let Some(raw) = crate::fs_safe::read_text_bounded(&entry.path(), 512 * 1024) else {
             continue;
         };
         if let Some(limits) = parse_rate_limits_blob(&raw) {
@@ -1476,20 +1610,30 @@ fn read_tmp_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)
 
 fn read_session_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemTime)> {
     let sessions = codex_home.join("sessions");
-    if !sessions.is_dir() {
+    if crate::workspaces::directory_id(&sessions).is_err() {
         return None;
     }
     let mut files: Vec<(PathBuf, SystemTime)> = Vec::new();
-    let mut stack = vec![sessions];
-    while let Some(dir) = stack.pop() {
+    let mut stack = vec![(sessions, 0)];
+    let mut remaining = 4096;
+    while let Some((dir, depth)) = stack.pop() {
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries.take(remaining) {
+            remaining = remaining.saturating_sub(1);
+            let Ok(entry) = entry else { continue };
             let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().map(|x| x == "jsonl").unwrap_or(false) {
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if crate::workspaces::linked(&metadata) {
+                continue;
+            }
+            if metadata.is_dir() && depth < 8 {
+                stack.push((path, depth + 1));
+            } else if metadata.is_file() && path.extension().map(|x| x == "jsonl").unwrap_or(false)
+            {
                 let mtime = entry
                     .metadata()
                     .ok()
@@ -1547,6 +1691,9 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
     };
     let mut last_any: Option<CodexRateLimits> = None;
     let mut last_pct: Option<CodexRateLimits> = None;
+    // Model-specific buckets arrive as their own events; the latest of each is kept beside the
+    // main `codex` bucket.
+    let mut extra = std::collections::BTreeMap::<String, CodexRateLimits>::new();
     for line in text.lines() {
         if !line.contains("rate_limits") {
             continue;
@@ -1560,13 +1707,23 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
         let Ok(limits) = serde_json::from_value::<CodexRateLimits>(block) else {
             continue;
         };
+        if let Some(id) = limits.limit_id.as_deref().filter(|id| *id != "codex") {
+            if has_percents(&limits) {
+                extra.insert(id.to_owned(), limits);
+            }
+            continue;
+        }
         if has_percents(&limits) {
             last_pct = Some(limits);
         } else {
             last_any = Some(limits);
         }
     }
-    last_pct.or(last_any)
+    let mut main = last_pct.or(last_any)?;
+    if main.extra.is_empty() {
+        main.extra = extra.into_values().collect();
+    }
+    Some(main)
 }
 
 fn parse_rate_limits_blob(raw: &str) -> Option<CodexRateLimits> {
@@ -1601,7 +1758,8 @@ fn has_percents(u: &CodexRateLimits) -> bool {
         || u.secondary.as_ref().and_then(|s| s.used_percent).is_some()
 }
 
-fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
+/// The windows of one Codex bucket; `bucket` names an extra bucket.
+fn codex_windows(u: &CodexRateLimits, bucket: Option<&str>) -> Vec<UsageWindow> {
     let mut windows = Vec::new();
     for (w, fallback) in [(&u.primary, "5h"), (&u.secondary, "7d")] {
         if let Some(w) = w {
@@ -1624,15 +1782,25 @@ fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
                             format_reset_unix(r).unwrap_or_else(|| "time unavailable".into())
                         }
                     }),
+                    bucket: bucket.map(str::to_owned),
                 });
             }
         }
+    }
+    windows
+}
+
+fn format_limits(u: &CodexRateLimits, source: &str) -> UsageSnapshot {
+    let mut windows = codex_windows(u, None);
+    let main = windows.len();
+    for extra in &u.extra {
+        windows.extend(codex_windows(extra, Some(&extra.bucket_name())));
     }
     let limit_kind = u
         .rate_limit_reached_type
         .as_ref()
         .map(|k| k.trim_end_matches("_reached").replace('_', " "))
-        .filter(|_| !windows.iter().any(UsageWindow::expired));
+        .filter(|_| !windows[..main].iter().any(UsageWindow::expired));
     let mut extras = Vec::new();
     if let Some(c) = &u.credits {
         if c.unlimited == Some(true) {
@@ -1780,13 +1948,11 @@ pub fn low_limit_warning(
         .windows
         .iter()
         .filter(|w| {
-            (w.label == "5h" || w.label.starts_with("7d"))
+            w.bucket.is_none()
+                && (w.label == "5h" || w.label.starts_with("7d"))
                 && w.used_pct.is_finite()
                 && w.used_pct >= 80.0
-                && !w
-                    .resets
-                    .as_deref()
-                    .is_some_and(|r| r.starts_with("already reset"))
+                && !w.expired()
         })
         .map(|w| {
             format!(
@@ -1805,7 +1971,10 @@ pub fn low_limit_warning(
     }
     let freshness = if provider == crate::store::ProviderKind::Codex {
         "updates after a Codex response"
-    } else if snapshot.summary.contains("cached") || snapshot.summary.contains(" old") {
+    } else if snapshot.summary.contains("cached")
+        || snapshot.summary.contains(" old")
+        || snapshot.summary.contains(" ago")
+    {
         "saved reading; check /usage for refresh status"
     } else {
         "checked by the provider"
@@ -1861,11 +2030,13 @@ mod tests {
                     label: "5h".into(),
                     used_pct: 64.0,
                     resets: Some("Oct 29, 4:19am".into()),
+                    bucket: None,
                 },
                 UsageWindow {
                     label: "7d".into(),
                     used_pct: 21.0,
                     resets: Some("Nov 6, 9am".into()),
+                    bucket: None,
                 },
             ],
             None,
@@ -2032,6 +2203,7 @@ mod tests {
                     label: "5h".into(),
                     used_pct: p,
                     resets: None,
+                    bucket: None,
                 }],
                 None,
                 vec![],
@@ -2090,7 +2262,12 @@ mod tests {
             .contains("credits balance 12.5"));
         let pending = fetcher.snapshot_refresh(ProviderKind::Codex, "synthetic", root.path());
         assert_eq!(pending.credits_text(), "Credits: 12.5 balance");
-        assert!(pending.detail.contains("refreshing"));
+        assert!(
+            !pending.summary.contains("cached; refreshing"),
+            "{}",
+            pending.summary
+        );
+        assert!(!pending.detail.contains("cached; refreshing"));
         wait_for(&mut fetcher);
         assert_eq!(
             fetcher
@@ -2340,6 +2517,9 @@ mod tests {
             limit_id: None,
             rate_limit_reached_type: None,
             credits: None,
+            limit_name: None,
+            normal_model_slug: None,
+            extra: Vec::new(),
         };
         let snap = format_limits(&limits, "as of your last chat");
         assert_eq!(
@@ -2460,55 +2640,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_unbound_cache_is_not_reused_as_a_current_identity() {
-        let root = tempfile::tempdir().unwrap();
-        let cache_dir = root.path().join("usage-cache");
-        fs::create_dir_all(&cache_dir).unwrap();
-        fs::write(
-            cache_dir.join("claude-legacy.json"),
-            serde_json::json!({
-                "fetched_at": unix_now(),
-                "windows": [{"label":"5h","used_pct":1.0,"resets":null}]
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let home = root.path().join("account-home");
-        let identity = UsageIdentity::new(ProviderKind::Claude, "claude-legacy", &home);
-        fs::write(
-            identity.cache_path(root.path()),
-            serde_json::to_string(&CachedUsage {
-                fetched_at: unix_now().saturating_add(3600),
-                codex_limits: None,
-                windows: vec![UsageWindow {
-                    label: "5h".into(),
-                    used_pct: 1.0,
-                    resets: None,
-                }],
-                note: String::new(),
-                identity: Some(identity),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let calls2 = Arc::clone(&calls);
-        let runner: UsageRunner = Arc::new(move |_| {
-            calls2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(SAMPLE.to_string())
-        });
-        let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), runner);
-        let initial = f.snapshot(ProviderKind::Claude, "claude-legacy", &home);
-        assert_eq!(initial.summary, "checking limits...");
-        wait_for(&mut f);
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-        assert!(f
-            .snapshot(ProviderKind::Claude, "claude-legacy", &home)
-            .summary
-            .contains("5h 93% left"));
-    }
-
-    #[test]
     fn failed_forced_refresh_keeps_values_labeled_as_last_successful_cache() {
         let root = tempfile::tempdir().unwrap();
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2526,9 +2657,25 @@ mod tests {
         wait_for(&mut f);
         let refresh = f.snapshot_refresh(ProviderKind::Claude, "claude-test", &home);
         assert!(
-            refresh.summary.contains("cached; refreshing"),
+            refresh.summary.contains("5h 93% left"),
             "{}",
             refresh.summary
+        );
+        assert!(
+            !refresh.summary.contains("cached; refreshing"),
+            "{}",
+            refresh.summary
+        );
+        assert!(
+            !refresh.detail.contains("cached; refreshing"),
+            "{}",
+            refresh.detail
+        );
+        assert!(
+            refresh.detail.contains("checked") || refresh.summary.contains("checked"),
+            "settled reading should keep its age note: {} / {}",
+            refresh.summary,
+            refresh.detail
         );
         wait_for(&mut f);
         let after = f.snapshot(ProviderKind::Claude, "claude-test", &home);
@@ -2565,6 +2712,7 @@ mod profile_row_tests {
             label: "5h".into(),
             used_pct: 20.0,
             resets: None,
+            bucket: None,
         });
         let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
         assert_eq!(
@@ -2574,6 +2722,13 @@ mod profile_row_tests {
         assert!(row.label.contains(
             "Email: member@example.invalid \u{b7} Plan: Pro\nWorkspace: Fixture Team\n5h"
         ));
+        snapshot.credits = Some(Credits {
+            has_credits: Some(true),
+            unlimited: None,
+            balance: Some(12.5),
+        });
+        let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
+        assert!(row.label.contains("Plan: Pro \u{b7} Credits: 12.5 balance"));
         let missing = crate::identity::ProviderIdentity {
             login: None,
             plan: None,
@@ -2581,8 +2736,12 @@ mod profile_row_tests {
             ..identity
         };
         let row = profiled_picker_row("claude", missing.provider, &snapshot, &missing);
-        assert!(row
-            .label
-            .contains("Email: not reported \u{b7} Plan: not reported"));
+        assert!(
+            !row.label.contains("not reported"),
+            "unreported fields are omitted: {}",
+            row.label
+        );
+        assert!(row.label.starts_with("Claude"), "{}", row.label);
+        assert!(row.label.contains("Credits: 12.5 balance"), "{}", row.label);
     }
 }

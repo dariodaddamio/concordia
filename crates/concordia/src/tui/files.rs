@@ -20,6 +20,13 @@ impl App {
         }
         #[cfg(not(test))]
         {
+            // A window driven through the test-control port must not open the user's browser or
+            // Explorer (an automated run once left a 5 GB browser behind); like tray signals,
+            // the external handoff is suppressed there and only reported.
+            if std::env::var_os("CONCORDIA_TEST_CONTROL").is_some() {
+                self.flash(format!("opened {label} {target}"));
+                return;
+            }
             if self.file_jobs.len() >= 8 {
                 self.flash("file launchers are busy");
                 return;
@@ -27,9 +34,19 @@ impl App {
             let (tx, rx) = mpsc::unbounded_channel();
             self.file_jobs.push(rx);
             tokio::spawn(async move {
-                // Explorer is intentionally visible: this is the requested URL/file window.
-                let result = tokio::process::Command::new("explorer.exe") // visible-spawn: user-requested file/URL window.
-                    .arg(target)
+                // Explorer can return a failure status after handing a URL to the registered
+                // browser. Use the Windows URL handler for links so its status represents the
+                // handoff itself; local files still open through Explorer.
+                let mut command = if label == "link" {
+                    let mut command = crate::process_ui::visible_tokio_command("cmd.exe");
+                    command.args(["/C", "start", "", &target]);
+                    command
+                } else {
+                    let mut command = crate::process_ui::visible_tokio_command("explorer.exe");
+                    command.arg(&target);
+                    command
+                };
+                let result = command
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -71,7 +88,7 @@ impl App {
             }
         };
         let action = self.default_file_action();
-        self.perform_file_action(file, action, base, None);
+        self.perform_file_action(file, action, base);
         if action == crate::file_open::FileAction::Preview && preview {
             if let Some(id) = self.workspace.focused {
                 self.workspace.preview(id, true);
@@ -86,7 +103,6 @@ impl App {
                     file,
                     crate::file_open::FileAction::Editor,
                     self.cwd.clone(),
-                    None,
                 );
             }
             Err(error) => self.flash(error),
@@ -115,14 +131,12 @@ impl App {
                             file,
                             crate::file_open::FileAction::Editor,
                             self.cwd.clone(),
-                            None,
                         );
                     } else {
                         self.perform_file_action(
                             file,
                             crate::file_open::FileAction::Preview,
                             self.cwd.clone(),
-                            None,
                         );
                     }
                 }
@@ -146,7 +160,6 @@ impl App {
                             file,
                             crate::file_open::FileAction::Preview,
                             self.cwd.clone(),
-                            None,
                         );
                         if preview {
                             if let Some(id) = self.workspace.focused {
@@ -158,7 +171,7 @@ impl App {
                 }
             }
         } else {
-            self.push_system("file not found; use /open path/to/file or /preview path/to/file.md");
+            self.push_system("file not found; use /open path/to/file");
         }
     }
 
@@ -175,66 +188,5 @@ impl App {
             self.flash(message);
         }
         received
-    }
-}
-
-impl App {
-    pub(super) fn open_project_search(&mut self) {
-        match self
-            .project_search
-            .open(&self.cwd, self.deleg.d.conversation_id())
-        {
-            Ok(()) => {
-                self.picker = None;
-            }
-            Err(error) => self.flash(error),
-        }
-    }
-
-    pub(super) fn poll_project_search(&mut self) {
-        if let Some(action) = self
-            .project_search
-            .poll(&self.cwd, self.deleg.d.conversation_id())
-        {
-            self.apply_search_action(action);
-        }
-    }
-
-    pub(super) fn apply_search_action(&mut self, action: workspace_search::Action) {
-        match action {
-            workspace_search::Action::Close => self.project_search.close(),
-            workspace_search::Action::ApplyReplacement(plan) => {
-                let blocked = self.workspace.replacement_blockers();
-                self.project_search
-                    .apply_replacement(self.state_root.clone(), plan, blocked);
-            }
-            workspace_search::Action::ReconcileReplacement(id) => self
-                .project_search
-                .reconcile_replacement(self.state_root.clone(), id),
-            workspace_search::Action::ListReceipts => {
-                self.project_search.list_receipts(self.state_root.clone())
-            }
-            workspace_search::Action::ReplacementFinished(receipt) => {
-                self.workspace.replacement_finished(&receipt);
-            }
-            workspace_search::Action::Open(verified) => {
-                let file = file_links::ResolvedFile {
-                    path: verified.hit.path.clone(),
-                    line: Some(verified.hit.line),
-                    column: Some(verified.hit.column),
-                };
-                if self.perform_file_action(
-                    file,
-                    self.default_file_action(),
-                    self.cwd.clone(),
-                    Some(verified),
-                ) {
-                    self.project_search.close();
-                } else if let Some((message, _)) = &self.flash {
-                    self.project_search.notice(message);
-                }
-            }
-            _ => {}
-        }
     }
 }

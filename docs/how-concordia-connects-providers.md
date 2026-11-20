@@ -15,13 +15,14 @@ workspace are rejected. Source:
 Built-in accounts point at the user's existing provider homes and are discovered without claiming
 ownership. `/use add` creates later accounts below `<state>/homes/<account-id>`, records that exact
 home, and opens the provider's own visible login command. Codex receives `CODEX_HOME`; Claude
-receives `CLAUDE_CONFIG_DIR`; the first Cursor account uses `agent login`, while extra Cursor slots
+receives `CLAUDE_CONFIG_DIR`; Grok receives `GROK_HOME`; the first Cursor account uses `agent login`, while extra Cursor slots
 are explicit local API-key folders. Source:
 [`accounts.rs` (`builtin_accounts`, `list_all_accounts`)](../crates/concordia/src/accounts.rs) and
 [`connect.rs` (`pick_slot`, `plan_login`, `add_account_with`)](../crates/concordia/src/connect.rs).
 
-Only a home below Concordia's `homes` directory and registered as Concordia-owned is eligible for
-deletion. A personal/built-in home can be hidden or unregistered, never recursively removed by the
+Only a plain direct child of Concordia's physical `homes` directory, registered as Concordia-owned
+and not shared by another account, is eligible for deletion. Duplicate login identity preserves both
+homes and registrations. Explicit deletion removes the directory successfully before unregistering it. A personal/built-in home can be hidden or unregistered, never recursively removed by the
 account-removal path. Source:
 [`connect.rs` (`is_owned_home`, `removable`, `remove_account`)](../crates/concordia/src/connect.rs).
 
@@ -40,6 +41,7 @@ Source: [`provider/launch.rs` (`BATCH_ARGV_MAX`, `EXE_ARGV_MAX`, `prompt_needs_s
 | Codex | `codex exec --json ... PROMPT` | `resume SESSION` inside `exec` | Codex JSONL |
 | Claude | `claude -p --output-format stream-json --verbose ... PROMPT` | `--session-id UUID` on first turn; `--resume SESSION` later | stream-json |
 | Cursor | `agent --print --output-format stream-json --stream-partial-output ... PROMPT` | `agent create-chat`, then `--resume CHAT`; exact existing ids use `--resume CHAT` | stream-json |
+| Grok Build | `grok agent stdio` | ACP `session/new` and `session/load` with the exact session id | ACP JSON-RPC |
 
 Exact construction is in
 [`provider/codex.rs` (`plan_turn_argv_with`)](../crates/concordia/src/provider/codex.rs),
@@ -47,14 +49,13 @@ Exact construction is in
 [`provider/cursor.rs` (`plan_cursor_turn_with`, `create_chat`)](../crates/concordia/src/provider/cursor.rs).
 
 Those are the full-capability planner vectors. Concordia caches bounded `--version`/`--help`
-probes per binary revision and may remove unsupported streaming/partial-output flags, while keeping
-the prompt last. A known CLI that cannot enforce Plan mode fails closed instead of silently running
-with broader trust. Source:
-[`provider/compat.rs` (`detect`, `degrade_planned`,
+probes per binary revision and validates the required current flags. Unsupported interfaces fail
+explicitly; there is no plain-text downgrade or permission-flag removal. Unavailable observations
+remain unverified and do not rewrite native arguments. Source:
+[`provider/compat.rs` (`detect`, `validate_planned`,
 `ensure_plan_supported`)](../crates/concordia/src/provider/compat.rs).
 
-If Cursor cannot create a chat id, the standard turn can run unbound; it is not later treated as a
-known resumable session. Source:
+If Cursor cannot create an exact chat id, its standard turn is refused before dispatch. Source:
 [`provider/turn.rs` (`run_provider_turn_inner`, Cursor `create_chat` branch)](../crates/concordia/src/provider/turn.rs).
 
 ## Native interactive transports
@@ -72,6 +73,9 @@ These are not silent fallbacks to a different model path:
   for a text-only turn; other ACP failures are reported. Source:
   [`provider/turn_acp.rs` (`acp_argv`, `run`)](../crates/concordia/src/provider/turn_acp.rs) and
   [`provider/turn.rs` (`run_provider_turn_inner`)](../crates/concordia/src/provider/turn.rs).
+- **Grok Build ACP** launches `grok agent stdio`, authenticates with the advertised cached-token
+  method, creates or loads an exact session, passes `mcpServers`, and uses
+  `session/set_config_option` for model selection. See the [Grok provider page](provider-grok-build.md).
 - **Codex app-server** is version-gated to the qualified `codex-cli 0.166.0`. It verifies that the
   initialized app-server reports the expected `CODEX_HOME`, starts/resumes the exact thread,
   verifies cwd and approval policy, and sends `turn/start`. A transport failure does not start a
@@ -91,8 +95,12 @@ Trust modes have an ordered local meaning, but providers do not expose the same 
 | --- | --- | --- | --- |
 | Plan | `--skip-git-repo-check -s read-only` | `--permission-mode plan` | `--mode plan`; ACP sets session mode `plan` |
 | Ask | same read-only Codex sandbox (Codex exec has no separate plan/ask flag) | `--permission-mode manual` | no extra print flag; ACP uses agent mode and native permission requests |
-| Workspace | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
+| Edit | `--skip-git-repo-check --approve-for-me` | `--permission-mode acceptEdits` | default workspace sandbox; never `--sandbox disabled` |
 | Full | `--skip-git-repo-check --dangerously-bypass-approvals-and-sandbox` | `--dangerously-skip-permissions` | `--force` |
+
+Native trust translation reads planner-owned options before stdin/image transport rewriting. It
+excludes the final prompt and consumes model/config/session values as data, including `--flag=value`
+forms; literal permission flags in a prompt or model value cannot change the selected trust.
 
 The planners are
 [`codex::plan_turn_argv_with`](../crates/concordia/src/provider/codex.rs),
@@ -100,7 +108,7 @@ The planners are
 [`cursor::plan_cursor_turn_with`](../crates/concordia/src/provider/cursor.rs).
 
 Codex app-server derives a native `sandboxPolicy` and `approvalPolicy` from the final enforced
-plan. Read-only uses `approvalPolicy: never`; Workspace uses workspace-write plus `on-request` and
+plan. Read-only uses `approvalPolicy: never`; Edit uses workspace-write plus `on-request` and
 keeps the user as reviewer; Full uses danger-full-access. Native requests are scoped to the exact
 connection/run/attempt before the UI can reply. Source:
 [`provider/turn_appserver.rs` (`run`)](../crates/concordia/src/provider/turn_appserver.rs) and
@@ -158,11 +166,21 @@ Only the pid recorded for that turn is targeted. Source:
 [`provider/turn.rs` (`RunningTurn`, `kill_process_tree`, `KILL_GRACE`,
 `REAP_TIMEOUT`)](../crates/concordia/src/provider/turn.rs).
 
-The standard stream keeps at most 12 stderr lines, bounds an individual output line at 1 MiB and
-the raw Codex fallback buffer at 4 MiB. Structured terminal-failure events are distinct from a
-nonzero exit code. Source:
-[`provider/turn.rs` (`STDERR_KEEP_LINES`, `LINE_MAX`, `RAW_MAX`,
+The standard stream keeps at most 12 stderr lines and bounds an individual output line at 1 MiB.
+It requires structured JSON objects; malformed output fails the turn rather than becoming an
+assistant reply. Structured terminal-failure events are distinct from a nonzero exit code. Source:
+[`provider/turn.rs` (`STDERR_KEEP_LINES`, `LINE_MAX`,
 `terminal_failure`)](../crates/concordia/src/provider/turn.rs).
+
+Native Codex app-server, Cursor ACP and Claude stdio also bound each line at 1 MiB, but
+do not impose a cumulative 16 MiB limit on a running turn. Codex's wire reader uses a
+backpressured 16-event channel. The shared stderr reader retains the same 12-line tail.
+Application progress and worker event queues each hold at most 64 events and await consumers;
+cancellation remains available while blocked. Visible turn/worker text is capped at 4 MiB,
+and tool views retain up to 256 cards with 64 KiB details. Explicit omission markers point back
+to original native records. Native interactions and artifact payloads remain exact. These are
+per-boundary budgets, not a small total-process-memory guarantee or source-availability promise.
+Bounded source-history replay and context-capture operations keep their separate read budgets.
 
 `provider::failure::classify_failure` prefers structured provider error codes, then bounded stderr
 and result text, and distinguishes usage exhaustion, server overload/capacity, context exhaustion,
@@ -177,7 +195,10 @@ usage-limit account/model handoff is manual by default. Source:
 Same-provider automatic account rotation is separately opt-in and also requires recorded
 provider-specific terms acceptance. Automatic targets are bounded by tried account/model pairs and
 a per-account daily cap. Source:
-[`continuity.rs` (`automatic_rules_respect_same_provider_opt_in`)](../crates/concordia/src/continuity.rs),
+[`tui/continuation.rs` (`continuation_route_inputs`)](../crates/concordia/src/tui/continuation.rs),
 [`store.rs` (`same_provider_automatic`, `same_provider_terms_accepted`,
 `automatic_handoff_allowed`)](../crates/concordia/src/store.rs), and
 [`config.rs` (`Continuation`)](../crates/concordia/src/config.rs).
+OpenCode is available as an ACP provider. See [the opencode provider page](provider-opencode.md) for its confirmed native contract.
+
+Claude Code also accepts a user-owned base-URL profile. Concordia forwards `ANTHROPIC_BASE_URL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, `ANTHROPIC_DEFAULT_SONNET_MODEL`, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` from the user's environment or selected Claude `settings.json` `env` object. Concordia never stores `ANTHROPIC_API_KEY` or any other token. DeepSeek, Moonshot Kimi, and z.ai GLM are examples of services that document Claude-compatible endpoints. Check each service's current instructions before use. Do not add a `/v1` suffix unless that service explicitly requires it. Remove a leftover `ANTHROPIC_API_KEY` when it conflicts with the selected base URL.

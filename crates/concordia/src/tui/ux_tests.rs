@@ -57,6 +57,48 @@ fn mermaid_is_rendered_inside_chat_and_completion_metrics_have_no_link_targets()
     }
 }
 
+#[test]
+fn slash_palette_prefix_filter_does_not_disable_prompt_history() {
+    let mut ui = Ui::new();
+    ui.app.remember_prompt("previous prompt");
+    ui.app.editor.set_text("/up");
+    assert_eq!(
+        ui.app
+            .palette_entries()
+            .into_iter()
+            .map(|entry| entry.command)
+            .collect::<Vec<_>>(),
+        vec!["/update"]
+    );
+    ui.app.history_prev();
+    assert_eq!(ui.app.editor.text(), "previous prompt");
+}
+
+#[test]
+fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
+    let mut ui = Ui::new();
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::Thinking(
+            "first".into(),
+        ));
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
+            "sec".into(),
+        ));
+    // Streamed deltas can split a word; they join without an inserted line break.
+    ui.app
+        .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
+            "ond\n".into(),
+        ));
+    ui.app.commit_live_thinking();
+    let thinking = ui
+        .app
+        .messages
+        .iter()
+        .find(|message| message.role == MsgRole::Thinking)
+        .unwrap();
+    assert_eq!(thinking.text, "first\nsecond\n");
+}
 struct Ui {
     app: App,
     terminal: Terminal<TestBackend>,
@@ -73,7 +115,7 @@ impl Ui {
         let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
         app.home_path = Some(dir.path().join("home"));
         // These UX assertions exercise the historical terminal palette; pin it
-        // so the product's Opifex default does not change their contract.
+        // so the product's studio default does not change their contract.
         app.appearance.ui.theme = crate::config::Theme::Default;
         super::theme::install(&app.appearance.ui);
         app.no_color = false;
@@ -158,7 +200,9 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
             },
             &ui.tx,
         );
-        assert!(!ui.app.questions.focused);
+        // An empty composer gives the new question focus. The first digit still
+        // returns to the composer instead of becoming popup text.
+        assert!(ui.app.questions.focused);
         if explicit_focus {
             ui.key(KeyCode::F(8), KeyModifiers::NONE);
             // Return from the choices to ordinary typing without choosing or clearing work.
@@ -174,7 +218,9 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
         ui.key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(ui.rx.try_recv().unwrap(), instruction);
         assert!(ui.rx.try_recv().is_err());
-        assert!(!ui.app.questions.waiting());
+        // A typed instruction is sent as written; the question stays open until answered
+        // (owner, 2026-11-18: no question left unanswered).
+        assert!(ui.app.questions.waiting());
     }
 }
 
@@ -283,15 +329,21 @@ fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
     ui.key(KeyCode::F(8), KeyModifiers::NONE);
     ui.key(KeyCode::Down, KeyModifiers::NONE);
     ui.key(KeyCode::Enter, KeyModifiers::NONE);
-    ui.app.queue_advance(&ui.tx);
-    let sent = ui.rx.try_recv().unwrap();
-    assert!(sent.contains("Full refactor"));
+    assert!(ui.rx.try_recv().is_err());
+    assert!(ui
+        .app
+        .queue
+        .items
+        .iter()
+        .any(|item| item.contains("Full refactor")));
     assert_eq!(ui.app.editor.text(), "unsent draft");
     assert_eq!(
         ui.app.native_session_id.as_deref(),
         Some("exact-native-session")
     );
-    assert_eq!(ui.app.queue.items, ["later task"]);
+    assert_eq!(ui.app.queue.items.len(), 2);
+    assert_eq!(ui.app.queue.items[0], "later task");
+    assert!(ui.app.queue.items[1].contains("Full refactor"));
     assert!(ui.app.queue.paused);
     ui.app.on_turn_done(
         TurnOutcome {
@@ -305,6 +357,78 @@ fn questions_are_selectable_preserve_drafts_and_pause_automatic_queued_work() {
 }
 #[test]
 fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
+    {
+        let mut ui = Ui::new();
+        ui.app.busy = true;
+        ui.app.editor.set_text("unconfirmed draft");
+        let (tx, response) = tokio::sync::oneshot::channel();
+        ui.app.pending_steer = Some(crate::tui::app::state::PendingSteer {
+            prompt: "unconfirmed draft".into(),
+            conversation: ui.app.deleg.d.conversation_id().into(),
+            response,
+        });
+        ui.app.on_turn_done(
+            TurnOutcome {
+                cancelled: true,
+                ..Default::default()
+            },
+            &ui.tx,
+        );
+        assert!(ui.app.pending_steer.is_none());
+        assert!(tx.send(Ok(())).is_err());
+        ui.app.on_tick();
+        assert_eq!(ui.app.editor.text(), "unconfirmed draft");
+        assert!(!ui
+            .app
+            .messages
+            .iter()
+            .any(|m| m.role == MsgRole::User && m.text == "unconfirmed draft"));
+    }
+    for (accepted, edit) in [(true, false), (true, true), (false, false)] {
+        let mut ui = Ui::new();
+        ui.app.busy = true;
+        ui.app.editor.set_text("steering draft");
+        let (tx, response) = tokio::sync::oneshot::channel();
+        ui.app.pending_steer = Some(crate::tui::app::state::PendingSteer {
+            prompt: "steering draft".into(),
+            conversation: ui.app.deleg.d.conversation_id().into(),
+            response,
+        });
+        ui.key(KeyCode::Enter, KeyModifiers::NONE);
+        ui.key(KeyCode::Tab, KeyModifiers::NONE);
+        assert!(ui.app.queue.items.is_empty());
+        assert!(ui.rx.try_recv().is_err());
+        assert_eq!(ui.app.editor.text(), "steering draft");
+        if edit {
+            ui.app.editor.set_text("newer draft");
+        }
+        tx.send(if accepted {
+            Ok(())
+        } else {
+            Err("turn mismatch".into())
+        })
+        .unwrap();
+        ui.app.on_tick();
+        assert!(ui.app.pending_steer.is_none());
+        assert_eq!(
+            ui.app.editor.text(),
+            if edit {
+                "newer draft"
+            } else if accepted {
+                ""
+            } else {
+                "steering draft"
+            }
+        );
+        assert_eq!(
+            ui.app
+                .messages
+                .iter()
+                .filter(|m| m.role == MsgRole::User && m.text == "steering draft")
+                .count(),
+            usize::from(accepted)
+        );
+    }
     let mut ui = Ui::new();
     ui.app.run_line("active task".into(), &ui.tx);
     ui.rx.try_recv().unwrap();
@@ -341,8 +465,13 @@ fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
     assert!(ui.app.questions.waiting());
     let rect = ui.target("2. Change it");
     ui.click(rect);
-    ui.app.queue_advance(&ui.tx);
-    assert!(ui.rx.try_recv().unwrap().contains("Change it"));
+    assert!(ui.rx.try_recv().is_err());
+    assert!(ui
+        .app
+        .queue
+        .items
+        .iter()
+        .any(|item| item.contains("Change it")));
     assert!(ui.rx.try_recv().is_err());
     assert_eq!(ui.app.editor.text(), "draft stays here");
 }
@@ -438,39 +567,9 @@ fn run_status_sits_below_transcript_and_user_rows_have_background_and_completion
     }
     ui.draw();
     ui.app.view.scroll_up(10);
+    let first_visible = ui.app.view.visible().start;
     ui.draw();
     assert!(ui.app.areas.bottom_button.width > 0);
-}
-
-#[test]
-fn project_search_owns_keys_and_pastes_without_submitting_or_changing_draft() {
-    let mut ui = Ui::new();
-    ui.app.editor.set_text("unfinished chat draft");
-    ui.app.busy = true;
-    ui.app.open_project_search();
-    assert!(ui.app.project_search.active());
-    ui.app.paste_text("needle");
-    clipboard::set_text("clipboard").unwrap();
-    handle_key(
-        &mut ui.app,
-        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
-        &ui.tx,
-    );
-    assert!(ui.draw().contains("needleclipboard"));
-    handle_key(
-        &mut ui.app,
-        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        &ui.tx,
-    );
-    let _ = ui.draw();
-    assert_eq!(ui.app.editor.text(), "unfinished chat draft");
-    assert!(ui.rx.try_recv().is_err());
-    handle_key(
-        &mut ui.app,
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-        &ui.tx,
-    );
-    assert!(!ui.app.project_search.active());
-    assert_eq!(ui.app.editor.text(), "unfinished chat draft");
-    assert!(ui.app.busy);
+    assert_eq!(ui.app.view.scroll, 10);
+    assert_eq!(ui.app.view.visible().start, first_visible);
 }

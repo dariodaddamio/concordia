@@ -185,12 +185,13 @@ pub fn build_context_pack_with_workspace(
     sw.provider = Some(to.as_str().to_string());
     events.push(sw);
     let budget = max_chars.min(threads::MAP_CHARS);
-    let text = threads::build_map_v2_with_workspace(
+    let text = threads::build_map(
         &events,
         thread_id.unwrap_or(""),
         budget,
         thread_id.is_some(),
         workspace,
+        None,
     );
     let labeled = text.lines().next().unwrap_or("").to_string();
     let pack_chars = text.chars().count();
@@ -434,8 +435,8 @@ mod tests {
         assert!(p.pack_chars <= threads::MAP_CHARS, "{}", p.pack_chars);
         assert!(p
             .text
-            .contains("concordia thread read 3f9a1111-2222-3333-4444-555555555555"));
-        assert!(p.labeled.contains("tools/approvals NOT transferred"));
+            .contains("concordia chat thread read 3f9a1111-2222-3333-4444-555555555555"));
+        assert!(p.labeled.contains("tools/approvals not transferred"));
         assert!(!p.text.contains("question 3 "), "no transcript dump");
     }
 
@@ -444,8 +445,15 @@ mod tests {
         let msgs = long_history();
         let p = build_context_pack(&msgs, ProviderKind::Claude, ProviderKind::Codex, 6000, None)
             .unwrap();
-        assert!(p.text.contains("not stored"));
-        assert!(p.text.contains("asked: question 0"));
+        assert!(p.text.contains("(memory)"));
+        assert!(
+            !p.text.contains("thread read"),
+            "log-off maps omit stored read pointers"
+        );
+        assert!(
+            !p.text.contains("asked: question 0"),
+            "maps do not dump the transcript"
+        );
         assert!(p.pack_chars <= threads::MAP_CHARS);
     }
 }

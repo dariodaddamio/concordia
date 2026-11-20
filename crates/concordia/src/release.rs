@@ -17,6 +17,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const ASSET_NAME: &str = "concordia-x86_64-pc-windows-msvc.exe";
@@ -40,13 +41,31 @@ pub struct Version {
 impl Version {
     /// `v1.2.3`, `1.2.3`, `1.2.3-rc.1`, `1.2.3+build`.
     pub fn parse(s: &str) -> Option<Version> {
-        let s = s.trim().trim_start_matches('v');
+        let s = s.trim().strip_prefix('v').unwrap_or(s.trim());
         let s = s.split('+').next()?;
         let (core, pre) = match s.split_once('-') {
             Some((c, p)) if !p.is_empty() => (c, Some(p.to_string())),
             Some(_) => return None,
             None => (s, None),
         };
+        let number = |part: &str| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (part.len() == 1 || !part.starts_with('0'))
+        };
+        if !core.split('.').all(number)
+            || pre.as_deref().is_some_and(|pre| {
+                pre.split('.').any(|part| {
+                    part.is_empty()
+                        || !part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                        || (part.bytes().all(|byte| byte.is_ascii_digit()) && !number(part))
+                })
+            })
+        {
+            return None;
+        }
         let mut it = core.split('.');
         let major = it.next()?.parse().ok()?;
         let minor = it.next()?.parse().ok()?;
@@ -81,7 +100,31 @@ impl Ord for Version {
                 (None, None) => Ordering::Equal,
                 (None, Some(_)) => Ordering::Greater, // 1.0.0 > 1.0.0-rc.1
                 (Some(_), None) => Ordering::Less,
-                (Some(a), Some(b)) => a.cmp(b),
+                (Some(a), Some(b)) => {
+                    let mut left = a.split('.');
+                    let mut right = b.split('.');
+                    loop {
+                        let ordering = match (left.next(), right.next()) {
+                            (None, None) => break Ordering::Equal,
+                            (None, Some(_)) => break Ordering::Less,
+                            (Some(_), None) => break Ordering::Greater,
+                            (Some(a), Some(b)) => {
+                                let numeric = |s: &str| {
+                                    !s.is_empty() && s.bytes().all(|byte| byte.is_ascii_digit())
+                                };
+                                match (numeric(a), numeric(b)) {
+                                    (true, true) => a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
+                                    (true, false) => Ordering::Less,
+                                    (false, true) => Ordering::Greater,
+                                    (false, false) => a.cmp(b),
+                                }
+                            }
+                        };
+                        if ordering != Ordering::Equal {
+                            break ordering;
+                        }
+                    }
+                }
             })
     }
 }
@@ -160,8 +203,7 @@ pub fn config_from(
         .map(|a| a.trim().trim_end_matches('/').to_string())
         .filter(|a| !a.is_empty())
         .unwrap_or_else(|| DEFAULT_API.to_string());
-    let allow_http_loopback =
-        api_base.starts_with("http://127.0.0.1") || api_base.starts_with("http://localhost");
+    let allow_http_loopback = http_loopback(&api_base);
     // Pre-1.0 releases are all marked pre-release on GitHub, so a 0.x install must see them.
     let cur = Version::parse(current);
     let include_prerelease = prerelease_flag == Some("1")
@@ -186,13 +228,23 @@ impl Config {
         if url.starts_with("https://") {
             return Ok(());
         }
-        if self.allow_http_loopback
-            && (url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost"))
-        {
+        if self.allow_http_loopback && http_loopback(url) {
             return Ok(());
         }
         bail!("refusing non-https update URL: {url}")
     }
+}
+
+fn http_loopback(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let (host, port) = authority
+        .split_once(':')
+        .map_or((authority, None), |(host, port)| (host, Some(port)));
+    matches!(host, "localhost" | "127.0.0.1")
+        && port.is_none_or(|port| port.parse::<u16>().is_ok_and(|port| port != 0))
 }
 
 // ---- release selection -----------------------------------------------------------------------
@@ -344,13 +396,28 @@ pub trait Fetcher {
 
 /// Real network and hashing through Windows PowerShell. Scripts are constants; URLs and paths
 /// arrive in the environment, so nothing is ever interpolated into a command.
-pub struct PowerShellFetcher;
+#[derive(Default)]
+pub struct PowerShellFetcher {
+    control: Option<crate::update::JobControl>,
+}
+
+impl PowerShellFetcher {
+    pub(crate) fn controlled(control: &crate::update::JobControl) -> Self {
+        Self {
+            control: Some(control.clone()),
+        }
+    }
+}
 
 const PS_PREAMBLE: &str = "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; \
     [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
     [Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
 
-fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
+fn run_ps(
+    script: &str,
+    env: &[(&str, &str)],
+    control: Option<&crate::update::JobControl>,
+) -> Result<String> {
     use std::process::Stdio;
     let mut cmd = crate::process_ui::command("powershell.exe");
     cmd.args([
@@ -362,15 +429,19 @@ fn run_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let out = cmd.output().context("run powershell.exe")?;
+    let timeout = std::time::Duration::from_secs(210);
+    let limit = 4 * 1024 * 1024;
+    let out = match control {
+        Some(control) => {
+            crate::process_lifetime::capture_cancellable(cmd, timeout, limit, control.cancel_flag())
+        }
+        None => crate::process_lifetime::capture(cmd, timeout, limit),
+    }
+    .map_err(anyhow::Error::msg)
+    .context("run powershell.exe")?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let first = err
@@ -391,6 +462,7 @@ impl Fetcher for PowerShellFetcher {
              -Uri $env:CONCORDIA_URL).Content; \
              if ($c -is [byte[]]) { [Text.Encoding]::UTF8.GetString($c) } else { $c }",
             &[("CONCORDIA_URL", url)],
+            self.control.as_ref(),
         )
         .with_context(|| format!("GET {url}"))
     }
@@ -400,6 +472,7 @@ impl Fetcher for PowerShellFetcher {
             "Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 \
              -Headers @{'User-Agent'='concordia-updater'} -Uri $env:CONCORDIA_URL -OutFile $env:CONCORDIA_OUT",
             &[("CONCORDIA_URL", url), ("CONCORDIA_OUT", &dest.to_string_lossy())],
+            self.control.as_ref(),
         )
         .with_context(|| format!("download {url}"))
         .map(drop)
@@ -414,6 +487,7 @@ impl Fetcher for PowerShellFetcher {
                    ([BitConverter]::ToString($h.ComputeHash($s)) -replace '-','').ToLower() } \
              finally { $s.Dispose() }",
             &[("CONCORDIA_FILE", &path.to_string_lossy())],
+            self.control.as_ref(),
         )?;
         Ok(out.trim().to_string())
     }
@@ -614,6 +688,24 @@ pub fn install_release(
     current: &str,
     fetch: &dyn Fetcher,
 ) -> Result<UpdateResult> {
+    install_release_controlled(cfg, rel, current, fetch, None)
+}
+
+pub(crate) fn install_release_controlled(
+    cfg: &Config,
+    rel: &Release,
+    current: &str,
+    fetch: &dyn Fetcher,
+    control: Option<&crate::update::JobControl>,
+) -> Result<UpdateResult> {
+    let ensure_active = || -> Result<()> {
+        anyhow::ensure!(
+            !control.is_some_and(|control| control.cancelled()),
+            "cancelled"
+        );
+        Ok(())
+    };
+    ensure_active()?;
     cfg.check_url(&rel.asset_url)?;
     cfg.check_url(&rel.sums_url)?;
 
@@ -623,7 +715,13 @@ pub fn install_release(
 
     let sums_path = scratch.0.join(SUMS_NAME);
     fetch.download(&rel.sums_url, &sums_path)?;
-    let sums = fs::read_to_string(&sums_path).context("read checksums")?;
+    ensure_active()?;
+    let mut sums = String::new();
+    fs::File::open(&sums_path)?
+        .take(1024 * 1024 + 1)
+        .read_to_string(&mut sums)
+        .context("read checksums")?;
+    anyhow::ensure!(sums.len() <= 1024 * 1024, "checksums exceed 1 MiB");
     let expected = parse_sums(&sums, ASSET_NAME)
         .with_context(|| format!("{SUMS_NAME} has no valid entry for {ASSET_NAME}"))?;
 
@@ -636,6 +734,14 @@ pub fn install_release(
         .unwrap_or_else(|| scratch.0.join("concordia.exe"));
     if reused.is_none() {
         fetch.download(&rel.asset_url, &exe)?;
+    }
+    ensure_active()?;
+    if let Some(control) = control {
+        control.stage(
+            crate::update::UpdateStage::Verifying,
+            "Verifying release",
+            "Checking size, checksum and executable identity",
+        );
     }
     let len = fs::metadata(&exe).context("downloaded file missing")?.len();
     if !(MIN_EXE_BYTES..=MAX_EXE_BYTES).contains(&len) {
@@ -661,6 +767,14 @@ pub fn install_release(
         let _ = remember_release(root, &exe, &expected);
     }
 
+    ensure_active()?;
+    if let Some(control) = control {
+        control.stage(
+            crate::update::UpdateStage::Installing,
+            "Installing release",
+            "Staging the verified executable and switching the active pointer",
+        );
+    }
     let install_path = install_binary(&exe)?;
     Ok(UpdateResult {
         install_path,

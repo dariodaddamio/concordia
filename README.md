@@ -1,15 +1,23 @@
 # Concordia
 
-Concordia is a Windows-first terminal app that runs the official Codex, Claude Code and Cursor
-CLIs under your own accounts, with bounded handoff between them. It keeps one conversation
-navigable while each provider remains responsible for its own sessions, approvals and tools.
+Concordia allows any supported provider to share context, continue the same task on another account after a usage limit, delegate work across providers with a model per role, and hand off exact pointers into provider history instead of summaries, among others ([full feature list](site/src/content/docs/features.md)).
 
-Concordia is independent and unofficial. It is not affiliated with or endorsed by OpenAI,
-Anthropic, Anysphere or Cursor. It runs their official, unmodified CLIs using your own accounts.
-Each CLI keeps its own login; Concordia only checks that a login exists. The one secret it
-handles itself is a Cursor API key, if you choose to use one: it is kept in that Cursor
-account's own folder, passed only to the Cursor CLI, and redacted from everything Concordia
-writes (logs, history, drafts).
+Concordia runs official provider CLIs under your accounts. Providers keep ownership of their
+authentication, sessions, approvals and tools. Concordia is independent and unofficial.
+
+Local source candidate `2026-11-18b` adds a steer-or-queue choice for plain text during Codex
+app-server turns. A draft clears only after acceptance. Cursor 2026.11.17 usage works again through
+its local screen without a model prompt. Earlier Claude question and host-context changes remain;
+explicit saved off is respected. Codex verification uses fixtures; installed distribution is pending.
+
+Source candidate `2026-11-17b` exposes `ask_user` in Cursor's default transport through a
+session-local plugin. Questions, partial answers and notes survive turn completion and restart.
+They follow an explicit account/provider handoff with their original source visible; replies
+enter the existing FIFO only after recovery storage succeeds. Native approvals remain run-bound.
+
+The candidate uses each ACP session's advertised slash commands in suggestions
+and shared-command choices. Lists refresh on connection and cannot carry into another account
+or chat. Before discovery, ACP suggestions identify availability as not yet reported.
 
 ## Install
 
@@ -19,73 +27,78 @@ From a source checkout, run this in Windows PowerShell:
 .\scripts\install-dev.ps1 -Install
 ```
 
-This builds and installs the local executable on your user PATH. The public installer command
-will be available after the first release; see [the full installation guide](docs/install.md).
+This builds and installs the local executable on your user PATH. See the [installation guide](site/src/content/docs/install.md).
 
 ## Quick start
 
 ```text
 concordia
-/use                 # choose or connect Codex, Claude Code or Cursor
+/use
 Ask your question and press Enter
-/usage               # inspect provider-reported usage
-/resume              # continue a recorded conversation
-/model               # choose a model from the active provider
+/usage
+/resume
+/model
 ```
 
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |
+| `/terminal` | `[open\|native\|help\|hide\|close]` | open the local terminal or the selected provider's native interface | everyday |
 | `/use` | `ACCOUNT\|add PROVIDER\|remove ACCOUNT` | switch, add or remove accounts | everyday |
 | `/model` | `[MODEL]` | choose the model | everyday |
+| `/effort` | `[LEVEL]` | choose reasoning effort | everyday |
+| `/rename` | `[TITLE]` | rename the current chat | advanced |
 | `/config` | `[KEY VALUE]` | settings: display, permissions, accounts and behavior | everyday |
-| `/mode` | `[plan\|ask\|auto\|full]` | how much the agent may do without asking | everyday |
+| `/mode` | `[plan\|ask\|edit\|full]` | how much the agent may do without asking | everyday |
 | `/usage` | `[all\|refresh]` | limits for every account | everyday |
 | `/new` | `` | start a fresh chat | everyday |
 | `/resume` | `` | continue an earlier chat | everyday |
-| `/delegate` | `ACCOUNT TASK` | run tasks on worker accounts | everyday |
-| `/workers` | `[add\|remove]` | manage worker accounts | everyday |
-| `/crew` | `[list\|use NAME\|clear]` | choose a saved lead and worker preset | everyday |
-| `/worker-panel` | `` | toggle the worker side panel | everyday |
-| `/harness` | `ACTION` | connect and run harness tools | advanced |
+| `/harness` | `ACTION` | integrations and agent tools | advanced |
+| `/worktree` | `[list\|create BASE\|inspect ID\|delegate ID ACCOUNT TASK\|review ID ACTION\|integrate ID RECEIPT\|reconcile ID\|cancel]` | create, delegate into, review and explicitly integrate managed Git workspaces | advanced |
+| `/skills` | `[list\|install [PATH]\|remove PATH]` | inspect skills and toggle their availability | advanced |
+| `/hooks` | `[list]` | inspect native hooks | advanced |
+| `/mcp` | `[add\|remove\|on\|off\|import] [NAME]` | manage Concordia-wide MCP servers | advanced |
 | `/open` | `[PATH]` | preview files mentioned in this chat | everyday |
-| `/preview` | `PATH` | preview a file read-only | advanced |
-| `/search` | `TEXT` | search project file contents | advanced |
-| `/scope` | `...` | declare task paths and reservations | advanced |
-| `/worktree` | `...` | manage explicit Git workspaces | advanced |
-| `/memory` | `...` | search original chats and source links | advanced |
-| `/context` | `` | inspect context rollover policy | advanced |
-| `/integrations` | `` | inspect connected integrations | advanced |
 | `/copy` | `` | copy the last reply | everyday |
 | `/doctor` | `` | check your setup | everyday |
 | `/update` | `` | update Concordia | everyday |
 | `/exit` | `` | exit Concordia | everyday |
 <!-- COMMANDS:END -->
 
-Use `/doctor` inside Concordia, or `concordia doctor` in a terminal, when setup or provider
-discovery needs diagnosis.
+`/model` lists only models reported for the selected account. Choosing a model with multiple effort
+levels opens its effort choices next; Enter applies the model and effort together, and Esc keeps
+the previous pair. `/effort` opens those choices for the current model, or `/effort high` applies a
+reported level directly. The header model and effort controls have dropdown arrows and a hand cursor.
+Codex sends the standard `model_reasoning_effort` setting and app-server `effort` field, Claude
+uses native cached `--effort` capability (with the provider's supported-value cap), while Cursor and Grok retain the
+provider's model-variant IDs. This is a projection of provider catalogs, not a universal effort API.
 
-## Safety at a glance
+In `/config` under Models and roles, choose a role to set its model and reported effort for the
+current provider account. Worker result delivery is saved directly from its General setting;
+no removed worker-return command is advertised. Ctrl+O expands the last collapsed
+item in the latest message, while Ctrl+Shift+O expands every item there.
 
-- Plan, Ask and Workspace modes limit what a provider may do. Full access requires explicit
-  `/mode full` confirmation.
-- Workers never exceed the mode selected for their parent conversation.
-- Concordia itself makes no LLM calls; routing, memory and handoff are deterministic local logic.
-- Nothing leaves your machine through Concordia. Network traffic comes from the provider CLIs'
-  own supported connections (and any explicitly requested update or integration).
-- Native provider authentication, approvals and session state remain authoritative. See
-  [provider terms and boundaries](docs/provider-terms.md).
+During `/update`, the progress page shows the actual Prepare, Build/Download, Verify, Install and
+Restart stages. Warnings stay separate from progress; press D for compiler details and Esc to cancel.
 
-## Learn more
+Ctrl+G is the current recovery surface for native agent reports and Concordia worker runs. The
+`/delegate` recovery view inspects or retries a selected run; older stop/use/collect command names
+are not advertised. Same-provider automatic account handoff is disabled unless the user accepts
+the provider-specific terms; manual continuation remains available. Automatic handoff reserves its
+daily cap before dispatch.
 
-- [How Concordia works, end to end](docs/how-concordia-works.md)
-- [Concepts and capabilities](docs/capabilities.md)
-- [Architecture and data boundaries](docs/architecture.md)
-- [Memory and context handoff](docs/context-handoff-plan.md)
-- [Commands, controls and UI glossary](docs/ui-glossary.md)
-- [Configuration](docs/config.md)
-- [Images and diagrams](docs/images-and-diagrams.md)
-- [Contributing](CONTRIBUTING.md)
-- [Internal development notes](docs/contributing-internals.md)
-- [Metrics](docs/metrics.md)
-- [License](LICENSE)
+## Providers
+
+Claude Code, Codex, Cursor, Grok Build, opencode and optional Grok Bot routines are supported.
+See the [provider guide](site/src/content/docs/providers.md).
+
+Needs attention uses the taskbar status and Windows notifications for actionable questions and
+approvals. Each item is notified once across focus changes and restarts. `/config` can turn off
+Windows notifications while keeping the taskbar status.
+
+## Site
+
+- [Overview](site/src/content/docs/index.md)
+- [Features](site/src/content/docs/features.md)
+- [Quick start](site/src/content/docs/quick-start.md)
+- [Windows security warnings](site/src/content/docs/install.md#windows-security-warnings)

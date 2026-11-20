@@ -184,6 +184,29 @@ impl Workspace {
         };
         Ok(())
     }
+    pub(in crate::tui) fn transfer_file_recovery(
+        &mut self,
+        lease: Arc<recovery::RecoveryLease>,
+        workspace: &Path,
+    ) -> Result<(), String> {
+        if self.editor.pending.is_some() {
+            return Err("file recovery is still loading".into());
+        }
+        if workspace
+            .canonicalize()
+            .map_err(|error| error.to_string())?
+            != self.editor.workspace
+        {
+            return Err("file recovery workspace changed".into());
+        }
+        self.flush_file_recovery()?;
+        lease
+            .save_files(&encoded(self)?)
+            .map_err(|error| error.to_string())?;
+        self.editor.lease = Some(lease);
+        self.editor.persisted = signature(self);
+        Ok(())
+    }
     pub(in crate::tui) fn flush_file_recovery(&mut self) -> Result<(), String> {
         if self.editor.pending.is_some() {
             return Ok(());
@@ -283,9 +306,6 @@ fn restore(ws: &mut Workspace) {
         if let Some(d) = &mut pane.document {
             d.move_to(draft.cursor.0, draft.cursor.1);
         }
-        if recovered {
-            refresh_preview(&mut pane);
-        }
         {
             let path = draft.path;
             match std::thread::Builder::new()
@@ -365,13 +385,15 @@ fn start_save(ws: &mut Workspace, id: u32, state_root: &Path, workspace_root: &P
     }
 }
 
-pub(super) fn poll(ws: &mut Workspace) {
+pub(super) fn poll(ws: &mut Workspace) -> bool {
+    let mut visible_change = false;
     if ws.screen.width > 0
         && ws.panes.is_empty()
         && ws.jobs.is_empty()
         && ws.editor.pending.is_some()
     {
         restore(ws);
+        visible_change = true;
     }
     let mut i = 0;
     while i < ws.editor.saves.len() {
@@ -380,6 +402,7 @@ pub(super) fn poll(ws: &mut Workspace) {
             continue;
         }
         let (id, text, job) = ws.editor.saves.swap_remove(i);
+        visible_change = true;
         let result = job
             .join()
             .unwrap_or_else(|_| Err("file save worker failed".into()));
@@ -428,6 +451,7 @@ pub(super) fn poll(ws: &mut Workspace) {
             {
                 p.colors = colors;
                 p.color_revision = rev;
+                visible_change = true;
             }
         }
     }
@@ -449,8 +473,9 @@ pub(super) fn poll(ws: &mut Workspace) {
     if let Some((_, job)) = &ws.editor.persistence {
         if job.is_finished() {
             let Some((sig, job)) = ws.editor.persistence.take() else {
-                return;
+                return visible_change;
             };
+            visible_change = true;
             match job
                 .join()
                 .unwrap_or_else(|_| Err("file recovery writer failed".into()))
@@ -489,26 +514,98 @@ pub(super) fn poll(ws: &mut Workspace) {
             }
         }
     }
+    visible_change
 }
 
-pub(super) fn refresh_preview(p: &mut Pane) {
-    let Some(doc) = &p.document else { return };
-    let source = text::terminal_text(doc.text()).0;
-    p.formatted = match p
-        .path
+pub(super) fn preview_text(path: &Path, source: &str) -> (Option<String>, Option<String>) {
+    let result = match path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("md" | "markdown" | "mdx") => Some(source),
+        Some("md" | "markdown" | "mdx") => Ok(Some(source.to_owned())),
+        Some("csv") => csv_preview(source)
+            .map(Some)
+            .map_err(|error| error.to_string()),
         Some("json") => {
             serde_json::from_str::<serde_json::Value>(source.trim_start_matches('\u{feff}'))
-                .ok()
-                .and_then(|v| serde_json::to_string_pretty(&v).ok())
+                .map_err(|error| error.to_string())
+                .and_then(|value| {
+                    serde_json::to_string_pretty(&value).map_err(|error| error.to_string())
+                })
+                .map(Some)
         }
-        _ => None,
+        _ => Ok(None),
     };
+    match result {
+        Ok(formatted) => (formatted, None),
+        Err(error) => (
+            None,
+            Some(format!("Formatted preview unavailable: {error}")),
+        ),
+    }
+}
+
+fn csv_preview(source: &str) -> Result<String, csv::Error> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(false)
+        .from_reader(source.trim_start_matches('\u{feff}').as_bytes());
+    let records = reader.records().collect::<Result<Vec<_>, _>>()?;
+    let columns = records.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut cells = Vec::with_capacity(records.len());
+    for record in &records {
+        cells.push(
+            (0..columns)
+                .map(|column| preview_cell(record.get(column).unwrap_or("")))
+                .collect::<Vec<_>>(),
+        );
+    }
+    let widths = (0..columns)
+        .map(|column| {
+            cells
+                .iter()
+                .map(|row| {
+                    row[column]
+                        .chars()
+                        .map(crate::file_document::display_width)
+                        .sum()
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    let mut table = String::new();
+    for row in cells {
+        table.push('|');
+        for (column, cell) in row.into_iter().enumerate() {
+            table.push(' ');
+            table.push_str(&cell);
+            let cell_width = cell.chars().map(crate::file_document::display_width).sum();
+            table.push_str(&" ".repeat(widths[column].saturating_sub(cell_width) + 1));
+            table.push('|');
+        }
+        table.push('\n');
+    }
+    Ok(table)
+}
+
+fn preview_cell(value: &str) -> String {
+    let mut cell = value
+        .chars()
+        .map(|character| match character {
+            '\n' | '\r' | '\t' => ' ',
+            character if character.is_control() => '�',
+            character => character,
+        })
+        .collect::<String>();
+    const MAX_CELL: usize = 80;
+    if cell.chars().count() > MAX_CELL {
+        cell = cell.chars().take(MAX_CELL - 1).collect();
+        cell.push('…');
+    }
+    cell
 }
 
 pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
@@ -541,7 +638,10 @@ pub(super) fn loaded(p: &mut Pane, snapshot: Snapshot) {
     } else {
         u64::MAX
     };
-    refresh_preview(p);
+    p.formatted = snapshot.formatted;
+    if let Some(error) = snapshot.preview_error {
+        p.error = Some(error);
+    }
     if p.formatted.is_none() {
         p.formatted_mode = false;
     }
@@ -654,6 +754,14 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         return false;
     };
     if p.searching || !p.raw() || p.loading {
+        return false;
+    }
+    // Untouched panes stay pager-like: bare `q` closes (handled by workspace). After an edit,
+    // `q` is a character.
+    if key.modifiers.is_empty()
+        && matches!(key.code, KeyCode::Char('q'))
+        && !p.document.as_ref().is_some_and(|document| document.dirty())
+    {
         return false;
     }
     if key.code == KeyCode::F(3) && !p.query.is_empty() {

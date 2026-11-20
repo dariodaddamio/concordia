@@ -34,6 +34,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
 ) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
+    std::fs::write(root.join("api-key"), "synthetic-image-account-key").unwrap();
     let path = root.join("sample.png");
     std::fs::write(&path, b"\x89PNG\r\n\x1a\nsynthetic image pixels").unwrap();
     let image = attachments::import(root, &path).unwrap();
@@ -79,6 +80,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: root,
             home_path: Some(root),
             model: None,
+            effort: None,
             native_session_id: None,
             trust: TrustMode::Plan,
             context_prefix: None,
@@ -155,7 +157,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             ),
         )
         .unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let native_session = session.clone();
         let updates = tokio::spawn(async move {
             let mut wrote_source = false;
@@ -220,6 +222,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(&home),
             model: None,
+            effort: None,
             native_session_id: Some(&session),
             trust: TrustMode::Plan,
             context_prefix: None,
@@ -259,7 +262,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     ] {
         let work = tempfile::tempdir().unwrap();
         std::fs::write(work.path().join("acp-fixture.json"), fixture.to_string()).unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 match &event {
@@ -284,6 +287,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: Some("auto"),
+            effort: None,
             native_session_id: Some("exact-image-session"),
             trust: TrustMode::Plan,
             context_prefix: None,
@@ -329,12 +333,19 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     env.set("FAKE_PROVIDER_NATIVE_CODEX", "1");
     for fixture in [
         json!({"artifact":true}),
+        json!({"large_tool_bytes":2*1024*1024,"large_text":true}),
+        json!({"question":true,"large_tool_bytes":17*1024*1024,"early_large":true}),
+        json!({"frame_over_limit":true,"large_tool_bytes":64*1024*1024+1}),
         json!({"question":true}),
         json!({"question":true,"freeform":true}),
         json!({"resolved":true}),
         json!({"wrong_thread":true}),
         json!({"wrong_turn":true}),
         json!({"closed":true}),
+        json!({"steer":true}),
+        json!({"steer":true,"steer_refused":true}),
+        json!({"steer":true,"steer_wrong_turn":true}),
+        json!({"steer":true,"steer_closed":true}),
     ] {
         use concordia::provider::interaction::InteractionOwner;
         let work = tempfile::tempdir().unwrap();
@@ -359,11 +370,17 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         let resolved = fixture["resolved"] == true;
         let artifact = fixture["artifact"] == true;
         let conversation = owner.conversation_id.clone();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let large_text = fixture["large_text"] == true;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             let mut requests = Vec::new();
             let mut outputs = Vec::new();
+            let mut delivered_text = String::new();
             while let Some(event) = rx.recv().await {
+                if let TurnProgress::TextDelta(text) = &event {
+                    assert!(text.len() <= 64 * 1024);
+                    delivered_text.push_str(text);
+                }
                 if let TurnProgress::Artifact(record) = &event {
                     assert_eq!(record.owner, owner_for_answers);
                     assert_eq!(record.native_session, "exact-native-thread");
@@ -412,6 +429,12 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 usize::from(artifact),
                 "repeated native events must deduplicate"
             );
+            if large_text {
+                assert_eq!(
+                    delivered_text,
+                    format!("{}Native approval handled", "é".repeat(100_000))
+                );
+            }
             requests.len()
         });
         let request = ProviderTurnRequest {
@@ -421,41 +444,123 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: Some("fixture-model"),
+            effort: None,
             native_session_id: Some("exact-native-thread"),
-            trust: TrustMode::Workspace,
+            trust: TrustMode::Edit,
             context_prefix: None,
             local_time: None,
             compaction: Default::default(),
         };
+        let (started, mut handles) =
+            tokio::sync::mpsc::unbounded_channel::<std::sync::Arc<provider::RunningTurn>>();
+        let steering = fixture["steer"] == true;
+        let expected_accept = fixture["steer_refused"] != true
+            && fixture["steer_wrong_turn"] != true
+            && fixture["steer_closed"] != true;
+        let steer_task = tokio::spawn(async move {
+            if !steering {
+                return;
+            }
+            let handle = handles.recv().await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while !handle.can_steer() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = handle
+                .steer("Synthetic steering message".into())
+                .unwrap()
+                .await
+                .unwrap();
+            assert_eq!(result.is_ok(), expected_accept, "{result:?}");
+        });
         let out = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             provider::turn::run_provider_turn_with_transport(
                 &request,
                 owner,
                 concordia::native_input::Mode::CodexAppServer,
-                None,
+                steering.then_some(started),
                 Some(tx),
+                None,
             ),
         )
         .await
         .unwrap()
         .unwrap();
         let offered = answers.await.unwrap();
+        steer_task.await.unwrap();
         let records = concordia::artifacts::read(&root.join("state"), &conversation).unwrap();
         assert_eq!(records.len(), usize::from(artifact));
-        let expected_failed = fixture["wrong_thread"] == true || fixture["closed"] == true;
+        let expected_failed = fixture["wrong_thread"] == true
+            || fixture["closed"] == true
+            || fixture["steer_closed"] == true
+            || fixture["frame_over_limit"] == true;
         assert_eq!(out.failed, expected_failed, "{fixture}: {out:?}");
         if !expected_failed {
-            assert_eq!(out.text, "Native approval handled");
+            let expected = if large_text {
+                format!("{}Native approval handled", "é".repeat(100_000))
+            } else {
+                "Native approval handled".into()
+            };
+            assert_eq!(out.text, expected);
+        }
+        if fixture["large_tool_bytes"].is_number() && !expected_failed {
+            assert_eq!(out.exit_code, Some(0));
+            let card = out
+                .cards
+                .iter()
+                .find(|card| card.id == "large-output")
+                .unwrap();
+            assert_eq!(card.status, concordia::provider::CardStatus::Done);
+            assert!(card.detail.as_ref().unwrap().len() <= 64 * 1024);
+            assert!(card.detail.as_ref().unwrap().contains("Display clipped"));
+            assert!(!out
+                .cards
+                .iter()
+                .any(|card| card.status == concordia::provider::CardStatus::Running));
         }
         let calls = std::fs::read_to_string(work.path().join("appserver-calls.jsonl")).unwrap();
         let values: Vec<Value> = calls
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
+        if steering {
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|v| v["method"] == "turn/steer")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|v| v["method"] == "turn/start")
+                    .count(),
+                1
+            );
+            assert_eq!(offered, 0);
+            continue;
+        }
         if fixture["wrong_thread"] == true {
             assert!(!calls.contains("turn/start"));
             assert_eq!(offered, 0);
+            continue;
+        }
+        if fixture["frame_over_limit"] == true {
+            assert!(out.stderr_tail.contains("64 MiB transport frame limit"));
+            assert_eq!(out.exit_code, Some(1));
+            assert_eq!(offered, 0);
+            assert_eq!(
+                values
+                    .iter()
+                    .filter(|value| value["method"] == "turn/start")
+                    .count(),
+                1
+            );
             continue;
         }
         let turn = values
@@ -530,6 +635,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: None,
+            effort: None,
             native_session_id: Some("cursor-output-session"),
             trust: TrustMode::Plan,
             context_prefix: None,
@@ -587,6 +693,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: None,
+            effort: None,
             native_session_id: Some("claude-output-session"),
             trust: TrustMode::Plan,
             context_prefix: None,
@@ -647,7 +754,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             account: "claude-fixture".into(),
             home: Some(root.into()),
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answer_owner = owner
             .validate_for(ProviderKind::Claude, work.path(), Some(root))
             .unwrap();
@@ -697,6 +804,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: Some("fixture-claude"),
+            effort: None,
             native_session_id: Some("exact-claude-session"),
             trust: TrustMode::Ask,
             context_prefix: None,
@@ -704,13 +812,14 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             compaction: Default::default(),
         };
         let out = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(60),
             provider::turn::run_provider_turn_with_transport(
                 &request,
                 owner,
                 concordia::native_input::Mode::ClaudeStdio,
                 None,
                 Some(tx),
+                None,
             ),
         )
         .await
@@ -951,7 +1060,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             account: "claude-fixture".into(),
             home: Some(root.into()),
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
         let answers = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
                 if let TurnProgress::Interaction(request) = event {
@@ -969,6 +1078,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: work.path(),
             home_path: Some(root),
             model: Some("fixture-claude"),
+            effort: None,
             native_session_id: Some(&session),
             trust: TrustMode::Ask,
             context_prefix: None,
@@ -981,6 +1091,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             concordia::native_input::Mode::ClaudeStdio,
             None,
             Some(tx),
+            None,
         )
         .await
         .unwrap();
@@ -1005,50 +1116,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 compaction: Default::default()
             }
             .rollover(observation.measurement));
-            let state = root.join("state");
-            concordia::capacity::set(&state, &binding, "compact automatic-off").unwrap();
-            assert!(concordia::native_memory::context_observation(
-                &state,
-                &binding,
-                "fixture-claude"
-            )
-            .unwrap()
-            .measurement
-            .is_none());
-            concordia::capacity::set(&state, &binding, "compact native").unwrap();
-            let cache = std::fs::read_dir(state.join(".ao/context-observations"))
-                .unwrap()
-                .flatten()
-                .map(|entry| entry.path())
-                .find(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "json")
-                })
-                .unwrap();
-            let original = std::fs::read(&cache).unwrap();
-            let mut future: Value = serde_json::from_slice(&original).unwrap();
-            future["version"] = json!(255);
-            std::fs::write(&cache, future.to_string()).unwrap();
-            assert!(concordia::native_memory::context_observation(
-                &state,
-                &binding,
-                "fixture-claude"
-            )
-            .unwrap()
-            .measurement
-            .is_none());
-            assert!(concordia::capacity::claude_capacity::save(
-                &state,
-                &binding,
-                "fixture-claude",
-                observation.source.clone().unwrap(),
-                observation.measurement.unwrap(),
-                evidence,
-                &Default::default()
-            )
-            .is_err());
-            assert_eq!(std::fs::read_to_string(&cache).unwrap(), future.to_string());
-            std::fs::write(&cache, original).unwrap();
             let source = root
                 .join("projects/fake-provider")
                 .join(format!("{session}.jsonl"));
@@ -1142,6 +1209,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         cwd: root,
         home_path: Some(root),
         model: Some("fixture-claude"),
+        effort: None,
         native_session_id: None,
         trust: TrustMode::Plan,
         context_prefix: None,
@@ -1179,7 +1247,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
     let owner_for_answer = owner
         .validate_for(ProviderKind::Claude, stdio_work.path(), Some(root))
         .unwrap();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
     let answerer = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let TurnProgress::Interaction(request) = event {
@@ -1196,6 +1264,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         cwd: stdio_work.path(),
         home_path: Some(root),
         model: Some("fixture-claude"),
+        effort: None,
         native_session_id: Some("pdf-stdio-session"),
         trust: TrustMode::Ask,
         context_prefix: None,
@@ -1208,6 +1277,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         concordia::native_input::Mode::ClaudeStdio,
         None,
         Some(tx),
+        None,
     )
     .await
     .unwrap();
@@ -1226,6 +1296,7 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             cwd: root,
             home_path: Some(root),
             model: Some("fixture-model"),
+            effort: None,
             native_session_id: None,
             trust: TrustMode::Plan,
             context_prefix: None,

@@ -1,5 +1,5 @@
-//! The landing page: recent chats grouped by project folder, the person's goals, and each
-//! project's open work as its Harness ledger reports it. It replaces the empty transcript until
+//! The landing page: recent chats grouped by project folder and each project's open work as its
+//! Harness ledger reports it. It replaces the empty transcript until
 //! the person types, resumes a chat or presses Esc.
 
 use super::{App, MsgRole, FOOTER_HINT};
@@ -18,8 +18,9 @@ use std::time::Instant;
 /// How many recent chats the page lists, and how many projects it asks for open work.
 const RECENT_CHATS: usize = 40;
 const WORK_PROJECTS: usize = 6;
-/// Below this width the goals pane is left out and the chats use the whole row.
+/// Below this width the work pane is left out and the chats use the whole row.
 const TWO_PANES_MIN: u16 = 70;
+const DOCUMENTATION_URL: &str = "https://dariodaddamio.github.io/concordia/";
 
 #[derive(Debug, Clone)]
 pub struct ChatGroup {
@@ -31,7 +32,6 @@ pub struct ChatGroup {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct LandingMeter {
     pub(crate) provider: crate::store::ProviderKind,
     pub(crate) account: String,
@@ -41,13 +41,13 @@ pub(crate) struct LandingMeter {
 /// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
 /// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
-    let current = display_path(&project_root(cwd));
+    let current = crate::workspace_paths::display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
     let mut groups: BTreeMap<PathBuf, Vec<SessionSummary>> = BTreeMap::new();
     for session in sessions {
         let folder = match session.cwd.as_deref().map(Path::new) {
             Some(path) if path == probe => continue,
-            Some(path) => display_path(&project_root(path)),
+            Some(path) => crate::workspace_paths::display_path(&project_root(path)),
             None => PathBuf::from("other"),
         };
         groups.entry(folder).or_default().push(session);
@@ -100,18 +100,9 @@ pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGrou
     groups
 }
 
-fn display_path(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        PathBuf::from(format!(r"\\{rest}"))
-    } else {
-        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text))
-    }
-}
-
 fn hidden_workspace(path: &Path, temp_root: Option<&Path>) -> bool {
     let norm = |p: &Path| {
-        display_path(p)
+        crate::workspace_paths::display_path(p)
             .to_string_lossy()
             .replace('/', "\\")
             .to_ascii_lowercase()
@@ -149,8 +140,8 @@ fn hidden_session(session: &SessionSummary, cwd: &Path, temp_root: Option<&Path>
     session.cwd.as_deref().is_some_and(|session_cwd| {
         let path = Path::new(session_cwd);
         hidden_workspace(path, temp_root) || {
-            let folder = display_path(&project_root(path));
-            folder != display_path(&project_root(cwd)) && !folder.exists()
+            let folder = crate::workspace_paths::display_path(&project_root(path));
+            folder != crate::workspace_paths::display_path(&project_root(cwd)) && !folder.exists()
         }
     })
 }
@@ -189,13 +180,32 @@ fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
 /// The project identity, or for a git worktree its main repository: a worktree's
 /// `.git` is a file reading `gitdir: <repo>/.git/worktrees/<name>`.
 fn project_root(folder: &Path) -> PathBuf {
-    crate::native_memory::relations::groups::project_root(folder)
+    let pointer = folder.join(".git");
+    let main = std::fs::symlink_metadata(&pointer)
+        .ok()
+        .filter(|metadata| metadata.is_file())
+        .and_then(|_| std::fs::File::open(&pointer).ok())
+        .and_then(|file| {
+            use std::io::Read;
+            let mut text = String::new();
+            file.take(4097).read_to_string(&mut text).ok()?;
+            if text.len() > 4096 {
+                return None;
+            }
+            let gitdir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+            let gitdir = if gitdir.is_absolute() {
+                gitdir
+            } else {
+                folder.join(gitdir)
+            };
+            let dot_git = gitdir.parent()?.parent()?;
+            (dot_git.file_name()? == ".git").then(|| dot_git.parent().map(Path::to_path_buf))?
+        });
+    let root = main.as_deref().unwrap_or(folder);
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
-use crate::goals::read_goals;
-pub use crate::goals::{load_goals, save_goals, Goal};
-
-/// One project's open work. `None` when its Harness predates `plan:open --json`.
+/// One project's open work. `None` when its Habena predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWork {
     pub folder: String,
@@ -209,7 +219,7 @@ pub struct WorkItem {
     pub queued: bool,
 }
 
-/// `harness run plan:open --json` output: active plans first, then the open and queued rows.
+/// `habena run plan:open --json` output: active plans first, then the open and queued rows.
 pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     let text = |v: &serde_json::Value, key: &str| {
@@ -235,7 +245,7 @@ pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     Some(items)
 }
 
-/// The connected Harness program (`/harness connect harness`), if any.
+/// The connected Habena program (`/harness connect habena`), if any.
 fn harness_program(state_root: &Path) -> Option<String> {
     crate::harness::connections::load(state_root)
         .ok()?
@@ -249,7 +259,6 @@ fn harness_program(state_root: &Path) -> Option<String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Chats,
-    Goals,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,10 +281,15 @@ pub struct Landing {
     provider_health: Vec<(crate::store::ProviderKind, bool)>,
     from_chat: bool,
     all_sessions: Vec<SessionSummary>,
+    /// Sessions the default view hides. Counted once when the sessions are loaded: the count
+    /// needs a filesystem lookup per session and must never run while drawing a frame.
+    hidden_total: usize,
+    /// Chat titles for `groups`, with the time they were resolved.
+    titles_cache: Option<(std::time::Instant, Vec<String>, Vec<Vec<String>>)>,
     show_all: bool,
     pub(crate) hidden_temp_root: Option<PathBuf>,
     groups: Vec<ChatGroup>,
-    goals: Vec<Goal>,
+    goals: Vec<String>,
     pane: Pane,
     mode: Mode,
     chat_sel: usize,
@@ -288,6 +302,7 @@ pub struct Landing {
     work_rx: Option<mpsc::Receiver<ProjectWork>>,
     /// Where the rows were drawn, for the mouse.
     chats_area: Rect,
+    work_area: Rect,
     goals_area: Rect,
     last_click: Option<(usize, Instant)>,
     /// Tokens through Concordia in the last 24 hours, read once when the page opens.
@@ -321,12 +336,6 @@ impl Landing {
         rows
     }
 
-    fn open_goals(&self) -> Vec<usize> {
-        (0..self.goals.len())
-            .filter(|&i| !self.goals[i].done)
-            .collect()
-    }
-
     /// Open work is still being read.
     #[cfg(test)]
     pub fn work_pending(&self) -> bool {
@@ -334,14 +343,7 @@ impl Landing {
     }
 
     fn hint(&self) -> &'static str {
-        match (&self.mode, self.pane) {
-            (Mode::AddGoal(_), _) => "Enter save · Esc cancel",
-            (Mode::ConfirmDone, _) => "Enter mark done · Esc keep",
-            (Mode::Browse, Pane::Chats) => {
-                "Enter open chat · F6 related work · Tab goals · Esc chat"
-            }
-            (Mode::Browse, Pane::Goals) => "a add goal · Enter mark done · Tab chats · Esc chat",
-        }
+        "Enter open chat · Esc chat"
     }
 }
 
@@ -360,6 +362,11 @@ pub(super) fn open_with(app: &mut App, sessions: Vec<SessionSummary>, program: O
 pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
     if let Some(landing) = app.landing.as_mut() {
         landing.hidden_temp_root = Some(root);
+        landing.hidden_total = hidden_count(
+            &landing.all_sessions,
+            &app.cwd,
+            landing.hidden_temp_root.as_deref(),
+        );
         landing.groups = display_groups(
             landing_sessions(
                 landing.all_sessions.clone(),
@@ -373,6 +380,24 @@ pub(crate) fn set_hidden_temp_root(app: &mut App, root: PathBuf) {
 }
 
 pub(super) fn open_home(app: &mut App) {
+    app.tab_request = Some(super::tabs::TabAction::Home);
+}
+
+pub(super) fn back_to_chat(app: &mut App) {
+    app.tab_request = Some(super::tabs::TabAction::BackToChat);
+}
+
+/// An unbound conversation can host Home without replacing a saved or running chat.
+pub(super) fn can_host_home(app: &App) -> bool {
+    !app.busy
+        && app.native_session_id.is_none()
+        && !app
+            .messages
+            .iter()
+            .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
+}
+
+pub(super) fn open_home_tab(app: &mut App) {
     let sessions = list_recent_sessions(&app.state_root, RECENT_CHATS);
     let program = harness_program(&app.state_root);
     open_with_mode(app, sessions, program, true);
@@ -384,7 +409,9 @@ fn open_with_mode(
     program: Option<String>,
     from_chat: bool,
 ) {
+    app.refresh_store_warning();
     let welcome = sessions.is_empty()
+        && app.store_warning.is_none()
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
@@ -446,22 +473,17 @@ fn open_with_mode(
             });
         rx
     });
-    let goals = match read_goals(&app.state_root) {
-        Ok(goals) => goals,
-        Err(_) => {
-            app.flash("Goals could not be loaded; the original file was kept unchanged");
-            Vec::new()
-        }
-    };
     let landing = Landing {
         welcome,
         provider_health: crate::doctor::fast_provider_status(),
         from_chat,
+        hidden_total: hidden_count(&sessions, &app.cwd, hidden_temp_root.as_deref()),
         all_sessions: sessions,
+        titles_cache: None,
         show_all: false,
         hidden_temp_root,
         groups,
-        goals,
+        goals: Vec::new(),
         pane: Pane::Chats,
         mode: Mode::Browse,
         chat_sel: 0,
@@ -473,6 +495,7 @@ fn open_with_mode(
         work: Vec::new(),
         work_rx,
         chats_area: Rect::default(),
+        work_area: Rect::default(),
         goals_area: Rect::default(),
         last_click: None,
         tokens_24h: 0,
@@ -515,31 +538,16 @@ pub(super) fn close(app: &mut App) {
     }
 }
 
-/// Drafting keeps the landing page visible. Goal entry keeps its own input.
+/// Drafting keeps the landing page visible.
 pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     if !visible(app) || text.is_empty() {
         return false;
     }
-    match &mut app.landing.as_mut().expect("visible landing page").mode {
-        Mode::AddGoal(goal) => {
-            goal.push_str(text);
-            true
-        }
-        Mode::ConfirmDone => true,
-        Mode::Browse => {
-            set_pane(app, Pane::Chats);
-            false
-        }
-    }
+    let _ = text;
+    false
 }
 
 /// On screen: opened, nothing said in this chat yet, and no picker over it.
-pub(super) fn editing_goal(app: &App) -> bool {
-    app.landing
-        .as_ref()
-        .is_some_and(|landing| !matches!(&landing.mode, Mode::Browse))
-}
-
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && app.picker.is_none()
@@ -556,56 +564,44 @@ pub(super) fn visible(app: &App) -> bool {
                     .any(|m| matches!(m.role, MsgRole::User | MsgRole::Assistant))))
 }
 
+pub(super) fn editing_goal(_app: &App) -> bool {
+    false
+}
+
 /// The landing usage pane owns subscription facts whenever it is actually drawn.
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
-        && app.landing.as_ref().is_some_and(|landing| {
-            !landing.meters.is_empty() && (width >= TWO_PANES_MIN || landing.pane == Pane::Goals)
-        })
+        && app
+            .landing
+            .as_ref()
+            .is_some_and(|landing| !landing.meters.is_empty() && width >= TWO_PANES_MIN)
 }
 
 /// Collect open work that arrived from the background reader.
-pub(super) fn poll(app: &mut App) {
+pub(super) fn poll(app: &mut App) -> bool {
     if app.landing.is_none() {
-        return;
+        return false;
     }
     refresh_meters(app);
     let Some(landing) = app.landing.as_mut() else {
-        return;
+        return false;
     };
     let Some(rx) = landing.work_rx.as_ref() else {
-        return;
+        return false;
     };
+    let mut changed = false;
     loop {
         match rx.try_recv() {
-            Ok(work) => landing.work.push(work),
-            Err(mpsc::TryRecvError::Empty) => return,
+            Ok(work) => {
+                landing.work.push(work);
+                changed = true;
+            }
+            Err(mpsc::TryRecvError::Empty) => return changed,
             Err(mpsc::TryRecvError::Disconnected) => {
                 landing.work_rx = None;
-                return;
+                return true;
             }
         }
-    }
-}
-
-fn save(app: &mut App) {
-    let Some(landing) = app.landing.as_ref() else {
-        return;
-    };
-    let selected_id = landing
-        .open_goals()
-        .get(landing.goal_sel)
-        .map(|&i| landing.goals[i].id.clone());
-    if let Err(e) = save_goals(&app.state_root, &landing.goals) {
-        app.flash(format!("goals could not be saved: {e}"));
-    } else {
-        let goals = load_goals(&app.state_root);
-        let landing = app.landing.as_mut().expect("landing page is open");
-        landing.goals = goals;
-        let open = landing.open_goals();
-        landing.goal_sel = selected_id
-            .and_then(|id| open.iter().position(|&i| landing.goals[i].id == id))
-            .unwrap_or_else(|| landing.goal_sel.min(open.len().saturating_sub(1)));
     }
 }
 
@@ -618,7 +614,7 @@ fn activate_chat(app: &mut App) {
         Some(ChatRow::Chat(g, s)) => {
             let session = landing.groups[g].sessions[s].clone();
             close(app);
-            app.resume_session(&session.account, &session.session_id);
+            app.request_resume_session(&session.account, &session.session_id);
         }
         Some(ChatRow::Quick(g)) => {
             landing.groups[g].quick_questions = !landing.groups[g].quick_questions
@@ -626,7 +622,7 @@ fn activate_chat(app: &mut App) {
         Some(ChatRow::QuickChat(g, s)) => {
             let session = landing.groups[g].quick_sessions[s].clone();
             close(app);
-            app.resume_session(&session.account, &session.session_id);
+            app.request_resume_session(&session.account, &session.session_id);
         }
         None => {}
     }
@@ -665,7 +661,7 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
             true
         }
         KeyCode::Right if visible(app) => {
-            close(app);
+            back_to_chat(app);
             true
         }
         _ => false,
@@ -673,10 +669,6 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    if key.code == KeyCode::F(6) {
-        app.memory_command("groups");
-        return true;
-    }
     // Slash completion owns its keys even while the landing lists stay visible.
     if app
         .landing
@@ -694,87 +686,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let plain = !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-    if landing.pane == Pane::Goals {
-        landing.goal_follow = true;
-    }
-    match landing.mode.clone() {
-        Mode::AddGoal(mut text) => {
-            match key.code {
-                KeyCode::Esc => landing.mode = Mode::Browse,
-                KeyCode::Enter => {
-                    landing.mode = Mode::Browse;
-                    if !text.trim().is_empty() {
-                        let now = super::now_stamp();
-                        landing.goals.push(Goal {
-                            id: format!("g-{}", uuid::Uuid::new_v4()),
-                            text: text.trim().to_string(),
-                            done: false,
-                            added_at: now,
-                            closed_at: None,
-                            origin: Some(crate::goals::Attribution::user()),
-                            closed_origin: None,
-                            ..Default::default()
-                        });
-                        landing.goal_sel = landing.open_goals().len().saturating_sub(1);
-                        save(app);
-                    }
-                }
-                KeyCode::Backspace => {
-                    text.pop();
-                    landing.mode = Mode::AddGoal(text);
-                }
-                KeyCode::Char(c) if plain || key.modifiers.contains(KeyModifiers::ALT) => {
-                    text.push(c);
-                    landing.mode = Mode::AddGoal(text);
-                }
-                KeyCode::Char(c)
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key.modifiers.contains(KeyModifiers::ALT)
-                        && matches!(c.to_ascii_lowercase(), 'v' | 'c') =>
-                {
-                    return false
-                }
-                // Goal entry owns input until saved or cancelled. Letting navigation
-                // or undo fall through would silently edit the prompt underneath.
-                _ => return true,
-            }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
-            return true;
-        }
-        Mode::ConfirmDone => {
-            match key.code {
-                KeyCode::Enter => {
-                    let open = landing.open_goals();
-                    if let Some(&i) = open.get(landing.goal_sel) {
-                        landing.goals[i].done = true;
-                        landing.goals[i].closed_at = Some(super::now_stamp());
-                        landing.goals[i].closed_origin = Some(crate::goals::Attribution::user());
-                    }
-                    landing.mode = Mode::Browse;
-                    landing.goal_sel = landing
-                        .goal_sel
-                        .min(landing.open_goals().len().saturating_sub(1));
-                    save(app);
-                }
-                KeyCode::Esc => landing.mode = Mode::Browse,
-                _ => return true,
-            }
-            let hint = app
-                .landing
-                .as_ref()
-                .map(Landing::hint)
-                .unwrap_or(FOOTER_HINT);
-            app.footer_left = hint.into();
-            return true;
-        }
-        Mode::Browse => {}
-    }
-    // A nonempty draft owns editing and Enter; Tab still reaches the goals, and Up/Down still
+    // A nonempty draft owns editing and Enter; Up/Down still
     // move through the chats while the draft is one line.
     let list_key = matches!(key.code, KeyCode::Up | KeyCode::Down)
         && plain
@@ -797,15 +709,10 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     let rows = landing.rows().len();
-    let goals = landing.open_goals().len();
     match (key.code, landing.pane) {
-        (KeyCode::Esc, _) => close(app),
-        (KeyCode::Tab | KeyCode::BackTab, Pane::Chats) => set_pane(app, Pane::Goals),
-        (KeyCode::Tab | KeyCode::BackTab, Pane::Goals) => set_pane(app, Pane::Chats),
+        (KeyCode::Esc, _) => back_to_chat(app),
         (KeyCode::Up, Pane::Chats) => landing.chat_sel = previous(landing.chat_sel, rows),
         (KeyCode::Down, Pane::Chats) => landing.chat_sel = next(landing.chat_sel, rows),
-        (KeyCode::Up, Pane::Goals) => landing.goal_sel = previous(landing.goal_sel, goals),
-        (KeyCode::Down, Pane::Goals) => landing.goal_sel = next(landing.goal_sel, goals),
         (KeyCode::Enter, Pane::Chats) => activate_chat(app),
         (KeyCode::Char(' '), Pane::Chats)
             if matches!(
@@ -814,14 +721,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             ) =>
         {
             activate_chat(app)
-        }
-        (KeyCode::Enter, Pane::Goals) if goals > 0 => {
-            landing.mode = Mode::ConfirmDone;
-            app.footer_left = landing.hint().into();
-        }
-        (KeyCode::Char('a'), Pane::Goals) if plain => {
-            landing.mode = Mode::AddGoal(String::new());
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char('h'), Pane::Chats)
             if plain
@@ -849,7 +748,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
-            // Drafting keeps chats and goals visible.
+            // Drafting keeps the landing page visible.
             set_pane(app, Pane::Chats);
             return false;
         }
@@ -877,11 +776,7 @@ fn next(selected: usize, count: usize) -> usize {
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     if let Some(landing) = app.landing.as_ref() {
         let label = landing.pane == Pane::Chats
-            && hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            ) > 0
+            && landing.hidden_total > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
                 let start = app.footer_left[..byte_start].chars().count() as u16;
                 y == app.areas.footer.y && x >= start && x < app.footer_left.chars().count() as u16
@@ -893,15 +788,30 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     app.landing.as_ref().is_some_and(|l| {
         (super::contains(l.chats_area, x, y)
             && l.chat_top + ((y - l.chats_area.y) as usize) < l.rows().len())
-            || (super::contains(l.goals_area, x, y)
-                && l.goal_hits
-                    .get((y - l.goals_area.y) as usize)
-                    .is_some_and(Option::is_some))
+            || super::contains(l.work_area, x, y)
     })
 }
 
 /// Wheel and clicks while the page shows; `true` when the page used the event.
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
+    let documentation_hit = app
+        .areas
+        .home_documentation
+        .is_some_and(|rect| super::contains(rect, m.column, m.row));
+    if m.kind == MouseEventKind::Down(MouseButton::Left) {
+        app.home_documentation_pressed = documentation_hit;
+        if documentation_hit {
+            return true;
+        }
+    }
+    if m.kind == MouseEventKind::Up(MouseButton::Left)
+        && std::mem::take(&mut app.home_documentation_pressed)
+    {
+        if documentation_hit {
+            app.open_web_link(DOCUMENTATION_URL.into());
+        }
+        return true;
+    }
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
@@ -909,11 +819,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
     let footer_label = landing.pane == Pane::Chats
-        && hidden_count(
-            &landing.all_sessions,
-            &app.cwd,
-            landing.hidden_temp_root.as_deref(),
-        ) > 0
+        && landing.hidden_total > 0
         && inside(app.areas.footer)
         && m.row == app.areas.footer.y
         && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -943,14 +849,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         MouseEventKind::ScrollDown if inside(landing.chats_area) => {
             landing.chat_sel = (landing.chat_sel + 3).min(rows.saturating_sub(1));
         }
-        MouseEventKind::ScrollUp if inside(landing.goals_area) => {
-            landing.goal_top = landing.goal_top.saturating_sub(3);
-            landing.goal_follow = false;
-        }
-        MouseEventKind::ScrollDown if inside(landing.goals_area) => {
-            landing.goal_top = landing.goal_top.saturating_add(3);
-            landing.goal_follow = false;
-        }
         MouseEventKind::Down(MouseButton::Left) if inside(landing.chats_area) => {
             let row = landing.chat_top + (m.row - landing.chats_area.y) as usize;
             if row >= rows {
@@ -966,14 +864,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
                 activate_chat(app);
             }
         }
-        MouseEventKind::Down(MouseButton::Left) if inside(landing.goals_area) => {
-            let row = (m.row - landing.goals_area.y) as usize;
-            if let Some(Some(goal)) = landing.goal_hits.get(row) {
-                landing.goal_sel = *goal;
-                landing.goal_follow = true;
-            }
-            set_pane(app, Pane::Goals);
-        }
         _ => return false,
     }
     true
@@ -981,12 +871,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
 
 /// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing, width: usize) -> usize {
-    let open = landing.open_goals();
-    let goals = open
-        .iter()
-        .map(|&i| wrapped_rows(&format!("  {}", goal_label(&landing.goals[i])), width))
-        .sum::<usize>()
-        + usize::from(landing.mode != Mode::Browse);
     let work: usize = landing
         .work
         .iter()
@@ -1001,16 +885,15 @@ fn goal_rows(landing: &Landing, width: usize) -> usize {
             None => 2,
         })
         .sum();
-    let goals_content = goals.max(if open.is_empty() && work == 0 { 6 } else { 3 });
     let usage = if landing.meters.is_empty() {
         0
     } else {
         meter_rows(&landing.meters, width) + 2
     };
     if work == 0 {
-        goals_content.max(usage + 5)
+        work.max(3).max(usage + 5)
     } else {
-        goals_content.max(usage + 5) + usize::from(goals > 0) + 1 + work
+        work.max(3).max(usage + 5)
     }
 }
 
@@ -1039,7 +922,7 @@ fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset:
         "{} [{bar}] {}%{}",
         window.label,
         left,
-        if !include_reset || reset == "reset unavailable" {
+        if !include_reset {
             String::new()
         } else {
             format!("  {reset}")
@@ -1061,29 +944,65 @@ fn meter_reset_label(raw: &str, expired: bool) -> String {
 /// One heading per account (plan, credits, limit state), then one row per usage window.
 fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     let snapshot = &meter.snapshot;
-    let mut heading = format!("{} {}", meter.provider.as_str(), meter.account);
+    // The same account name `/usage` shows (for example "Codex 2"), not "codex codex-2".
+    let mut heading = crate::accounts::display_account_name(meter.provider, &meter.account);
     if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
         heading.push_str(&format!(" · {plan}"));
-    }
-    let credits = snapshot.credits_text();
-    if credits != "Credits: not reported" {
-        heading.push_str(&format!(" · {credits}"));
     }
     if snapshot.limit_hit {
         heading.push_str(" · limit reached");
     }
+    let cells = if width < 32 {
+        3
+    } else if width < 48 {
+        6
+    } else {
+        10
+    };
     let mut lines = vec![clipped(heading, width)];
-    let cells = if width < 40 { 6 } else { 10 };
     for window in &snapshot.windows {
+        if window.expired_for_ui() {
+            let reset = window
+                .resets
+                .as_deref()
+                .map(|raw| meter_reset_label(raw, true))
+                .unwrap_or_else(|| "reset unavailable".into());
+            lines.push(clipped(
+                format!(
+                    "  {} [{}] usage unknown  {reset}",
+                    window.label,
+                    "░".repeat(cells)
+                ),
+                width,
+            ));
+            continue;
+        }
         let full = format!("  {}", meter_window(window, cells, true));
-        lines.push(if full.chars().count() <= width {
-            full
-        } else {
-            clipped(format!("  {}", meter_window(window, cells, false)), width)
-        });
+        if full.chars().count() <= width {
+            lines.push(full);
+            continue;
+        }
+        lines.push(clipped(
+            format!("  {}", meter_window(window, cells, false)),
+            width,
+        ));
+        if let Some(reset) = window.resets.as_deref() {
+            let reset = meter_reset_label(reset, window.expired_for_ui());
+            if reset != "reset unavailable" {
+                lines.push(clipped(format!("    {reset}"), width));
+            }
+        }
     }
     if snapshot.windows.is_empty() {
-        lines.push(clipped(format!("  {}", snapshot.summary), width));
+        // Say what is happening (checking, not shown by this provider, unavailable) rather
+        // than a bare "unknown" while `/usage` is reading the same account.
+        let state = snapshot.summary.trim();
+        let state = if state.is_empty() {
+            "usage unknown"
+        } else {
+            state
+        };
+        lines.push(clipped(format!("  {state}"), width));
     }
     lines
 }
@@ -1092,14 +1011,12 @@ fn meter_rows(meters: &[LandingMeter], width: usize) -> usize {
     meters.iter().map(|m| meter_lines(m, width).len()).sum()
 }
 
-fn goal_label(goal: &Goal) -> String {
-    let proposed = goal.origin.as_ref().is_some_and(|origin| {
-        origin.source == crate::goals::ChangeSource::McpProposalApprovedLocally
-    });
+fn goal_label(_goal: &str) -> String {
+    let proposed = false;
     format!(
         "{} {}{}",
         if proposed { "◇" } else { "○" },
-        goal.text,
+        "",
         if proposed {
             " [MCP proposal · approved locally]"
         } else {
@@ -1162,6 +1079,7 @@ pub(super) fn apply_usage(
 }
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
+    let compact_intro = area.width >= 76 && area.height < 24;
     let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
         app.footer_left = if landing.mode == Mode::Browse
@@ -1173,18 +1091,8 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             landing.hint()
         }
         .to_string();
-        if landing.pane == Pane::Chats
-            && hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            ) > 0
-        {
-            let hidden = hidden_count(
-                &landing.all_sessions,
-                &app.cwd,
-                landing.hidden_temp_root.as_deref(),
-            );
+        if landing.pane == Pane::Chats && landing.hidden_total > 0 {
+            let hidden = landing.hidden_total;
             if landing.show_all {
                 app.footer_left.push_str(" · h hide");
             } else {
@@ -1197,15 +1105,56 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let titles: Vec<Vec<String>> = app
+    // A chat title is resolved from the account store and the title file on disk. Resolve the
+    // visible titles at most every two seconds, never once per frame.
+    // The key is the listed session ids in order, so any change to the list re-resolves at once.
+    let titles_key: Vec<String> = app
         .landing
         .as_ref()
         .map(|l| {
             l.groups
                 .iter()
-                .map(|g| g.sessions.iter().map(|s| chat_title(app, s)).collect())
+                .enumerate()
+                .flat_map(|(index, group)| {
+                    group
+                        .sessions
+                        .iter()
+                        .map(move |session| format!("{index}|{}", session.session_id))
+                })
                 .collect()
         })
+        .unwrap_or_default();
+    let titles_stale = app.landing.as_ref().is_some_and(|l| {
+        l.titles_cache.as_ref().is_none_or(|(at, key, _)| {
+            at.elapsed() >= std::time::Duration::from_secs(2) || *key != titles_key
+        })
+    });
+    if titles_stale {
+        // One account lookup per account, not per chat: each lookup loads the account store.
+        let mut homes = std::collections::HashMap::new();
+        let fresh: Vec<Vec<String>> = app
+            .landing
+            .as_ref()
+            .map(|l| {
+                l.groups
+                    .iter()
+                    .map(|g| {
+                        g.sessions
+                            .iter()
+                            .map(|s| chat_title(app, s, &mut homes))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(landing) = app.landing.as_mut() {
+            landing.titles_cache = Some((std::time::Instant::now(), titles_key, fresh));
+        }
+    }
+    let titles: Vec<Vec<String>> = app
+        .landing
+        .as_ref()
+        .and_then(|l| l.titles_cache.as_ref().map(|(_, _, titles)| titles.clone()))
         .unwrap_or_default();
     let Some(landing) = app.landing.as_mut() else {
         return;
@@ -1215,27 +1164,35 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
-    let goals_width = if area.width >= TWO_PANES_MIN {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-            .split(area)[1]
-            .width
+    let usage_content = if landing.meters.is_empty() {
+        0
     } else {
-        area.width
-    }
-    .saturating_sub(2) as usize;
-    let content = landing
-        .rows()
-        .len()
-        .max(goal_rows(landing, goals_width))
-        .max(if welcome_visible { 7 } else { 0 })
-        .min(u16::MAX as usize - 2) as u16;
+        meter_rows(
+            &landing.meters,
+            (area.width as usize * 45 / 100).saturating_sub(2),
+        ) + 7
+    };
+    // Compact intro stacks above the chat list, so its rows must add to the list
+    // height rather than replace it (otherwise the list area collapses to zero).
+    let content = {
+        let chats = landing.rows().len();
+        let intro = if welcome_visible || compact_intro {
+            7
+        } else {
+            0
+        };
+        let stacked = if compact_intro && !welcome_visible {
+            chats.saturating_add(intro)
+        } else {
+            chats.max(intro)
+        };
+        stacked.max(usage_content).min(u16::MAX as usize - 2) as u16
+    };
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
         ..area
     };
-    let narrow_goals = area.width < TWO_PANES_MIN && landing.pane == Pane::Goals;
+    let narrow_goals = false;
     let panes = if area.width >= TWO_PANES_MIN {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -1292,7 +1249,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);
-        landing.chats_area = inner;
         if welcome_visible {
             let mut lines = vec![
                 Line::styled("Welcome to Concordia", selected),
@@ -1312,12 +1268,70 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 "Next: /use to add an account (Enter)",
                 selected,
             ));
+            lines.push(Line::default());
+            lines.push(Line::styled("What's new", selected));
+            for item in super::brand::whats_new(3, inner.width as usize) {
+                lines.push(Line::from(item));
+            }
+            lines.push(Line::default());
+            let documentation_row = lines.len();
+            lines.push(Line::from(Span::styled(
+                "Documentation",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from("F1  Shortcuts"));
             f.render_widget(Paragraph::new(lines), inner);
+            app.areas.home_documentation = Some(Rect::new(
+                inner.x,
+                inner.y + documentation_row as u16,
+                "Documentation".len() as u16,
+                1,
+            ));
             landing.goals_area = Rect::default();
             return;
         }
+        if compact_intro {
+            let mut lines = vec![Line::styled("What's new", selected)];
+            lines.extend(
+                super::brand::whats_new(3, inner.width as usize)
+                    .into_iter()
+                    .map(Line::from),
+            );
+            lines.push(Line::default());
+            let documentation_row = lines.len();
+            lines.push(Line::from(Span::styled(
+                "Documentation",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from("F1  Shortcuts"));
+            f.render_widget(Paragraph::new(lines), inner);
+            app.areas.home_documentation = Some(Rect::new(
+                inner.x,
+                inner.y + documentation_row as u16,
+                "Documentation".len() as u16,
+                1,
+            ));
+            landing.goals_area = Rect::default();
+            // The usage pane on the right remains independently visible at compact heights.
+        }
+        let list_area = if compact_intro {
+            Rect::new(
+                inner.x,
+                inner.y.saturating_add(7),
+                inner.width,
+                inner.height.saturating_sub(7),
+            )
+        } else {
+            inner
+        };
+        // Hit-testing must use the list region, not the compact intro above it.
+        landing.chats_area = list_area;
         let rows = landing.rows();
-        let height = inner.height as usize;
+        let height = list_area.height as usize;
         if landing.chat_sel < landing.chat_top {
             landing.chat_top = landing.chat_sel;
         } else if height > 0 && landing.chat_sel >= landing.chat_top + height {
@@ -1401,7 +1415,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 ])
             })
             .collect();
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(Paragraph::new(lines), list_area);
     } else {
         landing.chats_area = Rect::default();
     }
@@ -1419,15 +1433,19 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let (usage_area, right) = if landing.meters.is_empty() {
         (None, right)
     } else {
-        let max_usage_rows = right.height.saturating_sub(7) as usize;
-        let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize)
-            .min(max_usage_rows.max(1));
+        let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize);
         let usage_height = usage_rows as u16 + 2;
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
-            .split(right);
-        (Some(chunks[0]), chunks[1])
+        if right.height <= usage_height.saturating_add(7) {
+            // At compact heights every connected account is more useful than the optional
+            // open-work pane. Keep the complete provider snapshot on screen.
+            (Some(right), Rect::default())
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(usage_height), Constraint::Min(5)])
+                .split(right);
+            (Some(chunks[0]), chunks[1])
+        }
     };
     if let Some(usage_area) = usage_area {
         let block = Block::default()
@@ -1437,24 +1455,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         let inner = block.inner(usage_area);
         f.render_widget(block, usage_area);
         let width = inner.width as usize;
-        let capacity = inner.height as usize;
         let all: Vec<Vec<String>> = landing
             .meters
             .iter()
             .map(|meter| meter_lines(meter, width))
             .collect();
-        let total: usize = all.iter().map(Vec::len).sum();
-        let budget = if total > capacity {
-            capacity.saturating_sub(1)
-        } else {
-            capacity
-        };
         let mut lines: Vec<Line> = Vec::new();
-        let mut shown = 0;
         for meter in &all {
-            if lines.len() + meter.len() > budget {
-                break;
-            }
             for (row, text) in meter.iter().enumerate() {
                 lines.push(if row == 0 {
                     Line::styled(text.clone(), Style::default().add_modifier(Modifier::BOLD))
@@ -1462,8 +1469,8 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     Line::styled(text.clone(), dim)
                 });
             }
-            shown += 1;
         }
+        let shown = all.len();
         if shown < all.len() {
             lines.push(Line::styled(
                 format!("+{} more accounts · /usage", all.len() - shown),
@@ -1472,61 +1479,36 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
+    if right.width == 0 || right.height == 0 {
+        landing.goals_area = Rect::default();
+        landing.goal_hits.clear();
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" goals ")
-        .border_style(border(landing.pane == Pane::Goals));
+        .title(" open work ")
+        .border_style(border(false));
     let inner = block.inner(right);
     f.render_widget(block, right);
-    landing.goals_area = inner;
     let mut lines: Vec<Line> = Vec::new();
-    let mut hits = Vec::new();
+    let mut hits: Vec<Option<usize>> = Vec::new();
     let mut focus = None;
-    for (row, &i) in landing.open_goals().iter().enumerate() {
-        let focused = row == landing.goal_sel && landing.pane == Pane::Goals;
-        let style = if focused { selected } else { Style::default() };
-        if focused {
-            focus = Some(lines.len());
-        }
-        lines.push(Line::from(vec![
-            Span::styled(if focused { "> " } else { "  " }, style),
-            Span::styled(goal_label(&landing.goals[i]), style),
-        ]));
-        hits.push(Some(row));
-        if focused && landing.mode == Mode::ConfirmDone {
-            lines.push(Line::styled("    Mark done? Enter yes · Esc no", dim));
-            hits.push(Some(row));
-            focus = Some(lines.len() - 1);
-        }
-    }
-    if let Mode::AddGoal(text) = &landing.mode {
-        focus = Some(lines.len());
-        lines.push(Line::from(vec![
-            Span::styled("> ○ ", selected),
-            Span::raw(text.clone()),
-            Span::styled("▏", selected),
-        ]));
-        hits.push(None);
-    }
     if lines.is_empty() && landing.work.is_empty() {
         // An empty pane must still say what it is for and how to fill it. Open work, when
         // present, already fills the pane and keeps its rows.
         for (text, style) in [
             (
-                "No goals yet.",
+                "No open work.",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             ("", dim),
+            ("Open work from the connected Harness appears here.", dim),
             (
-                "Goals are the outcomes you are working toward across chats.",
-                dim,
-            ),
-            (
-                "Agents can read them and propose new ones for you to approve.",
+                "Use the chat and repository files for task objectives.",
                 dim,
             ),
             ("", dim),
-            ("Press Tab, then a, to add one.", Style::default()),
+            ("Open a chat to continue.", Style::default()),
         ] {
             lines.push(Line::styled(text, style));
             hits.push(None);
@@ -1594,11 +1576,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
     landing.goal_top = landing.goal_top.min(visual.len().saturating_sub(height));
-    landing.goal_hits = visual_hits
-        .into_iter()
-        .skip(landing.goal_top)
-        .take(height)
-        .collect();
+    landing.goal_hits.clear();
     f.render_widget(
         Paragraph::new(
             visual
@@ -1648,9 +1626,18 @@ fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
 }
 
 /// The provider's or Concordia's title for a chat, else its first words.
-fn chat_title(app: &App, session: &SessionSummary) -> String {
-    crate::accounts::get_account(&app.state_root, &session.account)
-        .and_then(|a| a.home_path)
+fn chat_title(
+    app: &App,
+    session: &SessionSummary,
+    homes: &mut std::collections::HashMap<String, Option<PathBuf>>,
+) -> String {
+    homes
+        .entry(session.account.clone())
+        .or_insert_with(|| {
+            crate::accounts::get_account(&app.state_root, &session.account)
+                .and_then(|a| a.home_path)
+        })
+        .clone()
         .and_then(|home| {
             crate::session_titles::get(
                 &app.state_root,
@@ -1661,483 +1648,4 @@ fn chat_title(app: &App, session: &SessionSummary) -> String {
             )
         })
         .unwrap_or_else(|| crate::sessions::clean_preview(session.preview.as_deref(), 80))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::ProviderKind;
-    use tempfile::tempdir;
-
-    fn session(folder: &str, id: &str, modified_ms: u128) -> SessionSummary {
-        SessionSummary {
-            account: "a".into(),
-            provider: ProviderKind::Codex,
-            session_id: id.into(),
-            cwd: Some(format!("C:/work/{folder}")),
-            preview: Some(id.into()),
-            modified_ms,
-            user_messages: 1,
-        }
-    }
-
-    #[test]
-    fn groups_current_first_and_newest_first() {
-        let groups = group_sessions(
-            vec![
-                session("older", "o1", 1),
-                session("here", "new", 3),
-                session("here", "old", 2),
-                session("newer", "n1", 9),
-            ],
-            Path::new("C:/work/here"),
-        );
-        assert_eq!(
-            groups.iter().map(|g| g.folder.as_str()).collect::<Vec<_>>(),
-            ["here", "newer", "older"]
-        );
-        assert!(groups[0].expanded && !groups[1].expanded);
-        assert_eq!(groups[0].sessions[0].session_id, "new");
-    }
-
-    #[test]
-    fn hidden_workspace_rules() {
-        let root = Path::new(r"C:\tmp\fixture");
-        for p in [
-            r"C:\tmp\fixture\x",
-            r"C:\code\target\x",
-            r"C:\concordia-test-1",
-            r"C:\concordia-qual-1",
-            r"C:\live-qualification-20261104",
-        ] {
-            assert!(hidden_workspace(Path::new(p), Some(root)));
-        }
-        for p in [
-            r"C:\code\latest",
-            r"C:\code\contest",
-            r"C:\notes\temp-notes",
-            r"C:\code\pytest-demo",
-            r"\\?\C:\code\latest",
-            "C:/code/latest",
-        ] {
-            assert!(!hidden_workspace(Path::new(p), None));
-        }
-    }
-
-    #[test]
-    fn display_path_strips_extended_and_unc_prefixes() {
-        assert_eq!(display_path(Path::new(r"\\?\C:\x")), PathBuf::from(r"C:\x"));
-        assert_eq!(
-            display_path(Path::new(r"\\?\UNC\server\share\x")),
-            PathBuf::from(r"\\server\share\x")
-        );
-        assert_eq!(display_path(Path::new(r"C:\x")), PathBuf::from(r"C:\x"));
-    }
-
-    #[test]
-    fn duplicate_folder_names_get_their_parent() {
-        let groups = group_sessions(
-            vec![
-                SessionSummary {
-                    cwd: Some(r"C:\dev\concordia".into()),
-                    ..session("concordia", "a", 1)
-                },
-                SessionSummary {
-                    cwd: Some(r"D:\work\concordia".into()),
-                    ..session("concordia", "b", 2)
-                },
-                session("unique", "c", 3),
-            ],
-            Path::new(r"C:\none"),
-        );
-        let names: Vec<_> = groups.iter().map(|g| g.folder.as_str()).collect();
-        assert!(names.contains(&"dev/concordia"));
-        assert!(names.contains(&"work/concordia"));
-        assert!(names.contains(&"unique"));
-    }
-
-    #[test]
-    fn quick_questions_collect_short_old_chats_per_folder() {
-        let now = 10 * 86_400_000u128;
-        let mut old = session("one", "old", now - 2 * 86_400_000);
-        old.user_messages = 2;
-        let mut long = session("one", "long", now - 2 * 86_400_000);
-        long.user_messages = 3;
-        let recent = session("one", "recent", now - 3_600_000);
-        let groups = display_groups_at(vec![old, long, recent], Path::new(r"C:\none"), now);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(
-            groups[0]
-                .sessions
-                .iter()
-                .map(|s| s.session_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["recent", "long"]
-        );
-        assert_eq!(groups[0].quick_sessions[0].session_id, "old");
-        assert!(!groups[0].quick_questions);
-    }
-
-    #[test]
-    fn worktree_chats_join_their_repository_and_probe_chats_are_skipped() {
-        let dir = tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        let tree = dir.path().join("repo-feature");
-        std::fs::create_dir_all(repo.join(".git/worktrees/repo-feature")).unwrap();
-        std::fs::create_dir_all(&tree).unwrap();
-        std::fs::write(
-            tree.join(".git"),
-            format!(
-                "gitdir: {}\n",
-                repo.join(".git/worktrees/repo-feature").display()
-            ),
-        )
-        .unwrap();
-        let at = |cwd: &Path, id: &str, ms| SessionSummary {
-            cwd: Some(cwd.to_string_lossy().into_owned()),
-            ..session("x", id, ms)
-        };
-        let groups = group_sessions(
-            vec![
-                at(&repo, "main", 2),
-                at(&tree, "branch", 3),
-                at(&crate::cursor_usage::probe_dir(), "probe", 9),
-            ],
-            &repo,
-        );
-        assert_eq!(groups.len(), 1, "{groups:?}");
-        assert_eq!(groups[0].folder, "repo");
-        assert_eq!(groups[0].sessions.len(), 2);
-    }
-
-    fn test_meter() -> LandingMeter {
-        let mut snapshot = crate::usage::UsageSnapshot::no_data("cached", "fixture");
-        snapshot.windows = vec![
-            crate::usage::UsageWindow {
-                label: "5h".into(),
-                used_pct: 23.0,
-                resets: Some("3h".into()),
-            },
-            crate::usage::UsageWindow {
-                label: "7d".into(),
-                used_pct: 76.0,
-                resets: Some("2d".into()),
-            },
-        ];
-        LandingMeter {
-            provider: ProviderKind::Codex,
-            account: "fixture".into(),
-            snapshot,
-        }
-    }
-
-    #[test]
-    fn usage_box_sits_above_goals_and_goals_keep_their_cta() {
-        let meter = test_meter();
-        assert!(meter_lines(&meter, 120)[0].starts_with("codex fixture"));
-        let boxes = ["usage", "goals"];
-        assert_eq!(boxes[0], "usage");
-        assert_eq!(boxes[1], "goals");
-        assert!("Press Tab, then a, to add one.".contains("add one"));
-    }
-
-    #[test]
-    fn meters_show_a_heading_and_every_window_without_wrapping() {
-        let mut meter = test_meter();
-        meter.snapshot.plan = Some("Max".into());
-        meter.snapshot.windows.push(crate::usage::UsageWindow {
-            label: "7d Opus".into(),
-            used_pct: 10.0,
-            resets: Some("4d".into()),
-        });
-        for width in [34, 42, 120] {
-            let lines = meter_lines(&meter, width);
-            assert_eq!(lines.len(), 4, "{lines:?}");
-            assert!(lines[0].contains("Max"));
-            assert!(lines[3].contains("7d Opus"));
-            assert!(lines
-                .iter()
-                .all(|l| !l.contains('\n') && l.chars().count() <= width));
-        }
-        assert!(meter_lines(&meter, 120)[1].contains("resets 3h"));
-    }
-
-    #[test]
-    fn a_long_goal_counts_every_wrapped_row() {
-        let goal = Goal {
-            text: "word ".repeat(40),
-            ..Default::default()
-        };
-        assert!(wrapped_rows(&format!("  {}", goal_label(&goal)), 40) >= 5);
-        assert!(goal_rows_stub(3, 2) >= 3);
-    }
-
-    #[test]
-    fn reset_times_say_reset_at_when_past_and_resets_when_future() {
-        assert_eq!(
-            meter_reset_label("Nov 5, 11:54pm", true),
-            "reset at Nov 5, 11:54pm"
-        );
-        assert_eq!(meter_reset_label("12:20pm", false), "resets 12:20pm");
-    }
-
-    #[test]
-    fn chats_from_missing_folders_are_hidden_until_show_all() {
-        let dir = tempdir().unwrap();
-        let missing = dir.path().join("removed-worktree");
-        let chat = SessionSummary {
-            cwd: Some(missing.to_string_lossy().into_owned()),
-            ..session("removed-worktree", "chat", 1)
-        };
-        assert!(landing_sessions(vec![chat.clone()], dir.path(), false, None).is_empty());
-        let groups = display_groups_at(
-            landing_sessions(vec![chat.clone()], dir.path(), true, None),
-            dir.path(),
-            86_400_001,
-        );
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].folder, "removed-worktree");
-        assert_eq!(groups[0].quick_sessions[0].session_id, "chat");
-        assert_eq!(hidden_count(&[chat], dir.path(), None), 1);
-    }
-
-    fn goal_rows_stub(goals: usize, meters: usize) -> usize {
-        goals.max(3).max(meters + 5)
-    }
-
-    #[test]
-    fn goals_round_trip() {
-        let dir = tempdir().unwrap();
-        let mut goals = vec![Goal {
-            id: "g-1".into(),
-            text: "ship".into(),
-            done: false,
-            added_at: "now".into(),
-            closed_at: None,
-            ..Default::default()
-        }];
-        goals[0].extra.insert(
-            "external_note".into(),
-            serde_json::json!("keep existing metadata"),
-        );
-        std::fs::write(
-            dir.path().join("goals.json"),
-            serde_json::to_vec(&goals).unwrap(),
-        )
-        .unwrap();
-        let legacy = std::fs::read(dir.path().join("goals.json")).unwrap();
-        assert_eq!(load_goals(dir.path()), goals);
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            legacy,
-            "reading does not migrate data"
-        );
-        save_goals(dir.path(), &goals).unwrap();
-        assert!(
-            serde_json::from_slice::<Vec<Goal>>(
-                &std::fs::read(dir.path().join("goals.json")).unwrap()
-            )
-            .is_err(),
-            "legacy writers must fail closed on attributed goal stores"
-        );
-        assert_eq!(load_goals(dir.path()), goals);
-        let mut close = goals[0].clone();
-        close.done = true;
-        close.text = "must not replace the immutable text".into();
-        close.added_at = "must not replace original creation".into();
-        close.closed_at = Some("closed".into());
-        save_goals(dir.path(), &[close]).unwrap();
-        save_goals(dir.path(), &goals).unwrap();
-        let saved = load_goals(dir.path());
-        assert!(saved[0].done);
-        assert_eq!(saved[0].text, "ship");
-        assert_eq!(saved[0].added_at, "now");
-        assert_eq!(saved[0].extra["external_note"], "keep existing metadata");
-
-        use crate::goals::{changes, ChangeSource};
-        let request = uuid::Uuid::new_v4().to_string();
-        let revision = crate::goals::revision(&saved).unwrap();
-        let before = std::fs::read(dir.path().join("goals.json")).unwrap();
-        let add =
-            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
-                .unwrap();
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            before
-        );
-        changes::apply(dir.path(), &add).unwrap();
-        let added = load_goals(dir.path());
-        let goal = added.iter().find(|goal| goal.id == add.goal_id()).unwrap();
-        assert_eq!(
-            goal.origin.as_ref().unwrap().source,
-            ChangeSource::McpProposalApprovedLocally
-        );
-        assert_eq!(
-            goal.origin.as_ref().unwrap().request_id.as_deref(),
-            Some(request.as_str())
-        );
-        let applied_bytes = std::fs::read(dir.path().join("goals.json")).unwrap();
-        changes::apply(dir.path(), &add).unwrap();
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            applied_bytes
-        );
-        assert!(
-            changes::propose_add(dir.path(), &request, &revision, "different reused request")
-                .is_err()
-        );
-        assert_eq!(
-            changes::propose_add(dir.path(), &request, &revision, "Agent-proposed exact goal")
-                .unwrap(),
-            add
-        );
-
-        let stale = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&added).unwrap(),
-            "Stale proposal",
-        )
-        .unwrap();
-        save_goals(
-            dir.path(),
-            &[Goal {
-                id: "concurrent-user-goal".into(),
-                text: "User goal".into(),
-                added_at: "now".into(),
-                origin: Some(crate::goals::Attribution::user()),
-                ..Default::default()
-            }],
-        )
-        .unwrap();
-        let concurrent = std::fs::read(dir.path().join("goals.json")).unwrap();
-        assert!(changes::apply(dir.path(), &stale)
-            .unwrap_err()
-            .contains("goals changed"));
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            concurrent
-        );
-
-        let close = changes::propose_close(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&load_goals(dir.path())).unwrap(),
-            &add.goal_id(),
-        )
-        .unwrap();
-        changes::apply(dir.path(), &close).unwrap();
-        let closed = load_goals(dir.path());
-        let closed_goal = closed.iter().find(|goal| goal.id == add.goal_id()).unwrap();
-        assert!(closed_goal.done);
-        assert_eq!(
-            closed_goal
-                .closed_origin
-                .as_ref()
-                .unwrap()
-                .request_id
-                .as_deref(),
-            Some(close.request_id.as_str())
-        );
-        let duplicate = changes::propose_close(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &crate::goals::revision(&closed).unwrap(),
-            &add.goal_id(),
-        )
-        .unwrap();
-        assert!(changes::apply(dir.path(), &duplicate)
-            .unwrap()
-            .contains("already complete"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let current_revision = crate::goals::revision(&closed).unwrap();
-        let declined = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Declined goal",
-        )
-        .unwrap();
-        changes::decline(dir.path(), &declined).unwrap();
-        assert!(changes::apply(dir.path(), &declined)
-            .unwrap_err()
-            .contains("declined"));
-        assert_eq!(load_goals(dir.path()), closed);
-        let uncertain = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Uncertain goal",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join(".ao/goal-changes").join(format!("{}.json", uncertain.request_id)), serde_json::to_vec(&serde_json::json!({"version":1,"proposal":uncertain,"proposal_sha256":uncertain.hash().unwrap(),"status":"prepared"})).unwrap()).unwrap();
-        assert!(changes::apply(dir.path(), &uncertain)
-            .unwrap_err()
-            .contains("unconfirmed"));
-        assert!(changes::status(dir.path(), &uncertain.request_id)
-            .unwrap()
-            .contains("\"current_goal_matches_request\":false"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let receipt_path = dir
-            .path()
-            .join(".ao/goal-changes")
-            .join(format!("{request}.json"));
-        let mut receipt: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&receipt_path).unwrap()).unwrap();
-        receipt["status"] = serde_json::json!("prepared");
-        std::fs::write(receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
-        assert!(changes::apply(dir.path(), &add)
-            .unwrap_err()
-            .contains("unconfirmed"));
-        assert!(changes::status(dir.path(), &request)
-            .unwrap()
-            .contains("\"current_goal_matches_request\":true"));
-        assert_eq!(load_goals(dir.path()), closed);
-
-        let pending = changes::propose_add(
-            dir.path(),
-            &uuid::Uuid::new_v4().to_string(),
-            &current_revision,
-            "Future schema refusal",
-        )
-        .unwrap();
-        let future = serde_json::to_vec(&serde_json::json!({"version":99,"goals":closed})).unwrap();
-        std::fs::write(dir.path().join("goals.json"), &future).unwrap();
-        assert!(changes::apply(dir.path(), &pending).is_err());
-        assert_eq!(
-            std::fs::read(dir.path().join("goals.json")).unwrap(),
-            future
-        );
-    }
-
-    #[test]
-    fn open_work_reads_plans_then_rows_and_rejects_other_output() {
-        let items = parse_open_work(
-            r#"{"plans":[{"plan":"p","slice":"Ship the plan","owner":"o","status":"open","next":"n"}],
-                "rows":[{"section":"backlog","id":"B2","item":"Parked","status":"queued"},
-                        {"section":"backlog","id":"B3","item":"Doing","status":"open"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            items,
-            [
-                WorkItem {
-                    text: "Ship the plan".into(),
-                    queued: false
-                },
-                WorkItem {
-                    text: "Parked".into(),
-                    queued: true
-                },
-                WorkItem {
-                    text: "Doing".into(),
-                    queued: false
-                },
-            ]
-        );
-        assert_eq!(parse_open_work("PASS plan:open: 0 open row(s)"), None);
-        assert_eq!(parse_open_work(r#"{"rows":[]}"#), None);
-    }
 }

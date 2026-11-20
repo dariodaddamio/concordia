@@ -149,12 +149,12 @@ impl Job {
     pub(super) fn workspace_delivery_notice(&self) -> Option<String> {
         let request = self.workspace.as_ref()?;
         let managed = request.binding.managed.as_ref()?;
-        Some(format!("Managed worktree {}: {}\nResult only: delivery does not integrate edits into the owner's workspace. Inspect an explicit integration receipt to establish the current tree. Task completion does not authorize integration or retirement.", managed.id, request.binding.execution.display()))
+        Some(format!("Managed worktree {} revision {}: {}\nExact review handoff for this worker workspace: /worktree review {} integrate\nResult only: delivery does not integrate edits into the owner's workspace. Review reports changed file/object identities and repository-configured checks; inspect its exact receipt before integration. Task completion does not authorize integration or retirement.", managed.id, managed.revision, request.binding.execution.display(), managed.id))
     }
 
     pub fn workspace_summary(&self) -> String {
         let Some(request) = &self.workspace else {
-            return "Workspace: legacy/unmanaged reservation unavailable".into();
+            return "Workspace: unmanaged reservation unavailable".into();
         };
         let binding = request
             .binding

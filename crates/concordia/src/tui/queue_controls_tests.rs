@@ -65,7 +65,7 @@ fn slash_resume_rejects_empty_queue_without_changing_state() {
         vec!["queue is empty - add a prompt with Tab before resuming"]
     );
     assert!(app.queue.paused);
-    assert!(!app.queue.advance);
+    assert!(!app.queue.dispatch.is_automatic());
     assert_eq!(app.editor.text(), "keep this draft");
 }
 
@@ -81,25 +81,25 @@ fn resume_defers_during_active_turn_and_rejects_cancellation_or_inline_edit() {
         vec!["queue resumed - it will continue after the current turn"]
     );
     assert!(!app.queue.paused);
-    assert!(app.queue.advance);
+    assert!(app.queue.dispatch.is_automatic());
 
     app.queue.paused = true;
-    app.queue.advance = false;
+    app.queue.dispatch.clear_automatic();
     app.cancel_requested = true;
     assert_eq!(
         queue_controls::resume(&mut app),
         vec!["queue remains paused while cancellation finishes"]
     );
     assert!(app.queue.paused);
-    assert!(!app.queue.advance);
+    assert!(!app.queue.dispatch.is_automatic());
 
     app.cancel_requested = false;
-    app.queue.edit = Some(Editor::default());
+    app.begin_queue_edit(Editor::default());
     assert_eq!(
         queue_controls::resume(&mut app),
         vec!["save or cancel the queued edit before resuming (Ctrl+R)"]
     );
     assert!(app.queue.paused);
-    assert!(!app.queue.advance);
+    assert!(!app.queue.dispatch.is_automatic());
     assert!(app.queue.edit.is_some());
 }

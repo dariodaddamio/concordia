@@ -403,19 +403,24 @@ impl App {
                 detail: entry
                     .candidate
                     .line
-                    .map(|line| format!("line {line} \u{b7} F4 actions"))
+                    .map(|line| format!("line {line}"))
                     .unwrap_or_else(|| {
                         if entry.directory {
                             format!("{} · open folder", entry.origin)
                         } else {
-                            format!("{} · F4 actions", entry.origin)
+                            entry.origin.to_string()
                         }
                     }),
             })
             .collect();
         if rows.is_empty() {
             rows.push(PickerRow {
-                id: "none".into(),
+                id: if self.related_files.loading() {
+                    "none".into()
+                } else {
+                    // Empty filter / no files: muted non-selectable hint, not a selected row.
+                    "files:hint".into()
+                },
                 label: if self.related_files.loading() {
                     "Finding files mentioned in this chat..."
                 } else {
@@ -431,7 +436,8 @@ impl App {
             detail: "Structured native output records · inspect source and current-file actions"
                 .into(),
         });
-        self.show_picker(
+        let select = rows.iter().position(|row| !row.disabled()).unwrap_or(0);
+        self.show_picker_at(
             PickerKind::Files,
             format!(
                 "Open · {} · files in this chat + recent + workspace",
@@ -443,6 +449,7 @@ impl App {
             ),
             rows,
             true,
+            select,
         );
     }
 

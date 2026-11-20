@@ -66,7 +66,7 @@ fn ctrl_down_keeps_inline_edit_open_until_explicit_save_or_cancel() {
     app.queue.focused = true;
     let mut edit = Editor::default();
     edit.set_text("unsaved change");
-    app.queue.edit = Some(edit);
+    app.begin_queue_edit(edit);
 
     assert!(super::queue_focus::handle_key(
         &mut app,
@@ -74,21 +74,8 @@ fn ctrl_down_keeps_inline_edit_open_until_explicit_save_or_cancel() {
     ));
 
     assert!(app.queue.focused);
-    assert_eq!(app.queue.edit.as_ref().unwrap().text(), "unsaved change");
-}
-
-#[test]
-fn focus_hint_describes_both_navigation_and_active_edit_guard() {
-    let (mut app, _dir) = app();
-    assert_eq!(super::queue_focus::focus_hint(&app), None);
-    app.queue.focused = true;
     assert_eq!(
-        super::queue_focus::focus_hint(&app),
-        Some("Ctrl+Down: draft; Ctrl+Up: queue")
-    );
-    app.queue.edit = Some(Editor::default());
-    assert_eq!(
-        super::queue_focus::focus_hint(&app),
-        Some("Ctrl+Down: save/cancel edit first")
+        app.queue.edit.as_ref().unwrap().editor.text(),
+        "unsaved change"
     );
 }

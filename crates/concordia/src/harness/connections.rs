@@ -32,6 +32,9 @@ pub struct Connection {
     pub entries: Vec<Entry>,
     #[serde(default)]
     pub has_pinned_decisions: bool,
+    /// Projects explicitly connected across current and future accounts.
+    #[serde(default)]
+    pub all_account_projects: Vec<String>,
 }
 
 /// Who the entry belongs to; refreshes the stored record when the manifest changed.
@@ -97,9 +100,12 @@ impl ActionTarget {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct File {
     version: u32,
     connections: Vec<Connection>,
+    #[serde(default)]
+    shared_skill_sources: Vec<String>,
 }
 
 fn file(store: &Path) -> PathBuf {
@@ -177,7 +183,13 @@ pub fn identity_matches(
                 && current.manifest_sha256 == receipt.manifest_sha256
         });
     }
-    let Ok(text) = fs::read_to_string(receipt.manifest_path) else {
+    let path = Path::new(receipt.manifest_path);
+    if fs::symlink_metadata(path).map_or(true, |metadata| {
+        !metadata.is_file() || crate::workspaces::linked(&metadata)
+    }) {
+        return false;
+    }
+    let Some(text) = crate::fs_safe::read_text_bounded(path, 256 * 1024) else {
         return false;
     };
     let digest = Sha256::digest(text.as_bytes());
@@ -188,8 +200,14 @@ pub fn identity_matches(
     current == receipt.manifest_sha256
 }
 
-fn path_key(path: &Path) -> String {
-    let key = path.to_string_lossy().replace('\\', "/");
+pub(super) fn path_key(path: &Path) -> String {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let key = absolute.to_string_lossy().replace('\\', "/");
+    let key = if let Some(unc) = key.strip_prefix("//?/UNC/") {
+        format!("//{unc}")
+    } else {
+        key.strip_prefix("//?/").unwrap_or(&key).to_string()
+    };
     let key = key.trim_end_matches('/').to_string();
     if cfg!(windows) {
         key.to_ascii_lowercase()
@@ -200,6 +218,10 @@ fn path_key(path: &Path) -> String {
 
 /// Every connection. Missing file: none. A damaged file is an error, so it is never overwritten.
 pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
+    load_file(store).map(|file| file.connections)
+}
+
+fn load_file(store: &Path) -> Result<File, String> {
     use std::io::Read;
     owned_directory(store, false)?;
     let path = file(store);
@@ -207,13 +229,25 @@ pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
         Ok(metadata) if !metadata.is_file() || crate::workspaces::linked(&metadata) => {
             return Err("harness connections must be a regular owned file".into())
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(File {
+                version: 1,
+                connections: Vec::new(),
+                shared_skill_sources: Vec::new(),
+            })
+        }
         Err(error) => return Err(format!("harness connections metadata unavailable: {error}")),
         Ok(_) => {}
     }
     let file = match fs::File::open(&path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(File {
+                version: 1,
+                connections: Vec::new(),
+                shared_skill_sources: Vec::new(),
+            })
+        }
         Err(e) => return Err(format!("harness connections are unreadable ({e})")),
     };
     if !file
@@ -231,7 +265,8 @@ pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
     }
     serde_json::from_str::<File>(&text)
         .and_then(|f| {
-            if f.version != 1
+            if !matches!(f.version, 1 | 2)
+                || f.shared_skill_sources.len() > 32
                 || f.connections.len() > 512
                 || f.connections
                     .iter()
@@ -241,11 +276,11 @@ pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
                     "unsupported connection version or metadata bounds",
                 ));
             }
-            Ok(f.connections)
+            Ok(f)
         })
         .map_err(|e| {
             format!(
-                "harness connections are unreadable ({e}); fix or delete {}",
+                "harness connections are unreadable ({e}); original retained at {}",
                 path.display()
             )
         })
@@ -297,6 +332,11 @@ fn remove_action_target_locked(store: &Path, target: &ActionTarget) -> Result<bo
             && entry.project == target.project)
     });
     let changed = connection.entries.len() != before;
+    if changed {
+        connection
+            .all_account_projects
+            .retain(|project| project != &target.project);
+    }
     if connection.entries.is_empty() {
         all.retain(|item| item.name != target.name);
     }
@@ -309,17 +349,28 @@ fn remove_action_target_locked(store: &Path, target: &ActionTarget) -> Result<bo
 }
 
 fn save_unlocked(store: &Path, connections: Vec<Connection>) -> Result<(), String> {
+    let sources = load_file(store)?.shared_skill_sources;
+    save_file_unlocked(store, connections, sources)
+}
+
+fn save_file_unlocked(
+    store: &Path,
+    connections: Vec<Connection>,
+    shared_skill_sources: Vec<String>,
+) -> Result<(), String> {
     if connections.len() > 512
-        || connections
-            .iter()
-            .any(|connection| connection.entries.len() > 256)
+        || shared_skill_sources.len() > 32
+        || connections.iter().any(|connection| {
+            connection.entries.len() > 256 || connection.all_account_projects.len() > 256
+        })
     {
         return Err("harness connection metadata bounds reached; original retained".into());
     }
     let path = file(store);
     let body = serde_json::to_vec_pretty(&File {
-        version: 1,
+        version: 2,
         connections,
+        shared_skill_sources,
     })
     .map_err(|e| e.to_string())?;
     if body.len() > 2 * 1024 * 1024 {
@@ -330,6 +381,34 @@ fn save_unlocked(store: &Path, connections: Vec<Connection>) -> Result<(), Strin
     }
     crate::state_io::write_atomic(&path, &body)
         .map_err(|e| format!("could not save harness connections: {e}"))
+}
+
+pub fn shared_skill_sources(store: &Path) -> Result<Vec<String>, String> {
+    load_file(store).map(|file| file.shared_skill_sources)
+}
+
+pub fn unshare_skill_source(store: &Path, source: &Path) -> Result<(), String> {
+    transaction(store, || {
+        let mut file = load_file(store)?;
+        file.shared_skill_sources
+            .retain(|path| path_key(Path::new(path)) != path_key(source));
+        save_file_unlocked(store, file.connections, file.shared_skill_sources)
+    })
+}
+
+pub fn share_skill_source(store: &Path, source: &Path) -> Result<(), String> {
+    transaction(store, || {
+        let mut file = load_file(store)?;
+        if !file
+            .shared_skill_sources
+            .iter()
+            .any(|path| path_key(Path::new(path)) == path_key(source))
+        {
+            file.shared_skill_sources
+                .push(source.to_string_lossy().into_owned());
+        }
+        save_file_unlocked(store, file.connections, file.shared_skill_sources)
+    })
 }
 
 fn same_target(a: &Entry, b: &Entry) -> bool {
@@ -387,11 +466,17 @@ fn record_with_pins_unlocked(
                 skill: None,
                 entries: Vec::new(),
                 has_pinned_decisions: false,
+                all_account_projects: Vec::new(),
             });
             all.len() - 1
         }
     };
     let connection = &mut all[at];
+    if connection.manifest_sha256 != identity.manifest_sha256
+        || connection.manifest_path != identity.manifest_path
+    {
+        connection.all_account_projects.clear();
+    }
     connection.version = identity.version.map(str::to_string);
     connection.manifest_path = identity.manifest_path.into();
     connection.manifest_sha256 = identity.manifest_sha256.into();
@@ -400,6 +485,25 @@ fn record_with_pins_unlocked(
     connection.entries.retain(|e| !same_target(e, &entry));
     connection.entries.push(entry);
     save_unlocked(store, all)
+}
+
+pub fn share_project(store: &Path, name: &str, project: &Path) -> Result<(), String> {
+    transaction(store, || {
+        let mut all = load(store)?;
+        let connection = all
+            .iter_mut()
+            .find(|c| c.name == name)
+            .ok_or("connection was not recorded")?;
+        let project = project.to_string_lossy().into_owned();
+        if !connection
+            .all_account_projects
+            .iter()
+            .any(|path| path_key(Path::new(path)) == path_key(Path::new(&project)))
+        {
+            connection.all_account_projects.push(project);
+        }
+        save_unlocked(store, all)
+    })
 }
 
 /// Update the verify result of one existing entry.

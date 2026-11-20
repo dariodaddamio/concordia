@@ -67,6 +67,8 @@ pub fn parse(text: &str) -> Option<Vec<PathBuf>> {
                             | "md"
                             | "markdown"
                             | "json"
+                            | "csv"
+                            | "svg"
                             | "pdf"
                     )
                 })

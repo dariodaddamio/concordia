@@ -22,6 +22,8 @@ struct Snapshot {
     stamp: Stamp,
     text: String,
     colors: syntax::Runs,
+    formatted: Option<String>,
+    preview_error: Option<String>,
 }
 type ReadJob = std::thread::JoinHandle<Result<Snapshot, String>>;
 type WatchJob = std::thread::JoinHandle<Vec<(u32, u64, Option<Stamp>)>>;
@@ -37,6 +39,7 @@ fn read_snapshot(path: &Path) -> Result<Snapshot, String> {
     let text = read_text(path)?;
     let lines = display_lines(&text)?;
     let colors = syntax::highlight(path, &text);
+    let (formatted, preview_error) = edit::preview_text(path, &text);
     if stamp(path) != Some(before) {
         return Err("file changed while reading; press r to reload".into());
     }
@@ -45,7 +48,20 @@ fn read_snapshot(path: &Path) -> Result<Snapshot, String> {
         stamp: before,
         text,
         colors,
+        formatted,
+        preview_error,
     })
+}
+
+fn raster_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
+            )
+        })
 }
 
 pub(super) struct Pane {
@@ -264,8 +280,11 @@ impl Workspace {
 
     pub fn preview(&mut self, id: u32, formatted: bool) {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
-            edit::refresh_preview(pane);
-            pane.formatted_mode = formatted;
+            if pane.formatted.is_some() {
+                pane.formatted_mode = formatted;
+                pane.scroll = 0;
+                pane.column = 0;
+            }
         }
     }
     fn reset_cuts(&mut self) {
@@ -275,41 +294,6 @@ impl Workspace {
 
     pub fn open(&mut self, file: file_links::ResolvedFile) -> Result<(), String> {
         self.open_content(file, None)
-    }
-
-    pub fn open_verified(
-        &mut self,
-        verified: crate::workspace_search::VerifiedHit,
-    ) -> Result<(), String> {
-        if self.panes.iter().any(|pane| pane.path == verified.hit.path) {
-            return Err(
-                "file is already open; close its pane before opening a search snapshot".into(),
-            );
-        }
-        let prefix = verified
-            .text
-            .get(..verified.hit.range.start)
-            .ok_or("search result byte location is invalid")?;
-        let line_prefix = prefix.rsplit('\n').next().unwrap_or(prefix);
-        let display_column = line_prefix
-            .chars()
-            .map(crate::file_document::display_width)
-            .sum::<usize>();
-        let file = file_links::ResolvedFile {
-            path: verified.hit.path,
-            line: Some(verified.hit.line),
-            column: Some(display_column.saturating_add(1) as u32),
-        };
-        let stamp = Stamp {
-            len: verified.text.len() as u64,
-            modified: verified.modified,
-        };
-        self.open_content(file, Some((verified.text, stamp)))?;
-        // Search locations refer to raw source lines, not formatted Markdown/JSON rows.
-        if let Some(pane) = self.panes.last_mut() {
-            pane.formatted_mode = false;
-        }
-        Ok(())
     }
 
     fn open_content(
@@ -356,14 +340,27 @@ impl Workspace {
         let job = std::thread::Builder::new()
             .name("concordia-file-read".into())
             .spawn(move || {
+                if raster_path(&path) {
+                    return Ok(Snapshot {
+                        lines: Vec::new(),
+                        stamp: stamp(&path).ok_or("file is unavailable")?,
+                        text: String::new(),
+                        colors: Vec::new(),
+                        formatted: None,
+                        preview_error: None,
+                    });
+                }
                 if let Some((text, stamp)) = text {
                     let lines = display_lines(&text)?;
                     let colors = syntax::highlight(&path, &text);
+                    let (formatted, preview_error) = edit::preview_text(&path, &text);
                     Ok(Snapshot {
                         lines,
                         stamp,
                         text,
                         colors,
+                        formatted,
+                        preview_error,
                     })
                 } else {
                     read_snapshot(&path)
@@ -460,7 +457,7 @@ impl Workspace {
                 }
             }
         }
-        edit::poll(self);
+        visible_change |= edit::poll(self);
 
         if self.watch.as_ref().is_some_and(|job| job.is_finished()) {
             visible_change = true;
@@ -501,46 +498,6 @@ impl Workspace {
         }
         visible_change
     }
-    pub fn replacement_blockers(&self) -> Vec<PathBuf> {
-        self.panes
-            .iter()
-            .filter(|pane| {
-                pane.loading
-                    || pane.saving
-                    || pane
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.dirty())
-            })
-            .map(|pane| pane.path.clone())
-            .collect()
-    }
-    pub fn replacement_finished(
-        &mut self,
-        receipt: &crate::workspace_search::replacement::Receipt,
-    ) {
-        let ids = self
-            .panes
-            .iter()
-            .filter(|pane| {
-                !pane.saving
-                    && !pane
-                        .document
-                        .as_ref()
-                        .is_some_and(|document| document.dirty())
-                    && receipt.files.iter().any(|file| {
-                        crate::workspaces::same_key(
-                            &crate::workspaces::path_key(&file.path),
-                            &crate::workspaces::path_key(&pane.path),
-                        )
-                    })
-            })
-            .map(|pane| pane.id)
-            .collect::<Vec<_>>();
-        for id in ids {
-            let _ = self.reload(id);
-        }
-    }
     fn reload(&mut self, id: u32) -> Result<(), String> {
         if let Some(pane) = self.panes.iter_mut().find(|p| p.id == id) {
             if pane.saving || pane.document.as_ref().is_some_and(|d| d.dirty()) {
@@ -577,7 +534,25 @@ impl Workspace {
 }
 
 impl Pane {
+    fn csv_formatted(&self) -> bool {
+        self.formatted_mode
+            && self.formatted.is_some()
+            && self
+                .path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+    }
     fn measure_columns(&mut self) -> usize {
+        if self.csv_formatted() {
+            return self
+                .formatted
+                .as_deref()
+                .unwrap_or_default()
+                .lines()
+                .map(|line| line.chars().map(crate::file_document::display_width).sum())
+                .max()
+                .unwrap_or(0);
+        }
         if let Some(doc) = &self.document {
             if self
                 .horizontal_measure
@@ -635,7 +610,11 @@ impl Pane {
     }
 
     fn row_count(&self) -> usize {
-        if self.formatted_mode && self.formatted.is_some() {
+        if self.csv_formatted() {
+            self.formatted
+                .as_deref()
+                .map_or(0, |text| text.lines().count())
+        } else if self.formatted_mode && self.formatted.is_some() {
             self.view.rows.len()
         } else {
             self.document
@@ -704,7 +683,6 @@ impl Pane {
         }
     }
     fn toggle_mode(&mut self) {
-        edit::refresh_preview(self);
         if self.formatted.is_some() {
             self.formatted_mode = !self.formatted_mode;
             self.scroll = 0;
@@ -723,10 +701,10 @@ fn read_text(path: &Path) -> Result<String, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("file read: {e}"))?;
     if bytes.len() as u64 > MAX_BYTES {
-        return Err("preview limited to 2 MiB; use /edit FILE".into());
+        return Err("preview limited to 2 MiB; use a configured editor".into());
     }
-    let text =
-        String::from_utf8(bytes).map_err(|_| "preview requires UTF-8 text; use /edit FILE")?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| "preview requires UTF-8 text; use a configured editor")?;
     if text.contains('\0') {
         return Err("binary files cannot be previewed".into());
     }
@@ -741,7 +719,7 @@ fn display_lines(text: &str) -> Result<Vec<String>, String> {
     let (text, _) = super::text::terminal_text(text);
     for line in text.lines() {
         if lines.len() >= MAX_LINES {
-            return Err("preview limited to 50000 lines; use /edit FILE".into());
+            return Err("preview limited to 50000 lines; use a configured editor".into());
         }
         lines.push(
             line.chars()
@@ -867,6 +845,15 @@ pub(super) fn draw_in(f: &mut Frame, app: &mut App, screen: Rect) -> Rect {
             state.editor.error.as_ref(),
         );
     }
+    let raster_panes = state
+        .panes
+        .iter()
+        .filter(|pane| !pane.detached)
+        .map(|pane| (pane.area, pane.path.clone()))
+        .collect::<Vec<_>>();
+    for (area, path) in raster_panes {
+        crate::tui::raster::draw_file_pane(f, area, app, &path);
+    }
     chat
 }
 
@@ -885,6 +872,16 @@ fn draw_pane(
     } else {
         Color::DarkGray
     });
+    let raster = pane
+        .path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "svg" | "pdf"
+            )
+        });
     let title = format!(
         " #{} {}{} · {} ",
         pane.id,
@@ -894,7 +891,11 @@ fn draw_pane(
             ""
         },
         pane.path.file_name().unwrap_or_default().to_string_lossy(),
-        if pane.raw() { "raw" } else { "preview" }
+        if pane.raw() && !raster {
+            "raw"
+        } else {
+            "preview"
+        }
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -941,7 +942,7 @@ fn draw_pane(
     );
     inner.y += 1;
     inner.height = inner.height.saturating_sub(1);
-    if pane.raw() && !pane.loading {
+    if (pane.raw() || pane.csv_formatted()) && !pane.loading {
         let gutter = if pane.document.is_some() { 5 } else { 0 };
         let width = inner.width.saturating_sub(gutter).max(1);
         pane.horizontal_max = pane.measure_columns().saturating_sub(usize::from(width));
@@ -957,7 +958,24 @@ fn draw_pane(
         vec![Line::raw("Loading…")]
     } else if let Some(error) = pane.error.as_ref().filter(|_| pane.document.is_none()) {
         vec![Line::styled(error.clone(), Style::default().fg(Color::Red))]
+    } else if pane.csv_formatted() {
+        pane.scroll = pane.scroll.min(pane.row_count().saturating_sub(1));
+        pane.formatted
+            .as_deref()
+            .unwrap_or_default()
+            .lines()
+            .skip(pane.scroll)
+            .take(inner.height as usize)
+            .map(|line| {
+                Line::raw(crate::file_document::visible_line(
+                    line,
+                    pane.column,
+                    inner.width as usize,
+                ))
+            })
+            .collect()
     } else if pane.formatted_mode && pane.formatted.is_some() {
+        pane.view.link_root = pane.path.parent().map(Path::to_path_buf);
         pane.view.rebuild(
             &[TBlock {
                 identity: None,
@@ -972,6 +990,7 @@ fn draw_pane(
                     .is_some_and(|e| e.eq_ignore_ascii_case("json")),
                 runs: &[],
                 header_files: &[],
+                decor_prefix: 0,
             }],
             inner.width.max(1) as usize,
             inner.height as usize,
@@ -1062,28 +1081,13 @@ fn draw_pane(
                 error.clone()
             } else if pane.searching {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
-            } else if pane.raw() {
-                if pane.detached {
-                    "Ctrl+Shift+D dock · Ctrl+S save · Ctrl+F find".into()
-                } else if standalone {
-                    "Ctrl+Q close · Ctrl+S save · Ctrl+F find".into()
-                } else {
-                    "Esc chat · Ctrl+S save · Ctrl+F find".into()
-                }
+            } else if pane.raw() || pane.csv_formatted() {
+                // Key names belong in the footer only (design-system).
+                String::new()
             } else if pane.query.is_empty() {
-                if pane.detached {
-                    "Ctrl+Shift+D dock · Alt+V edit · / find · r reload".into()
-                } else if standalone {
-                    "Ctrl+Q close · Alt+V edit · / find · r reload".into()
-                } else {
-                    "Esc chat · Alt+V edit · / find · r reload".into()
-                }
+                String::new()
             } else {
-                format!(
-                    "/{}  {} matches \u{b7} n/N next/prev",
-                    pane.query,
-                    pane.matches.len()
-                )
+                format!("/{}  {} matches", pane.query, pane.matches.len())
             })
             .style(style),
             Rect {
@@ -1110,6 +1114,17 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
                 app.flash(error);
             }
             return true;
+        }
+    }
+    // Browser-tab chords belong to the window. Never swallow them here — including when
+    // panes are open but the chat has focus (focused == None). Ctrl+W is the only chord
+    // run.rs defers to a focused pane; docked panes still do not own it.
+    match tabs::action_for(*key) {
+        tabs::TabAction::Unhandled => {}
+        tabs::TabAction::Close if app.workspace.focused.is_some() => {}
+        action => {
+            app.tab_request = Some(action);
+            return false;
         }
     }
     if edit::handle_key(app, key) {
@@ -1266,12 +1281,9 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
         }
         return true;
     }
-    if let Some(pane) = app
-        .workspace
-        .panes
-        .iter_mut()
-        .find(|pane| pane.raw() && contains(pane.area, mouse.column, mouse.row))
-    {
+    if let Some(pane) = app.workspace.panes.iter_mut().find(|pane| {
+        (pane.raw() || pane.csv_formatted()) && contains(pane.area, mouse.column, mouse.row)
+    }) {
         let forward = match mouse.kind {
             MouseEventKind::ScrollRight => Some(true),
             MouseEventKind::ScrollLeft => Some(false),
@@ -1515,7 +1527,12 @@ pub(super) fn handle_window_event(app: &mut App, id: u32, event: Event) -> bool 
     app.workspace.focused = Some(id);
     let handled = match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => {
-            if handle_key(app, &key) {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('w' | 'W'))
+            {
+                app.workspace.close(id);
+                true
+            } else if handle_key(app, &key) {
                 true
             } else if key.modifiers.contains(KeyModifiers::CONTROL)
                 && matches!(key.code, KeyCode::Char('c' | 'C'))

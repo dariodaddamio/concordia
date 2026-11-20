@@ -437,27 +437,13 @@ fn tools(value: &Value, provider: ProviderKind) -> Vec<Tool> {
             .as_str()
             .into_iter()
             .collect::<Vec<_>>(),
-        ProviderKind::Cursor => value["params"]["update"]["toolCallId"]
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => value["params"]
+            ["update"]["toolCallId"]
             .as_str()
             .into_iter()
             .collect(),
         ProviderKind::Claude => {
-            value["message"]["content"]
-                .as_array()
-                .map_or(Vec::new(), |blocks| {
-                    blocks
-                        .iter()
-                        .filter_map(|block| {
-                            if block["type"] == "tool_use" {
-                                block["id"].as_str()
-                            } else if block["type"] == "tool_result" {
-                                block["tool_use_id"].as_str()
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                })
+            unreachable!("provider tool records handled above")
         }
     };
     ids.into_iter()
@@ -484,7 +470,9 @@ fn unavailable_role(value: &Value, provider: ProviderKind, session: &str) -> Opt
     let payload = match provider {
         ProviderKind::Codex => &value["payload"],
         ProviderKind::Claude => &value["message"],
-        ProviderKind::Cursor => &value["params"]["update"],
+        ProviderKind::Cursor | ProviderKind::Grok | ProviderKind::Opencode => {
+            &value["params"]["update"]
+        }
     };
     let role = match provider {
         ProviderKind::Codex if value["type"] == "response_item" => payload["role"].as_str()?,
@@ -571,12 +559,12 @@ fn scan(
     let mut reader = BufReader::with_capacity(CHUNK, (&mut file).take(delta));
     let mut offset = scope.watermark;
     let mut records = Vec::new();
-    let mut fallback = Vec::new();
+    let mut event_records = Vec::new();
     while let Some(raw) = record(&mut reader)? {
         let value = project(&raw)?;
         let unavailable =
             unavailable_role(&value, scope.binding.provider, &scope.binding.session_id);
-        if let Some((role, is_fallback)) = unavailable
+        if let Some((role, is_event_message)) = unavailable
             .as_ref()
             .map(|role| (role.clone(), false))
             .or_else(|| message_role(&value, scope.binding.provider, &scope.binding.session_id))
@@ -595,12 +583,12 @@ fn scan(
                 tools,
                 text_unavailable: unavailable.is_some(),
             };
-            if is_fallback {
-                fallback.push(record);
+            if is_event_message {
+                event_records.push(record);
             } else {
                 records.push(record);
             }
-            if records.len() + fallback.len() > RECORDS {
+            if records.len() + event_records.len() > RECORDS {
                 return Err("native capture exceeds its 8192-record budget".into());
             }
         }
@@ -611,7 +599,7 @@ fn scan(
         return Err("native capture source length changed during scan".into());
     }
     if !records.iter().any(|record| record.span.role != "tool") {
-        records.extend(fallback);
+        records.extend(event_records);
         records.sort_by_key(|record| record.span.start);
     }
     let snapshot = Manifest {
@@ -956,23 +944,6 @@ pub(super) fn hydrate(root: &Path, reference: &Reference) -> Result<String, Stri
     }
 }
 
-pub(super) fn historical(
-    root: &Path,
-    binding: &Binding,
-    role: &str,
-    expected: &str,
-) -> Result<Reference, String> {
-    // Explicit historical intent; this constructor is never used to authorize resume/fresh launch.
-    let scope = fresh(root, binding)?;
-    let (_, mut manifest) = snapshot(root, &scope)?;
-    manifest.historical = true;
-    let scope = CaptureScope {
-        sealed: Some(save(root, &manifest)?),
-        ..scope
-    };
-    text(root, &scope, role, expected)
-}
-
 pub(super) fn historical_scope(root: &Path, source_index: &str) -> Result<CaptureScope, String> {
     let mut source = super::super::load(root, source_index)?;
     let _ = super::super::verify_source(root, source_index)?;
@@ -1130,28 +1101,19 @@ pub(super) fn fixture_proof() {
             .unwrap(),
             "original café"
         );
-        // Existing v1 pointers/scopes still hydrate through their original recent-index path.
-        let old = index_bound(dir.path(), &binding).unwrap();
-        let old_index = super::super::load(dir.path(), &old.id).unwrap();
-        let legacy = CaptureScope {
-            version: 1,
-            binding: binding.clone(),
-            before: Some(old.id),
-            watermark: old_index.source_len,
-            sealed: None,
-        };
-        append(
-            &path,
-            message(provider, "version one remains readable").as_bytes(),
-        );
-        let old_reference =
-            super::capture_text(dir.path(), &legacy, "user", "version one remains readable")
-                .unwrap();
-        assert_eq!(old_reference.version, 1);
-        assert_eq!(
-            super::hydrate_text(dir.path(), &old_reference).unwrap(),
-            "version one remains readable"
-        );
+        // Unsupported historical formats are rejected without changing original sources.
+        let original = fs::read(&path).unwrap();
+        let mut old_scope = sealed.clone();
+        old_scope.version = 1;
+        assert!(super::capture_text(dir.path(), &old_scope, "user", full)
+            .unwrap_err()
+            .contains("unsupported native capture scope format"));
+        let mut old_reference = reference.clone();
+        old_reference.version = 1;
+        assert!(super::hydrate_text(dir.path(), &old_reference)
+            .unwrap_err()
+            .contains("unsupported native reference format"));
+        assert_eq!(fs::read(&path).unwrap(), original);
         // Mutate only the selected large record beyond the identity header.
         let selected_record = manifest
             .records

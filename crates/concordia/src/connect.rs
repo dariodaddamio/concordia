@@ -5,8 +5,7 @@
 //! script. The login command is a constant per provider; the isolated home travels through the
 //! child's environment (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) exactly as it does for chat turns.
 
-use crate::accounts::{is_logged_in, list_all_accounts, profile_home};
-use crate::host::wezterm::find_wezterm;
+use crate::accounts::{is_logged_in, list_all_accounts};
 use crate::store::{upsert_stored_account, ProviderKind, StoredAccount};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
@@ -33,12 +32,9 @@ fn capitalized(p: ProviderKind) -> &'static str {
         ProviderKind::Codex => "Codex",
         ProviderKind::Claude => "Claude",
         ProviderKind::Cursor => "Cursor",
+        ProviderKind::Grok => "Grok Build",
+        ProviderKind::Opencode => "opencode",
     }
-}
-
-/// Legacy per-user dir name for numbered homes (`~/.codex-3`), which concordia discovers read-only.
-fn legacy_dir_name(p: ProviderKind, n: u32) -> String {
-    format!(".{}-{n}", p.as_str())
 }
 
 /// Choose the account slot for a new connection. Pure over disk state; creates nothing.
@@ -64,20 +60,11 @@ pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
     }
 
     let taken: HashSet<&str> = accounts.iter().map(|a| a.account.as_str()).collect();
-    let legacy_base = profile_home();
-    // codex-2 is the built-in second Codex account, so Codex numbering starts at 3.
-    let mut n = if provider == ProviderKind::Codex {
-        3
-    } else {
-        2
-    };
+    let mut n = 1;
     loop {
         let id = format!("{}-{n}", provider.as_str());
         let home = homes.join(&id);
-        let legacy = legacy_base.join(legacy_dir_name(provider, n));
-        let in_use = taken.contains(id.as_str())
-            || legacy.exists()
-            || (home.exists() && is_logged_in(provider, &home));
+        let in_use = taken.contains(id.as_str()) || home.exists();
         if !in_use {
             return Slot {
                 label: format!("{} {n}", capitalized(provider)),
@@ -99,6 +86,82 @@ pub struct LoginPlan {
     pub bin: &'static str,
 }
 
+/// The provider's documented Windows install command, shown before Concordia can run it.
+/// Concordia never downloads a provider binary itself; this is only a user-confirmed handoff
+/// to the provider's own installer or package manager.
+pub fn official_install_command(provider: ProviderKind) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Codex => Some("npm install -g @openai/codex"),
+        ProviderKind::Claude => Some("irm https://claude.ai/install.ps1 | iex"),
+        ProviderKind::Cursor => Some("irm 'https://cursor.com/install?win32=true' | iex"),
+        ProviderKind::Grok | ProviderKind::Opencode => None,
+    }
+}
+
+/// Open the provider's official installer in a visible PowerShell window.
+/// A successful spawn only means the user has control of the installer window; it does not
+/// claim that installation or version compatibility succeeded.
+pub fn install_provider(provider: ProviderKind) -> Result<(), String> {
+    let command = official_install_command(provider).ok_or_else(|| {
+        format!(
+            "no official installer is configured for {}",
+            capitalized(provider)
+        )
+    })?;
+    // `CONCORDIA_INSTALLER_SHELL` swaps the program `start` opens so the spawn path can be
+    // exercised without running a real installer.
+    // Honoured only in a test-control window, so a stray variable cannot redirect a real install.
+    let shell = std::env::var_os("CONCORDIA_TEST_CONTROL")
+        .and_then(|_| crate::provider::bin_override("CONCORDIA_INSTALLER_SHELL"))
+        .unwrap_or_else(|| "powershell.exe".into());
+    open_console(
+        console_command("Concordia installer", &shell, command),
+        &shell,
+    )
+    .map_err(|error| format!("could not open the installer window: {error}"))
+}
+
+/// The process that opens a visible console running `command` in PowerShell.
+/// PowerShell started directly with null stdio had nothing to show or read and exited at once,
+/// so `cmd /c start` gives it a real console. Every argument is a fixed string from the
+/// install/login mapping; none comes from user input. The hidden `cmd` only launches the window.
+fn console_command(title: &str, shell: &str, command: &str) -> Command {
+    let mut process = crate::process_ui::command("cmd.exe");
+    process.args([
+        "/c",
+        "start",
+        title,
+        shell,
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    ]);
+    process
+}
+
+/// Run the `start` launcher. `start` reports success for a missing program, so the shell is
+/// resolved first and a missing one is refused with nothing opened.
+fn open_console(mut launcher: Command, shell: &str) -> Result<(), String> {
+    which::which(shell).map_err(|_| format!("{shell} was not found"))?;
+    launcher
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("the console window did not open ({status})"))
+            }
+        })
+}
+
 /// Plan the native login. `has_bin` reports whether a CLI is on PATH.
 pub fn plan_login(
     provider: ProviderKind,
@@ -115,6 +178,8 @@ pub fn plan_login(
                 ("cursor-agent", "cursor-agent login", None)
             }
         }
+        ProviderKind::Grok => ("grok", "grok login", Some("GROK_HOME")),
+        ProviderKind::Opencode => ("opencode", "opencode auth login", Some("OPENCODE_HOME")),
     };
     if !has_bin(bin) {
         return Err(format!(
@@ -134,43 +199,18 @@ pub fn plan_login(
     })
 }
 
-/// The process to spawn for a plan: WezTerm window when available, else a new console.
-pub fn login_command(plan: &LoginPlan, wezterm: Option<&Path>) -> Command {
-    let ps = ["-NoLogo", "-NoProfile", "-NoExit", "-Command", plan.script];
-    let mut cmd = match wezterm {
-        Some(w) => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new(w); // visible-spawn: provider login is an interactive window.
-            c.args(["start", "--", "powershell.exe"]).args(ps);
-            c
-        }
-        None => {
-            // Provider login must be visible so the user can complete native authentication.
-            let mut c = Command::new("powershell.exe"); // visible-spawn: provider login is interactive.
-            c.args(ps);
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-                c.creation_flags(CREATE_NEW_CONSOLE);
-            }
-            c
-        }
-    };
+/// The process to spawn for a plan: a new visible PowerShell console with the isolated-home
+/// environment, which `start` passes on to the console it opens.
+pub fn login_command(plan: &LoginPlan) -> Command {
+    let mut cmd = console_command("Concordia login", "powershell.exe", plan.script);
     for (k, v) in &plan.env {
         cmd.env(k, v);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
     cmd
 }
 
 fn launch_login(plan: &LoginPlan) -> Result<(), String> {
-    let wez = find_wezterm();
-    login_command(plan, wez.as_deref())
-        .spawn()
-        .map(drop)
+    open_console(login_command(plan), "powershell.exe")
         .map_err(|e| format!("could not open a login window: {e}"))
 }
 
@@ -221,13 +261,18 @@ impl Removable {
 }
 
 fn is_owned_home(state_root: &Path, home: &Path) -> bool {
+    if crate::workspaces::directory_id(&homes_dir(state_root)).is_err()
+        || crate::workspaces::directory_id(home).is_err()
+    {
+        return false;
+    }
     let Ok(homes) = fs::canonicalize(homes_dir(state_root)) else {
         return false;
     };
     let Ok(h) = fs::canonicalize(home) else {
         return false;
     };
-    h != homes && h.starts_with(&homes)
+    h.parent() == Some(homes.as_path())
 }
 
 /// Every account the user can remove, with what removing it would do.
@@ -282,14 +327,27 @@ pub fn remove_account(state_root: &Path, id: &str, mode: RemoveMode) -> Result<S
             let home = acct.home.clone().context("account has no home folder")?;
             let meta =
                 fs::symlink_metadata(&home).with_context(|| format!("stat {}", home.display()))?;
-            if meta.file_type().is_symlink() || !is_owned_home(state_root, &home) {
+            if crate::workspaces::linked(&meta) || !is_owned_home(state_root, &home) {
                 anyhow::bail!(
                     "refusing to delete {}: not a plain folder inside Concordia's homes",
                     home.display()
                 );
             }
-            crate::store::remove_stored_account(state_root, &acct.id)?;
+            let canonical = home.canonicalize()?;
+            anyhow::ensure!(
+                !list_all_accounts(state_root).iter().any(|other| {
+                    other.account != acct.id
+                        && other.home_path.as_ref().is_some_and(|path| {
+                            path.canonicalize()
+                                .is_ok_and(|path| path.starts_with(&canonical))
+                        })
+                }),
+                "another account references this home; unregister it without deleting shared files"
+            );
+            crate::store::load_store_checked(state_root)?;
             fs::remove_dir_all(&home).with_context(|| format!("delete {}", home.display()))?;
+            crate::store::remove_stored_account(state_root, &acct.id)
+                .context("account files were removed, but registration could not be updated")?;
             Ok(format!(
                 "removed {} and deleted its login folder",
                 acct.label
@@ -314,6 +372,17 @@ pub fn remove_account(state_root: &Path, id: &str, mode: RemoveMode) -> Result<S
 
 fn has_bin_on_path(name: &str) -> bool {
     which::which(name).is_ok()
+}
+
+/// Whether the provider's CLI is missing from PATH, by the same lookup `add_account` uses.
+pub fn cli_missing(provider: ProviderKind) -> bool {
+    match provider {
+        ProviderKind::Cursor => !(has_bin_on_path("agent") || has_bin_on_path("cursor-agent")),
+        ProviderKind::Codex => !has_bin_on_path("codex"),
+        ProviderKind::Claude => !has_bin_on_path("claude"),
+        ProviderKind::Grok => !has_bin_on_path("grok"),
+        ProviderKind::Opencode => !has_bin_on_path("opencode"),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +420,13 @@ pub fn add_account_with(
     provider: ProviderKind,
     fx: &Effects<'_>,
 ) -> Result<AddResult> {
+    // A missing Cursor CLI is reported before any account slot is touched, so setup can be offered.
+    if provider == ProviderKind::Cursor && !((fx.has_bin)("agent") || (fx.has_bin)("cursor-agent"))
+    {
+        return Err(anyhow::anyhow!(
+            "agent not found on PATH — install the Cursor CLI, then try again"
+        ));
+    }
     // The first Cursor account is the CLI's own global login; extra ones are key files.
     if provider == ProviderKind::Cursor {
         if let Some(main) = crate::accounts::builtin_accounts()
@@ -561,15 +637,16 @@ mod tests {
                 r#"{"claudeAiOauth":{"accessToken":"x"}}"#,
             )
             .unwrap(),
+            ProviderKind::Grok => {
+                fs::write(
+                    home.join("config.toml"),
+                    "[models]\ndefault = \"grok-build\"\n",
+                )
+                .unwrap();
+                fs::write(home.join("auth.json"), "{}").unwrap();
+            }
+            ProviderKind::Opencode => {}
         }
-    }
-
-    #[test]
-    fn codex_slots_start_at_three_and_other_providers_at_two() {
-        let sb = Sandbox::new();
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Codex).id, "codex-3");
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Claude).id, "claude-2");
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Cursor).id, "cursor-2");
     }
 
     #[test]
@@ -581,25 +658,17 @@ mod tests {
     }
 
     #[test]
-    fn existing_user_numbered_homes_are_never_claimed() {
-        let sb = Sandbox::new();
-        fs::create_dir_all(sb.base().join(".codex-3")).unwrap(); // user's own, even if empty
-        fs::create_dir_all(sb.base().join(".codex-4")).unwrap();
-        assert_eq!(pick_slot(sb.state(), ProviderKind::Codex).id, "codex-5");
-    }
-
-    #[test]
     fn add_creates_concordia_owned_home_stores_account_and_launches_login() {
         let sb = Sandbox::new();
         let (r, launched) = run(&sb, ProviderKind::Codex, &all_bins);
         let r = r.unwrap();
-        assert_eq!(r.account, "codex-3");
+        assert_eq!(r.account, "codex-1");
         assert!(r.watch);
         assert!(r.home.is_dir());
         assert!(r.home.starts_with(homes_dir(sb.state())));
 
         // Registered, so /use can see it once logged in.
-        let acct = get_account(sb.state(), "codex-3").unwrap();
+        let acct = get_account(sb.state(), "codex-1").unwrap();
         assert!(acct.custom);
         assert_eq!(acct.home_path.as_deref(), Some(r.home.as_path()));
 
@@ -626,7 +695,7 @@ mod tests {
         let r = r.unwrap();
         assert_eq!(launched[0].script, "claude login");
         assert_eq!(launched[0].env[0].0, "CLAUDE_CONFIG_DIR");
-        assert_eq!(r.account, "claude-2");
+        assert_eq!(r.account, "claude-1");
     }
 
     #[test]
@@ -644,7 +713,7 @@ mod tests {
     fn an_abandoned_slot_is_reused_instead_of_piling_up() {
         let sb = Sandbox::new();
         let first = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        // Login never completes; adding again reuses codex-3.
+        // Login never completes; adding again reuses the pending slot.
         let (again, launched) = run(&sb, ProviderKind::Codex, &all_bins);
         let again = again.unwrap();
         assert_eq!(again.account, first.account);
@@ -660,8 +729,8 @@ mod tests {
         let first = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
         mark_logged_in(ProviderKind::Codex, &first.home);
         let second = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        assert_eq!(first.account, "codex-3");
-        assert_eq!(second.account, "codex-4");
+        assert_eq!(first.account, "codex-1");
+        assert_eq!(second.account, "codex-3");
         assert_eq!(crate::store::list_stored_accounts(sb.state()).len(), 2);
     }
 
@@ -682,7 +751,7 @@ mod tests {
         assert!(text.contains("boom"));
         assert!(text.contains("$env:CODEX_HOME='"));
         assert!(text.contains("codex login"));
-        assert!(get_account(sb.state(), "codex-3").is_some());
+        assert!(get_account(sb.state(), "codex-1").is_some());
     }
 
     #[test]
@@ -703,7 +772,7 @@ mod tests {
         let (r, launched) = run(&sb, ProviderKind::Cursor, &all_bins);
         let r = r.unwrap();
         assert!(launched.is_empty());
-        assert_eq!(r.account, "cursor-2");
+        assert_eq!(r.account, "cursor-1");
         let text = r.message.join("\n");
         assert!(text.contains("concordia-api-key"), "{text}");
         assert!(r.home.is_dir());
@@ -725,9 +794,8 @@ mod tests {
         let home = PathBuf::from(r"C:\Users\o'brien\concordia\homes\codex-3");
         let plan = plan_login(ProviderKind::Codex, Some(&home), &all_bins).unwrap();
 
-        let wez = PathBuf::from(r"C:\WezTerm\wezterm.exe");
-        let cmd = login_command(&plan, Some(&wez));
-        assert_eq!(cmd.get_program(), wez.as_os_str());
+        let cmd = login_command(&plan);
+        assert_eq!(cmd.get_program(), "cmd.exe");
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -735,12 +803,15 @@ mod tests {
         assert_eq!(
             args,
             [
+                "/c",
                 "start",
-                "--",
+                "Concordia login",
                 "powershell.exe",
                 "-NoLogo",
                 "-NoProfile",
                 "-NoExit",
+                "-ExecutionPolicy",
+                "Bypass",
                 "-Command",
                 "codex login"
             ]
@@ -753,10 +824,6 @@ mod tests {
         assert!(envs.iter().any(|(k, v)| {
             *k == "CODEX_HOME" && v.map(|v| v.to_string_lossy().contains("o'brien")) == Some(true)
         }));
-
-        // Without WezTerm we fall back to a plain PowerShell console.
-        let bare = login_command(&plan, None);
-        assert_eq!(bare.get_program(), "powershell.exe");
     }
 
     #[test]
@@ -767,51 +834,6 @@ mod tests {
             manual_login_hint(&plan),
             "$env:CODEX_HOME='C:\\o''brien'; codex login"
         );
-    }
-
-    // ---- awareness block and MCP registration ----------------------------------------------
-
-    #[test]
-    fn add_writes_the_awareness_block_only_into_the_new_concordia_home() {
-        let sb = Sandbox::new();
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        let r = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        let agents = r.home.join("AGENTS.md");
-        let text = fs::read_to_string(&agents).unwrap();
-        assert!(text.contains("concordia:begin") && text.contains("concordia thread read"));
-        assert!(
-            !own.join("AGENTS.md").exists(),
-            "a user's own home is never written"
-        );
-        assert!(!r.home.join("config.toml").exists(), "mcp is opt-in");
-        // The user adds text, switches awareness off in config, and the next refresh removes
-        // only the block.
-        fs::write(&agents, format!("mine\n\n{text}")).unwrap();
-        fs::write(
-            sb.state().join("config.toml"),
-            "[threads]\nawareness = false\n",
-        )
-        .unwrap();
-        let _cfg = crate::config::env_guard();
-        let reports = crate::integration::refresh(sb.state(), Path::new("c.exe"));
-        assert_eq!(reports.len(), 1);
-        assert_eq!(fs::read_to_string(&agents).unwrap(), "mine\n");
-    }
-
-    #[test]
-    fn foreign_and_hidden_homes_never_get_a_block() {
-        let sb = Sandbox::new();
-        let elsewhere = sb.base().join("precious");
-        codex_login(&elsewhere, "x@example.com");
-        register(&sb, "codex-9", &elsewhere);
-        let own = sb.base().join(".codex");
-        codex_login(&own, "me@example.com");
-        remove_account(sb.state(), "codex", RemoveMode::Hide).unwrap();
-        assert!(crate::integration::created_homes(sb.state()).is_empty());
-        let _cfg = crate::config::env_guard();
-        assert!(crate::integration::refresh(sb.state(), Path::new("c.exe")).is_empty());
-        assert!(!elsewhere.join("AGENTS.md").exists() && !own.join("AGENTS.md").exists());
     }
 
     #[test]
@@ -833,9 +855,6 @@ mod tests {
         let _cfg = crate::config::env_guard();
         let exe = Path::new("c.exe");
         let rows = crate::integration::doctor_rows(sb.state(), exe);
-        assert!(rows
-            .iter()
-            .any(|(warn, n, d)| !warn && *n == "awareness" && d.ends_with("set up")));
         assert!(rows
             .iter()
             .any(|(warn, n, d)| !warn && *n == "mcp" && d.ends_with("off")));

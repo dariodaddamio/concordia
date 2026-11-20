@@ -16,8 +16,9 @@ fn request<'a>(cwd: &'a std::path::Path) -> ProviderTurnRequest<'a> {
         cwd,
         home_path: None,
         model: None,
+        effort: None,
         native_session_id: None,
-        trust: TrustMode::Workspace,
+        trust: TrustMode::Edit,
         context_prefix: None,
         local_time: None,
         compaction: Default::default(),
@@ -29,7 +30,7 @@ async fn run(
     timeout: Duration,
 ) -> (
     tokio::task::JoinHandle<anyhow::Result<concordia::provider::TurnOutcome>>,
-    mpsc::UnboundedReceiver<TurnProgress>,
+    mpsc::Receiver<TurnProgress>,
     mpsc::UnboundedReceiver<Arc<RunningTurn>>,
 ) {
     std::env::remove_var("NO_COLOR");
@@ -38,7 +39,7 @@ async fn run(
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().join("work");
     std::fs::create_dir_all(&cwd).unwrap();
-    let (progress_tx, progress_rx) = mpsc::unbounded_channel();
+    let (progress_tx, progress_rx) = mpsc::channel(64);
     let (started_tx, started_rx) = mpsc::unbounded_channel();
     let task = tokio::spawn(async move {
         let _dir = dir;

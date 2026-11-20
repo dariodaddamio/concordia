@@ -16,7 +16,7 @@ fn open_edit(app: &mut App, text: &str) {
     let mut ed = Editor::default();
     ed.set_text(text);
     ed.reset_undo();
-    app.queue.edit = Some(ed);
+    app.begin_queue_edit(ed);
 }
 
 fn draw(app: &mut App, width: u16, height: u16) -> (Terminal<TestBackend>, Rect) {
@@ -49,7 +49,12 @@ fn editor_layout_and_caret_remain_inside_clipped_panel_across_terminal_sizes() {
                 &mut a,
                 "日本語 wide 界面\nsecond line\nthird line\nfourth line\nfifth line",
             );
-            a.queue.edit.as_mut().unwrap().move_to(usize::MAX, false);
+            a.queue
+                .edit
+                .as_mut()
+                .unwrap()
+                .editor
+                .move_to(usize::MAX, false);
             let (mut term, panel) = draw(&mut a, width, height);
             if let Some((hit, _)) = a.queue.edit_rect {
                 assert!(
@@ -83,22 +88,22 @@ fn outside_and_other_row_clicks_keep_the_edit_and_only_editor_click_moves_caret(
     let mut ed = Editor::default();
     ed.set_text("first editable line\nsecond editable line");
     ed.move_to(0, false);
-    a.queue.edit = Some(ed);
+    a.begin_queue_edit(ed);
     let (_term, panel) = draw(&mut a, 100, 20);
-    let original = a.queue.edit.as_ref().unwrap().text();
+    let original = a.queue.edit.as_ref().unwrap().editor.text();
     let sibling = a.queue.rects.first().expect("a sibling queue row").0;
     assert!(queue::handle_mouse(&mut a, &click(sibling.x, sibling.y)));
     assert_eq!(a.queue.sel, 0);
-    assert_eq!(a.queue.edit.as_ref().unwrap().text(), original);
+    assert_eq!(a.queue.edit.as_ref().unwrap().editor.text(), original);
     assert!(queue::handle_mouse(&mut a, &click(0, 0)));
     assert!(a.queue.focused);
-    assert_eq!(a.queue.edit.as_ref().unwrap().text(), original);
+    assert_eq!(a.queue.edit.as_ref().unwrap().editor.text(), original);
 
     let (hit, scroll) = a.queue.edit_rect.unwrap();
     assert!(panel.intersects(hit));
-    let old_cursor = a.queue.edit.as_ref().unwrap().cursor();
+    let old_cursor = a.queue.edit.as_ref().unwrap().editor.cursor();
     queue::handle_mouse(&mut a, &click(hit.x + 10, hit.y));
-    assert_ne!(a.queue.edit.as_ref().unwrap().cursor(), old_cursor);
+    assert_ne!(a.queue.edit.as_ref().unwrap().editor.cursor(), old_cursor);
     assert!(a.queue.edit_scroll == scroll);
 }
 
@@ -110,7 +115,7 @@ fn fifth_selected_item_stays_visible_and_clearing_requires_resolving_edit() {
     a.queue.focused = true;
     let mut ed = Editor::default();
     ed.set_text("the fifth queued item remains selected");
-    a.queue.edit = Some(ed);
+    a.begin_queue_edit(ed);
     let (term, _) = draw(&mut a, 80, 20);
     let buffer = term.backend().buffer();
     let screen = (0..buffer.area.height)
@@ -146,11 +151,11 @@ fn multiline_unicode_navigation_selection_save_and_cancel_preserve_the_main_draf
     key(&mut a, KeyCode::Enter, KeyModifiers::CONTROL);
     key(&mut a, KeyCode::Char('j'), KeyModifiers::CONTROL);
     assert_eq!(
-        a.queue.edit.as_ref().unwrap().text(),
+        a.queue.edit.as_ref().unwrap().editor.text(),
         "日本語 hello world\n\n"
     );
     key(&mut a, KeyCode::Up, KeyModifiers::SHIFT);
-    assert!(a.queue.edit.as_ref().unwrap().selection().is_some());
+    assert!(a.queue.edit.as_ref().unwrap().editor.selection().is_some());
     key(&mut a, KeyCode::Home, KeyModifiers::NONE);
     key(&mut a, KeyCode::End, KeyModifiers::NONE);
     key(&mut a, KeyCode::Enter, KeyModifiers::NONE);

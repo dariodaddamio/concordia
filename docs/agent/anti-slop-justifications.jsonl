@@ -1,0 +1,330 @@
+## This slice
+
+### FIX4b native live proof repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 10 | Correct the existing provider capability declaration so Claude `/context` uses the already-owned native terminal path; no new command router or duplicate capability table. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible native-command correction under the required build identity. |
+
+### FIX3b live handoff proof repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,run.rs,app/pickers.rs,continuation.rs,session_ui.rs,window_session.rs} | ok: 1, 4, 5, 6, 10 | Store the prior account beside the existing prior provider so the handoff card reads the canonical switch boundary; no second account registry is introduced. |
+| crates/concordia/src/tui/activity.rs | ok: 1, 4, 5, 7, 10 | Reuse the existing Ctrl+O activity selection and prioritize the one handoff card only when present; no new shortcut or activity store is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible handoff correction under the required build metadata. |
+
+### FIX1b model picker details - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,app/pickers.rs,draw/mod.rs}, crates/concordia/src/tui/continuation.rs | ok: 1, 4, 5, 6, 10 | Keep model presentation derived from the existing account-bound catalog and picker state; remove the duplicate row detail and reuse one label/footer path without adding a model store or provider protocol. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible picker correction under the required build metadata owners. |
+
+### FIX5 shared command picker - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/commands.rs, crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 10 | Derive the shared-name predicate from the existing Concordia registry and provider command advertisements; no hand-written overlap list or second command owner. |
+| crates/concordia/src/tui/{palette.rs,draw/mod.rs,app/{state,slash,pickers}.rs} | ok: 1, 4, 5, 6, 7, 10 | Reuse the existing slash palette and picker lifecycle; the transient full command is the only added state, and selected provider execution delegates to existing transport/native-terminal paths. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible command-routing correction under the required build identity. |
+
+### FIX3 compact handoff - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/threads.rs, crates/concordia/src/context.rs | ok: 1, 4, 5, 6, 10 | Keep deterministic handoff serialization in the existing thread/context owners; replace prose and duplicate pointer rows with compact fields and grouped exact commands. |
+| crates/concordia/src/provider/standing_context.rs | ok: 1, 4, 5, 6, 10 | Keep identity/tool ownership in standing context, but remove the duplicated handoff body and enforce the requested 60-word ceiling. |
+| crates/concordia/src/tui/run.rs, crates/concordia/src/tui/app/turn.rs | ok: 1, 4, 5, 6, 9 | Reuse the existing progress/card and expandable activity path for the final injected handoff; no second transcript or preview model. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible handoff presentation change under the required build identity. |
+
+### X5 review fixes - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{native_window.rs,questions.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep image painting, popup navigation, copy decoration, and resize continuity in their existing owners; clip the existing raster blit and seed the existing backing surface without adding a subsystem. |
+| crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9, 10 | Extend the existing native journey's pixel evidence for one, two, and three attachments and lifecycle transitions. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-visible corrections using the existing release metadata. |
+
+### Y2 guided commands - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/app/{state,pickers,slash}.rs` | ok: 1, 4, 5, 6, 10 | Reuse the existing picker, command parser and command-owned panels; add one small guided presentation kind only for argument commands that previously executed immediately. |
+| `docs/guided-commands.md`, `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Keep the registry-derived command table and real native journey as the observable acceptance boundary. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 5, 10 | Record the user-facing panel change under the required build identity. |
+
+### Y2 review-3 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/app/{state,pickers}.rs`, `crates/concordia/src/tui/input_dispatch.rs` | ok: 1, 4, 5, 6, 10 | Keep guided input, preview and registry mutation in the existing picker and command owners; remove the hardcoded MCP premise. |
+| `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5 | Align the existing rendered row hitboxes with the picker scroll offset; no second scroll model is added. |
+| `docs/guided-commands.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Document and identify the review repairs. |
+
+### Y3 continue after usage limit - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/provider/failure.rs` | ok: 1, 2, 4, 5, 10 | Keep provider-owned structured signal classification in the existing failure owner; remove prose-based quota promotion from the usage-limit path. |
+| `crates/concordia/src/tui/continuation.rs`, `crates/concordia/src/tui/app/pickers.rs`, `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/draw/mod.rs` | ok: 1, 4, 5, 6, 7 | Extend the existing continuation picker and queue owner with ordered rows, disabled exhausted accounts, reset waiting, and explicit handoff text; do not add another prompt or usage store. |
+| `crates/concordia/src/tui/settings.rs`, `crates/concordia/src/config.rs` | ok: 1, 4, 6, 10 | Expose the existing continuation preference and role fallback map through `/config`, with ask as the default and one persisted source of truth. |
+| `crates/concordia/tests/tui_journeys.rs`, provider fixture tests | ok: 5, 9, 10 | Add deterministic journey and provider-signal coverage at the existing harness boundary; no live provider turns or test-only production branches. |
+| `PLAN.md`, `CHANGELOG.md`, `crates/concordia/src/version.rs` | ok: 5, 10 | Record the shipped decision and required build identity in existing project metadata. |
+
+### Q7 notifications completion - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/needs_you.rs`, `crates/concordia/src/tui/run.rs` | ok: 1, 4, 5, 6, 10 | Keep the existing Needs attention queue as the sole item owner; add one item-level actionability predicate and use it only in the existing Windows status projection. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 1, 4, 9, 10 | Extend the existing native journey for visible status, chat/action text, resolution and config behavior; test-controlled windows remain blocked from shell signals. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md`, `PLAN.md` | ok: 5, 10 | Record the decision and user-facing correction in existing project metadata. |
+
+### Q7 notifications review repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/tui/native_window.rs` | ok: 1, 4, 5, 6, 10 | Keep tray delivery and click-target ownership in the native window; replace only the stale target guard so each durable item can be delivered. |
+| `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Retain the existing native journey as the observable notification boundary; do not add a test-only production path. |
+| `crates/concordia/src/version.rs`, `CHANGELOG.md` | ok: 5, 10 | Record the focused user-facing repair under the required build identity. |
+
+### Q9 test regression - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/tests/support/fake_provider.rs | ok: 1, 4, 5, 9, 10 | Keep the fake provider's visible-reply projection at the fixture boundary; reuse the existing standing-context extractor and add only the regression test required by the failed UI journey. |
+| docs/agent/anti-slop-justifications.jsonl | ok: 1, 5, 10 | Record the narrow test-fixture scope without adding a production compatibility path. |
+
+### Q4 updates, shortcuts and guided commands - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/update.rs, crates/concordia/src/main.rs, crates/concordia/src/doctor.rs | ok: 1, 4, 5, 6, 10 | Keep shortcut comparison, removal state and repair in the existing update owner; callers only trigger the bounded check, and delete the obsolete WezTerm path. |
+| crates/concordia/src/tui/{run.rs,app/state.rs,window_session.rs}, crates/concordia/src/config.rs | ok: 1, 4, 6, 9 | Reuse the existing job, tab snapshot and recovery owners for launch checks and restart choice; add one persisted update preference rather than a second state store. |
+| crates/concordia/src/harness/command.rs, crates/concordia/src/tui/{app/slash.rs,integrations.rs}, crates/concordia/tests | ok: 1, 4, 5, 9, 10 | Extend the existing guided-command and review surfaces only where argument-taking commands currently bypass them; tests exercise user-visible panels and keep mutation confirmation in the existing picker. |
+| crates/concordia/src/version.rs, CHANGELOG.md, docs | ok: 5, 10 | Record shipped behavior in the existing release metadata and canonical documentation. |
+
+### Y1 background updates - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| `crates/concordia/src/update.rs` | ok: 1, 2, 4, 5, 8 | Keep preparation in the existing update job, add one Cargo-process gate and one capped build environment at the process boundary. |
+| `crates/concordia/src/tui/app/state.rs`, `crates/concordia/src/tui/input_dispatch.rs`, `crates/concordia/src/tui/run.rs` | ok: 1, 4, 5, 6, 9 | Reuse the existing job result, window snapshot and input owners for a passive restart decision; no second window or update queue. |
+| `crates/concordia/src/store.rs`, `crates/concordia/src/config.rs`, `crates/concordia/src/tui/settings.rs` | ok: 1, 4, 6, 10 | Persist one update-mode preference beside existing user settings and project it through `/config`. |
+| `CHANGELOG.md`, `crates/concordia/src/version.rs`, `crates/concordia/tests/tui_journeys.rs` | ok: 5, 9, 10 | Record the user-facing behavior and extend the existing journey boundary without provider turns. |
+
+### Q2 topbar lane - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/input_dispatch.rs | ok: 1, 3, 5, 10 | Remove the conflicting F3 shortcut and keep header interaction in input dispatch, where terminal events are owned. |
+| crates/concordia/src/tui/app/state.rs | ok: 4, 6, 9 | Use the existing account-bound model catalog and picker state; do not add a second model source. |
+| crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 6 | Keep provider, effort, and usage selection in the existing picker owner. |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 5, 7 | Render the requested topbar and usage layout from existing snapshots and areas. |
+| crates/concordia/src/tui/landing.rs | ok: 1, 5, 10 | Reuse bundled CHANGELOG headings and existing usage data without new copy or a new data layer. |
+| crates/concordia/src/catalog.rs | ok: 1, 3, 6, 10 | Parse only provider-owned metadata already present in each account home; do not invent models or limits. |
+| crates/concordia/src/models.rs | ok: 2, 4, 6 | Keep one account-bound catalog and validate provider output at its boundary. |
+| crates/concordia/src/usage.rs | ok: 1, 4, 6 | Preserve the existing UsageSnapshot as the canonical source for all usage views and buckets. |
+| docs/provider-usage-sources.md | ok: 5, 10 | Document provider field sources and limitations rather than adding fallback claims. |
+
+### Tabs lane audit - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 3, 5, 6 | Extend the existing bounded provider-run parser for opencode; keep the Agents projection as the canonical list owner. |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 5, 6 | Add the requested shortcut and icon rows to the existing F1 renderer without a second shortcut registry. |
+| crates/concordia/src/provider/stream_cards.rs | ok: 2, 3, 5 | Read timeout fields at the provider event boundary and ignore polling intervals. |
+| docs/chat-rendering.md | ok: 5, 10 | Record implemented shortcuts and provider timeout coverage with explicit unknowns. |
+| docs/ui-glossary.md | ok: 5, 10 | Point the icon description at the existing legend instead of defining a second source. |
+
+### X4 tabs, icons, expansion shortcuts and tool timers - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{tabs.rs,input_dispatch.rs,run.rs,draw/mod.rs,icons.rs,app/state.rs,app/log.rs,app/turn.rs,activity.rs} | ok: 1, 4, 5, 6, 10 | Keep tab interaction, rendering, timer timestamps and shortcut dispatch in their existing owners; fix only observable gaps in the current implementation and do not add a second tab or icon model. |
+| crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9 | Extend the existing native test-control journey with screen evidence for each numbered acceptance check; do not add a production-only test hook. |
+| docs/chat-rendering.md, docs/ui-glossary.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Update the existing canonical UI documentation and release metadata for the shipped behavior. |
+
+### N7 README, documentation site and release integrity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| README.md, site/src/content/docs/{features,index,install,providers,configuration}.md, site/astro.config.mjs | ok: 1, 4, 5, 6, 10 | Keep the README and site as canonical documentation surfaces, add one grouped feature page, and record shipped behavior without adding a duplicate catalog. |
+| .github/workflows/release.yml | ok: 1, 4, 5, 10 | Extend existing staging and attestation steps to cover each release asset; do not add a new release subsystem. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing documentation and release-integrity changes in existing metadata. |
+
+### X1 review corrections - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/brand.rs, crates/concordia/src/tui/landing.rs | ok: 1, 4, 5, 10 | Fix the existing Home render owner with the configured docs URL and enough rows; keep bundled changelog headings and do not add a link or content subsystem. |
+| crates/concordia/src/tui/landing.rs | ok: 1, 4, 6 | Compact the existing account usage rows from the canonical UsageSnapshot so every account remains visible at the requested terminal size. |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 4, 6, 10 | Keep the existing Agents picker owner and show an explicit empty-state row instead of refusing to open the view. |
+
+### X2 Agents view reference match - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_agents.rs | ok: 1, 4, 5, 6, 10 | Correct the existing projection and renderer in place: fixed columns, six-cell context bars, grouped numbers, role styling, detail selection, clean outside-run rows, and per-task state records. No new agent store or provider parser. |
+| crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 5, 9 | Reuse the existing screen-area and picker selection path to make Agents clicks select rows; no second interaction registry. |
+| crates/concordia/tests/tui_journeys.rs | ok: 1, 5, 9 | Extend the real PTY journey harness for screen-level acceptance evidence; tests drive the user flow rather than expose test-only production interfaces. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing view correction through existing release metadata. |
+
+### X3 usage, model list and limit buckets - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 10 | Remove synthetic model rows and render only the existing account-bound provider catalog. |
+| crates/concordia/src/usage.rs, crates/concordia/src/tui/draw/mod.rs, crates/concordia/src/tui/app/usage_view.rs | ok: 1, 4, 5, 6, 10 | Reuse UsageSnapshot and the existing picker renderer for responsive provider cards, native buckets and their own tones. |
+| docs/provider-usage-sources.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Record the provider field sources and user-facing behavior in the existing documentation and metadata owners. |
+
+### X3 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/app/{state,pickers}.rs | ok: 1, 4, 5, 10 | Keep provider-list validation at the existing model selection owner and clear stale rows at the existing refresh result owner. |
+| crates/concordia/src/tui/{draw/mod.rs,input_dispatch.rs} | ok: 1, 4, 5, 6 | Resolve the existing usage End sentinel in the renderer so the existing PageUp input owner can page the same provider card. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Preserve screen-level proof and release metadata for the correction without adding a test-only production path. |
+
+### X4 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/draw/mod.rs | ok: 1, 4, 5, 10 | Keep tab feedback and shortcut-sheet layout in their existing draw owner; make the first insertion slot explicit without a new UI model. |
+| crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 5, 10 | Keep title editing in the existing key owner; Enter completes the current rename attempt and preserves only the existing persistence error retry path. |
+| crates/concordia/src/tui/tests/draw.rs, crates/concordia/tests/tui_journeys.rs | ok: 5, 9, 10 | Extend existing screen-level and renderer regressions to cover both insertion-edge markers and Home-tab rename completion. |
+| CHANGELOG.md, crates/concordia/src/version.rs | ok: 10 | Record the user-facing correction and advance the required build identity. |
+
+### X5 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| --- | --- | --- |
+| crates/concordia/src/tui/questions.rs | ok: 1, 4, 5, 10 | Keep choice navigation at the existing question input owner; exclude the optional note action from End without adding popup state. |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 5, 9 | Record timing after the existing surface commit so the test channel reports the frame actually shown; no production render path is added. |
+| CHANGELOG.md, crates/concordia/src/version.rs | ok: 10 | Record the review correction and advance the required build identity. |
+
+### X6 review correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/attachments.rs, crates/concordia/src/tui/raster.rs | ok: 1, 2, 4, 5, 10 | Extend the existing bounded raster reader for SVG instead of routing documents through the image-only validator. |
+| crates/concordia/src/tui/{workspace.rs,workspace_edit.rs} | ok: 1, 4, 5, 6, 10 | Keep formatting in the existing file-read worker, use the existing pane scroll state for CSV rows and columns, and remove duplicate UI-thread formatting. |
+| crates/concordia/src/tui/{local_terminal.rs,app/pickers.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep native launch and provider selection in their existing owners; use the same command path for every provider and expose unconnected native-login rows without adding a second terminal surface. |
+
+### Detached file-window close - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ----------- |
+| crates/concordia/src/tui/native_window.rs, crates/concordia/src/tui/input_stream.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 10 | Preserve the native window owner and distinguish a close request from a root quit key at the existing event boundary; route the root request through the existing armed confirmation state. |
+| crates/concordia/src/tui/detached.rs, crates/concordia/src/tui/workspace.rs | ok: 1, 4, 5, 6, 10 | Route detached close and Ctrl+W through the existing file close and save-prompt owner; child HWND cleanup remains the existing sync/drop path. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Keep screen-level lifecycle evidence and required release metadata without adding a test-only production branch. |
+
+### Main-window close guard correction - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 6, 10 | Extend the existing root close guard to read every open tab's existing close-confirmation state; no second state store or new shutdown path. |
+| crates/concordia/tests/tui_journeys.rs, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 9, 10 | Add one screen-driven regression journey and record the user-visible correction with the required build stamp. |
+
+### Y1 review repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/update.rs | ok: 1, 2, 4, 5, 10 | Apply priority at the spawned source-build process boundary and fail visibly if the required background priority cannot be set. |
+| crates/concordia/src/tui/persist.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 6, 10 | Keep recovery ownership in the existing persistence owner and make every live tab claim it before window snapshots. |
+| crates/concordia/src/tui/input_dispatch.rs | ok: 1, 4, 10 | Let the existing composer own typed characters before interpreting the non-focused update notice shortcut. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+
+### Y1 review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/{app/state.rs,run.rs,draw/mod.rs} | ok: 1, 4, 5, 6, 10 | Keep update actions, restart admission, and presentation in their existing owners; wait on the existing delegated-work state and expose the existing prepared-update action in the shared footer. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+### Y2 review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 5, 10 | Complete the existing guided picker dispatch for its already-rendered terminal and title rows; keep local terminal and session title modules as the canonical action owners. |
+| docs/guided-commands.md | ok: 5, 10 | Add the four active delegate argument forms to the existing command table rather than creating another catalog. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+### Y5 Claude delivery and MCP status - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/mcp_registry.rs, crates/concordia/src/provider/turn.rs | ok: 1, 4, 5, 6, 10 | Reuse the single registry as the source of truth and project Claude's documented inline `--mcp-config` without writing provider homes or secret values. |
+| crates/concordia/src/tui/app/{slash,pickers}.rs, crates/concordia/src/doctor.rs | ok: 1, 4, 5, 10 | Read provider files through the existing parser and expose one status projection in the existing command and doctor owners. |
+| docs/mcp.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Record the supported launch boundary and the unshipped proxy boundary accurately. |
+
+### Y5 review repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/mcp_registry.rs, crates/concordia/src/provider/turn.rs | ok: 1, 4, 5, 6, 10 | Keep the registry as the single MCP state owner and project supported launch arguments without writing provider homes or secret values. |
+| crates/concordia/src/tui/app/{state,slash,pickers}.rs | ok: 1, 4, 5, 9 | Reuse the existing guided picker for import selection and keep UI state limited to the pending selection. |
+| crates/concordia/src/mcp.rs, crates/concordia/src/main.rs | ok: 1, 4, 7, 8 | Extend the existing MCP server with one narrow remote HTTP JSON-RPC bridge and preserve bounded request handling. |
+| crates/concordia/src/doctor.rs, docs/mcp.md, CHANGELOG.md, crates/concordia/src/version.rs | ok: 5, 10 | Make status and documentation match the implemented provider capability and authentication projection. |
+### Y6 context and gate repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/provider/standing_context.rs, crates/concordia/src/tui/run.rs | ok: 1, 4, 5, 6, 10 | Correct the advertised bridge name at the existing standing-context owner and keep registered tool names derived from the active transport. |
+| crates/concordia/src/provider/turn_acp.rs, crates/concordia/tests/tui_journeys.rs | ok: 1, 4, 9, 10 | Strengthen the existing provider wire journey against the registered tool name and compaction resend boundary; no new production test interface is added. |
+| crates/concordia/src/provider/standing_context.rs, crates/concordia/tests/tui_journeys.rs | ok: 1, 4, 5, 6, 9 | Make transport tool selection one shared owner and have the journey derive expected names from that owner while preserving provider-event ordering evidence. |
+
+### Y6 second-pass check repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| README.md | ok: 5, 10 | Synchronize the generated command table with the existing `/terminal native` command; no new command surface. |
+| crates/concordia/src/mcp.rs | ok: 1, 4, 5, 10 | Route existing MCP child launches through the canonical process helper; no new process owner or transport behavior. |
+
+### Y4b notification delivery repair - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 6, 9, 10 | Keep the native window as the sole tray and click-target owner; queue only the existing item records and suppress shell delivery for test-controlled windows. |
+| crates/concordia/tests/tui_journeys.rs | ok: 4, 9 | Strengthen the existing native journey at the real delivery and restart boundaries; no fake provider or production test branch is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing repair under the required build metadata. |
+
+### Y4b review-2 repairs - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/needs_you.rs, crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 6, 10 | Project the existing durable interrupted-request checkpoint into the existing Needs attention queue; do not add a second persistence store. |
+| crates/concordia/src/tui/native_window.rs | ok: 1, 4, 6, 10 | Keep one native tray target and serialize balloon delivery until the target is consumed because Windows does not identify queued balloons in the callback. |
+| crates/concordia/tests/tui_journeys.rs | ok: 5, 9, 10 | Extend the real native journey to cover restart restoration and queued click targeting. |
+| crates/concordia/src/version.rs, CHANGELOG.md, PLAN.md | ok: 5, 10 | Record the review repair and the Needs attention decision in existing project metadata. |
+
+### FIX1 model picker - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/models.rs, crates/concordia/src/provider/compat.rs | ok: 1, 2, 4, 5, 10 | Keep provider metadata parsing and version comparison in the existing model/compat owners; accept only the pinned numeric minimum or newer native Claude releases and retain the batch-shim rejection. |
+| crates/concordia/src/tui/app/state.rs | ok: 1, 4, 5, 6, 10 | Make the existing picker row projection show the one provider-reported display name and full ID; no second model catalog or UI-side model list is added. |
+| crates/concordia/src/tui/settings.rs, crates/concordia/src/tui/local_terminal.rs | ok: 1, 5, 10 | Repair confirmed mojibake literals in place; no formatting layer or duplicate text source is introduced. |
+| crates/concordia/src/tui/activity_tests.rs, crates/concordia/src/tui/tests/input_dispatch.rs | ok: 5, 9 | Supply the existing picker layout field in two compile-only fixtures so the requested all-target check reaches the changed code; no production behavior is added. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing picker correction under the existing build metadata owners. |
+
+### FIX2 turns always start and finish - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/run.rs, crates/concordia/src/tui/app/turn.rs | ok: 1, 2, 4, 8, 10 | Keep turn completion in the existing runner and app finalizer; bound only the provider transport and history-sealing waits evidenced by the audit, and preserve the native provider protocols. |
+| crates/concordia/src/tui/app/state.rs, crates/concordia/src/tui/app/pickers.rs | ok: 1, 4, 6, 10 | Make the existing queue the single owner for busy prompts and keep account identity stable during an active turn. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing turn lifecycle repair under the existing release metadata owners. |
+
+### FIX4 native session parity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/tui/local_terminal.rs, crates/concordia/src/tui/app/slash.rs, crates/concordia/src/tui/palette.rs, crates/concordia/src/provider/mod.rs | ok: 1, 4, 5, 6, 7, 10 | Reuse the existing native launcher, provider command registry, and exact `native_session_id`; no new transport or synchronization layer. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing parity change under the existing release metadata owners. |
+
+### FIX4b live native session parity - anti-slop gate
+
+| path | tendency_check | justification |
+| ---- | -------------- | ------------- |
+| crates/concordia/src/native_input.rs | ok: 1, 4, 5, 6, 7, 10 | Remove the evidenced ACP/interactive-session mismatch; reuse the existing explicit print-mode session path instead of adding a bridge or duplicate session store. |
+| crates/concordia/src/version.rs, CHANGELOG.md | ok: 5, 10 | Record the user-facing Cursor session behavior under the existing release metadata owners. |

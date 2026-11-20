@@ -79,6 +79,7 @@ pub fn check_not_real_state(path: &Path) {
             home.join(".codex-2"),
             home.join(".claude"),
             home.join(".cursor"),
+            home.join(".grok"),
         ]);
         #[cfg(unix)]
         roots.push(home.join(".local/share/concordia"));
@@ -111,7 +112,7 @@ mod tests {
         let home = crate::accounts::profile_home();
         assert!(state.starts_with(test_state_root()));
         assert!(home.starts_with(test_home()));
-        for name in [".codex", ".codex-2", ".claude", ".cursor"] {
+        for name in [".codex", ".codex-2", ".claude", ".cursor", ".grok"] {
             assert!(home.join(name).starts_with(test_home()));
         }
         assert!(!state.starts_with(dirs::data_local_dir().unwrap().join("concordia")));
@@ -120,5 +121,6 @@ mod tests {
         assert_ne!(home.join(".codex-2"), real_home.join(".codex-2"));
         assert_ne!(home.join(".claude"), real_home.join(".claude"));
         assert_ne!(home.join(".cursor"), real_home.join(".cursor"));
+        assert_ne!(home.join(".grok"), real_home.join(".grok"));
     }
 }

@@ -70,6 +70,8 @@ pub struct Preview {
     pub reservations: Vec<String>,
     pub blockers: Vec<String>,
     pub receipt: String,
+    pub path_objects: Vec<String>,
+    pub reference_hash: String,
 }
 
 /// Observed repository state for dependency review, never a claim about commit authorship.
@@ -189,6 +191,33 @@ fn edited(status: &str) -> bool {
     status.lines().any(|line| !line.starts_with("!! "))
 }
 
+/// Worker reservations bound to this managed workspace's exact checkout. Empty means no
+/// delegated worker ran there, so any change in it is the user's own.
+fn worker_origins(
+    root: &Path,
+    id: &str,
+    execution: &Path,
+) -> Result<Vec<crate::workspaces::Reservation>, String> {
+    Ok(crate::workspaces::load(root)?
+        .reservations
+        .into_iter()
+        .filter(|reservation| {
+            reservation
+                .request
+                .binding
+                .managed
+                .as_ref()
+                .is_some_and(|managed| {
+                    managed.id == id && reservation.request.binding.execution == execution
+                })
+        })
+        .collect())
+}
+
+fn reference_hash(references: &[String]) -> String {
+    format!("{:x}", Sha256::digest(references.join("\n").as_bytes()))
+}
+
 fn idle_git(git: &Git<'_>, path: &Path) -> Result<(), String> {
     for marker in [
         "MERGE_HEAD",
@@ -284,6 +313,8 @@ fn preview_with(
         reservations: Vec::new(),
         blockers: Vec::new(),
         receipt: String::new(),
+        path_objects: Vec::new(),
+        reference_hash: String::new(),
     };
     if preview.owner_branch == format!("refs/heads/{}", preview.record.branch) {
         return Err("owner checked out the managed branch; action refused".into());
@@ -392,7 +423,36 @@ fn preview_with(
         matches!(action, Action::Retire | Action::DeleteBranch),
     )?;
     preview.references = references;
+    preview.reference_hash = reference_hash(&preview.references);
     preview.blockers.extend(blockers);
+    // A workspace a delegated worker changed must carry that worker's task references. A
+    // workspace with no worker reservation is the user's own change and needs none.
+    if preview.references.is_empty()
+        && !worker_origins(root, id, &preview.record.execution)?.is_empty()
+    {
+        preview.blockers.push("originating worker task manifest/reference identity is unavailable; retain for explicit native/provider review".into());
+    }
+    let raw_objects = git.run(
+        &preview.record.owner,
+        &[
+            "diff",
+            "--raw",
+            "--no-ext-diff",
+            &preview.record.base,
+            &preview.worker_head,
+            "--",
+        ],
+        false,
+    )?;
+    preview.path_objects = raw_objects
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.len() >= 5 && fields[0].starts_with(':'))
+                .then(|| format!("{} {} {}", fields[1], fields[2], fields[4..].join(" ")))
+        })
+        .take(512)
+        .collect();
     let paths = if action == Action::DeleteBranch {
         vec![preview.record.owner.as_path()]
     } else {
@@ -551,6 +611,10 @@ pub fn execute(
         let mut git = Git::new(cancel).map_err(std::io::Error::other)?;
         git.protect_checkout(owner,&root).map_err(std::io::Error::other)?;
         let before = preview_with(&root,owner,id,action,&git).map_err(std::io::Error::other)?;
+        let origins_before = worker_origins(&root, id, &before.record.execution).map_err(std::io::Error::other)?.len();
+        // Guard both checkouts so any live reservation on either is refused; a released worker
+        // origin never conflicts. Branch deletion runs from the owner, and the worker checkout
+        // may already be retired, as before.
         let paths = if action == Action::DeleteBranch { vec![before.record.owner.as_path()] } else { vec![before.record.owner.as_path(),before.record.execution.as_path()] };
         crate::workspaces::with_workspace_guard(&root,&paths,|guard| {
             let current = preview_with(&root,owner,id,action,&git)?;
@@ -559,14 +623,34 @@ pub fn execute(
             let mut registry = load(&root)?;
             let index = registry.records.iter().position(|record|record.id==id).ok_or("managed record disappeared")?;
             registry.records[index].phase=Phase::Retained;
-            let runs=paths.iter().map(|_|uuid::Uuid::new_v4().to_string()).collect::<Vec<_>>();
-            let conversation=uuid::Uuid::new_v4().to_string();
-            let attempt=uuid::Uuid::new_v4().to_string();
+            let origins = worker_origins(&root, id, &current.record.execution)?;
+            if origins.len() != origins_before {
+                return Err("workspace review changed; obtain and review a new preview".into());
+            }
+            // Any worker that ran here must have left its task references.
+            if !origins.is_empty() && (current.reference_hash.is_empty() || current.blockers.iter().any(|blocker| blocker.contains("originating worker task manifest/reference identity"))) {
+                return Err("exact originating worker run/attempt/task reference is unavailable; lifecycle retained".into());
+            }
+            // One worker: reacquire its exact released run. No worker (the user's own change) or
+            // several sequential workers: fresh lifecycle runs guard both checkouts, and the guard
+            // still refuses any live reservation on them.
+            let reacquire = match origins.as_slice() { [origin] => Some(origin), _ => None };
+            let (runs, conversation, attempt) = match reacquire {
+                Some(origin) => (vec![origin.run.clone()], origin.conversation.clone(), origin.attempt.clone()),
+                None => (
+                    paths.iter().map(|_| uuid::Uuid::new_v4().to_string()).collect::<Vec<_>>(),
+                    uuid::Uuid::new_v4().to_string(),
+                    uuid::Uuid::new_v4().to_string(),
+                ),
+            };
             registry.records[index].operation=Some(Operation { action, owner_head:current.owner_head.clone(), worker_head:current.worker_head.clone(), expected_tree:current.expected_tree.clone(), receipt:current.receipt.clone(), finished:false, runs:runs.clone(), conversation:conversation.clone(), attempt:attempt.clone() });
             registry.records[index].revision=registry.records[index].revision.checked_add(1).ok_or("managed revision overflow")?;
             registry.records[index].note=format!("Lifecycle {:?} reserved for owner {} and worker {}. Interrupted actions require explicit reconciliation; never replay automatically.",action,current.owner_head,current.worker_head);
             save(&root,&mut registry)?;
-            guard.reserve(&runs,&conversation,&attempt)?;
+            match reacquire {
+                Some(origin) => guard.reacquire_released(origin)?,
+                None => guard.reserve(&runs, &conversation, &attempt)?,
+            }
             let result = match action {
                 Action::Integrate => git.run(&current.record.owner,&["merge","--no-edit","--no-gpg-sign","--no-autostash","--no-overwrite-ignore","--no-stat","--",&current.worker_head],false),
                 Action::CherryPick => git.run(&current.record.owner,&["cherry-pick","--no-gpg-sign","-x",&current.worker_head],false),
@@ -580,6 +664,7 @@ pub fn execute(
                 if action==Action::Retire && current.record.execution.exists() { return Err("native Git reported retirement but the path remains; retain for inspection".into()); }
                 Ok(output)
             });
+            let owner_after = head(&git, &current.record.owner, "HEAD^{commit}")?;
             let confirmed=git.confirmed_exit.get();
             registry.records[index].revision=registry.records[index].revision.checked_add(1).ok_or("managed revision overflow")?;
             registry.records[index].phase=if result.is_ok() { match action { Action::Integrate | Action::CherryPick=>Phase::Ready, _=>Phase::Retired } } else { Phase::Retained };
@@ -591,7 +676,7 @@ pub fn execute(
             save(&root,&mut registry)?;
             guard.finish(&runs,&attempt,confirmed)?;
             result?;
-            Ok(json!({"action":action,"workspace":id,"status":"finished","owner_before":current.owner_head,"worker_head":current.worker_head,"record":registry.records[index]}).to_string())
+            Ok(json!({"action":action,"workspace":id,"status":"finished","owner_before":current.owner_head,"owner_after":owner_after,"worker_head":current.worker_head,"reference_hash":current.reference_hash,"checks":"not run by Concordia; run the repository's applicable check command against owner_after before PR handoff","pr_readiness":"user/provider Git workflow only","record":registry.records[index]}).to_string())
         }).map_err(std::io::Error::other)
     }).map_err(|error|error.to_string())
 }

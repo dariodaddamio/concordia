@@ -27,7 +27,7 @@ installed-host evidence and authorized live-provider evidence are separate relea
 Ownership: this document owns `M*` relationship/evaluation slices and `P*` interaction/capacity
 slices. Scheduling, routing, worker attempt identity and accounting belong to
 [the orchestration plan](orchestration-completion.md). Input payloads and plugin integration
-belong to [the workspace/input plan](workspace-input-completion.md). Neither adjacent plan may
+belong to the file-pane and input documentation. Neither adjacent plan may
 introduce an alternative approval broker, source reader or provider capability registry.
 
 ## Source audit
@@ -298,7 +298,7 @@ names, usage totals or character counts.
 For Claude, first establish whether a documented per-launch interface can deliver current-context
 and window fields for the headless adapter. Do not install a global statusline/hook to obtain them.
 For Cursor, require an actually supported negotiated/reported signal in the selected CLI version;
-an ACP schema containing a field is insufficient. If either path is unavailable, keep `/context`
+an ACP schema containing a field is insufficient. If either path is unavailable, keep the
 explanations explicit and reactive capacity-error recovery usable. Missing upstream capacity is
 not a blocker to M0–M3 or P0–P4.
 

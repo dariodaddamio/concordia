@@ -1,0 +1,145 @@
+//! The short, deterministic identity supplied to every provider session.
+
+use crate::store::ProviderKind;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct State<'a> {
+    pub provider: ProviderKind,
+    pub account: &'a str,
+    pub role: &'a str,
+    pub tools: &'a [String],
+    pub handoff_map: Option<&'a str>,
+}
+
+/// Return the Concordia tools exposed by the selected provider transport.
+/// The MCP catalog and native question bridge are separate registrations.
+pub fn tools_for_transport(provider: ProviderKind, mode: crate::native_input::Mode) -> Vec<String> {
+    if provider == ProviderKind::Claude {
+        let mut tools = crate::mcp::registered_tool_names();
+        if mode == crate::native_input::Mode::ClaudeStdio {
+            tools.push("AskUserQuestion".into());
+        }
+        tools
+    } else if provider == ProviderKind::Codex {
+        let mut tools = crate::mcp::registered_tool_names();
+        tools.push("ask_user".into());
+        tools
+    } else if matches!(
+        (provider, mode),
+        (
+            ProviderKind::Cursor,
+            crate::native_input::Mode::Standard | crate::native_input::Mode::CursorAcp
+        ) | (ProviderKind::Grok, crate::native_input::Mode::GrokAcp)
+            | (
+                ProviderKind::Opencode,
+                crate::native_input::Mode::OpencodeAcp
+            )
+    ) {
+        vec!["ask_user".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+pub fn render(state: &State<'_>) -> String {
+    let tools = if state.tools.is_empty() {
+        "none".to_owned()
+    } else {
+        state.tools.join(", ")
+    };
+    let question_tool = if state.tools.iter().any(|tool| tool == "AskUserQuestion") {
+        "AskUserQuestion"
+    } else if state.tools.iter().any(|tool| tool == "ask_user") {
+        "ask_user"
+    } else {
+        "unavailable"
+    };
+    let guidance = match (
+        state.tools.iter().any(|tool| tool == "agents"),
+        question_tool != "unavailable",
+    ) {
+        (true, true) => " Delegate with agents; ask clarification immediately during the turn.",
+        (true, false) => " Delegate with agents; use native questions when available.",
+        (false, true) => " Ask clarification immediately during the turn.",
+        (false, false) => " No Concordia tools are registered.",
+    };
+    let text = format!(
+        "You run inside Concordia, which hosts native provider CLIs. Provider: {provider}. Account: {account}. Role: {role}. Questions: {question_tool}, shown in Concordia during the turn when available. Tools: {tools}.{guidance} Preserve native approvals and explicit session identity.",
+        provider = state.provider.as_str(),
+        account = compact(state.account),
+        role = compact(state.role),
+        tools = compact(&tools),
+        guidance = guidance,
+    );
+    let _ = state.handoff_map;
+    text.split_whitespace()
+        .take(60)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn tag(text: &str) -> String {
+    if text.contains("<concordia_standing_context>") {
+        return text.to_owned();
+    }
+    format!("<concordia_standing_context>{text}</concordia_standing_context>")
+}
+
+/// Return whether a completed provider compaction has not already been handled.
+pub(crate) fn should_reinject_context(last: &mut Option<String>, id: &str) -> bool {
+    if id.is_empty() || last.as_deref() == Some(id) {
+        return false;
+    }
+    *last = Some(id.to_owned());
+    true
+}
+
+pub fn extract(prefix: Option<&str>) -> (Option<&str>, String) {
+    let Some(prefix) = prefix else {
+        return (None, String::new());
+    };
+    let Some(start) = prefix.find("<concordia_standing_context>") else {
+        return (None, prefix.to_owned());
+    };
+    let content_start = start + "<concordia_standing_context>".len();
+    let Some(end_rel) = prefix[content_start..].find("</concordia_standing_context>") else {
+        return (None, prefix.to_owned());
+    };
+    let end = content_start + end_rel;
+    let rest = format!(
+        "{}{}",
+        &prefix[..start],
+        &prefix[end + "</concordia_standing_context>".len()..]
+    );
+    (Some(&prefix[content_start..end]), rest)
+}
+
+fn compact(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .take(240)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_recorded_identity_tools_and_handoff_under_budget() {
+        let tools = vec!["agents".into(), "ask_user".into()];
+        let text = render(&State {
+            provider: ProviderKind::Claude,
+            account: "acct-a",
+            role: "reviewer",
+            tools: &tools,
+            handoff_map: Some("source map 42"),
+        });
+        assert!(text.split_whitespace().count() <= 60);
+        assert!(text.contains("inside Concordia"));
+        assert!(text.contains("agents, ask_user"));
+        assert!(!text.contains("source map 42"));
+        assert_eq!(tag(&tag("identity")), tag("identity"));
+    }
+}

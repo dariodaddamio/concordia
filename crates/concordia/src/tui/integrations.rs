@@ -87,6 +87,7 @@ pub(super) struct State {
     catalog: Option<crate::harness::catalog::Catalog>,
     review: Option<Review>,
     action: Option<ActionJob>,
+    command: Option<CommandJob>,
     new_path: Option<String>,
     selected: usize,
 }
@@ -103,12 +104,110 @@ struct ActionJob {
     review: Review,
     rx: mpsc::Receiver<Result<String, String>>,
 }
-fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
-    let mut lines = vec![PreviewLine::Title("Integrations and agent tools".into())];
+struct CommandJob {
+    conversation: String,
+    account: String,
+    cancel: Arc<AtomicBool>,
+    rx: mpsc::Receiver<Vec<String>>,
+}
+impl Drop for CommandJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+    }
+}
+
+pub(super) fn command(app: &mut App, arg: &str) {
+    if app.integrations.command.is_some() || app.integrations.action.is_some() {
+        app.push_system(
+            "An integration action is running; wait for its result before starting another",
+        );
+        return;
+    }
+    let root = app.state_root.clone();
+    let cwd = app.cwd.clone();
+    let provider = app.provider;
+    let home = app.home_path.clone();
+    let accounts = crate::accounts::setup_accounts(&root)
+        .into_iter()
+        .map(|account| (account.provider, account.home_path))
+        .collect();
+    let arg = arg.to_owned();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let (tx, rx) = mpsc::channel();
+    if std::thread::Builder::new()
+        .name("concordia-setup-command".into())
+        .spawn(move || {
+            let session = crate::harness::command::Session {
+                store: &root,
+                cwd: &cwd,
+                provider,
+                home: home.as_deref(),
+                accounts,
+            };
+            let lines = crate::harness::command::dispatch_cancellable(
+                &session,
+                &arg,
+                &|argv| {
+                    crate::harness::run::run_command_cancellable(
+                        argv,
+                        &cwd,
+                        crate::harness::run::DEFAULT_TIMEOUT,
+                        &worker_cancel,
+                    )
+                },
+                &worker_cancel,
+            );
+            let _ = tx.send(lines);
+        })
+        .is_err()
+    {
+        app.push_system("Could not start the setup command");
+        return;
+    }
+    app.integrations.command = Some(CommandJob {
+        conversation: app.deleg.d.conversation_id().into(),
+        account: app.account.clone(),
+        cancel,
+        rx,
+    });
+    app.push_system("Setup command running; results will appear here");
+}
+
+fn poll_command(app: &mut App) -> bool {
+    let Some(job) = app.integrations.command.as_ref() else {
+        return false;
+    };
+    let valid = job.conversation == app.deleg.d.conversation_id() && job.account == app.account;
+    if !valid {
+        job.cancel.store(true, Ordering::SeqCst);
+    }
+    let lines = match job.rx.try_recv() {
+        Ok(lines) => lines,
+        Err(mpsc::TryRecvError::Empty) => return false,
+        Err(_) => vec!["Setup command stopped; inspect its status before retrying".into()],
+    };
+    app.integrations.command = None;
+    if valid {
+        for line in lines {
+            app.push_system(line);
+        }
+    }
+    true
+}
+fn catalog_footer(catalog: &crate::harness::catalog::Catalog) -> String {
     if catalog.integrations.is_empty() {
-        lines.push(PreviewLine::Text(
-            "No Harness integrations connected. Press N for a new local manifest.".into(),
-        ));
+        "N new \u{b7} Esc close".into()
+    } else {
+        "\u{2191}/\u{2193} or Tab select \u{b7} C reconnect \u{b7} V verify \u{b7} D disconnect \u{b7} N new \u{b7} R refresh \u{b7} Esc close".into()
+    }
+}
+
+fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
+    // Border title already names the panel; the body starts with content.
+    let mut lines = Vec::new();
+    if catalog.integrations.is_empty() {
+        lines.push(PreviewLine::Text("No integrations connected yet.".into()));
     } else {
         let index = selected.min(catalog.integrations.len() - 1);
         let integration = &catalog.integrations[index];
@@ -136,14 +235,10 @@ fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) ->
             )));
         }
     }
-    lines.push(PreviewLine::Hint(
-        "↑/↓ or Tab select · C reconnect · V verify · D disconnect · N new · R refresh · Esc close"
-            .into(),
-    ));
     lines
 }
 pub(super) fn open(app: &mut App) {
-    if app.integrations.action.is_some() {
+    if app.integrations.action.is_some() || app.integrations.command.is_some() {
         app.flash("An integration action is finishing; refresh after it completes");
         return;
     }
@@ -193,7 +288,7 @@ pub(super) fn open(app: &mut App) {
         Vec::new(),
         false,
     );
-    app.footer_left = "R refresh · Esc close".into();
+    app.footer_left = "Esc close".into();
 }
 pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
     if app.integrations.new_path.is_some()
@@ -249,9 +344,8 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
     }
     if key.code == KeyCode::Esc {
         if app.integrations.new_path.take().is_some() {
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
             if let Some(catalog) = app.integrations.catalog.as_ref() {
+                app.footer_left = catalog_footer(catalog);
                 app.update_preview = Some(UpdatePreview {
                     history: Vec::new(),
                     history_expanded: false,
@@ -259,6 +353,8 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                     install_available: false,
                     release_url: None,
                 });
+            } else {
+                app.footer_left = "N new \u{b7} Esc close".into();
             }
             return true;
         }
@@ -271,9 +367,10 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                     install_available: false,
                     release_url: None,
                 });
+                app.footer_left = catalog_footer(catalog);
+            } else {
+                app.footer_left = "N new \u{b7} Esc close".into();
             }
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
             return true;
         }
         return false;
@@ -618,9 +715,9 @@ fn start_action(app: &mut App) {
     app.footer_left = "Integration action running · Esc cancels publication".into();
 }
 
-pub(super) fn poll_action(app: &mut App) {
+pub(super) fn poll_action(app: &mut App) -> bool {
     let Some(job) = app.integrations.action.as_ref() else {
-        return;
+        return false;
     };
     let valid = job.conversation == app.deleg.d.conversation_id()
         && job.generation == app.integrations.generation
@@ -639,7 +736,7 @@ pub(super) fn poll_action(app: &mut App) {
     }
     let result = match job.rx.try_recv() {
         Ok(result) => result,
-        Err(mpsc::TryRecvError::Empty) => return,
+        Err(mpsc::TryRecvError::Empty) => return false,
         Err(_) => Err("integration action stopped".into()),
     };
     app.integrations.action = None;
@@ -667,6 +764,7 @@ pub(super) fn poll_action(app: &mut App) {
         });
         app.footer_left = "R refresh · Esc close".into();
     }
+    true
 }
 
 /// Accept a terminal paste while the new-manifest field is active. The shared event loop may
@@ -703,10 +801,10 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
     true
 }
 
-pub(super) fn poll(app: &mut App) {
-    poll_action(app);
+pub(super) fn poll(app: &mut App) -> bool {
+    let changed = poll_command(app) | poll_action(app);
     let Some(job) = app.integrations.job.as_ref() else {
-        return;
+        return changed;
     };
     let valid = job.conversation == app.deleg.d.conversation_id()
         && job.generation == app.integrations.generation
@@ -720,7 +818,7 @@ pub(super) fn poll(app: &mut App) {
     }
     let result = match job.rx.try_recv() {
         Ok(result) => result,
-        Err(mpsc::TryRecvError::Empty) => return,
+        Err(mpsc::TryRecvError::Empty) => return changed,
         Err(_) => Err("Integration inspection stopped".into()),
     };
     app.integrations.job = None;
@@ -737,7 +835,6 @@ pub(super) fn poll(app: &mut App) {
                 vec![
                     PreviewLine::Title("Integration catalog unavailable".into()),
                     PreviewLine::Text(error),
-                    PreviewLine::Hint("R retry · Esc close".into()),
                 ]
             });
         if let Some(preview) = app.update_preview.as_mut() {
@@ -753,9 +850,12 @@ pub(super) fn poll(app: &mut App) {
                     detail: integration.status.clone(),
                 })
                 .collect();
+            let footer = catalog_footer(catalog);
             app.show_picker(PickerKind::Integrations, "integrations".into(), rows, false);
-            app.footer_left =
-                "C reconnect · V verify · D disconnect · N new · R refresh · Esc close".into();
+            app.footer_left = footer;
+        } else {
+            app.footer_left = "N new \u{b7} Esc close".into();
         }
     }
+    changed || valid
 }

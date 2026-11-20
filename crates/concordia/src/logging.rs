@@ -33,6 +33,10 @@ pub fn info(msg: &str) {
     write_event("INFO", msg);
 }
 
+pub fn warn(msg: &str) {
+    write_event("WARN", msg);
+}
+
 pub fn error(msg: &str) {
     write_event("ERROR", msg);
 }
