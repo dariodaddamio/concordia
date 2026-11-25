@@ -753,9 +753,19 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     assert_eq!(text.matches("spend cap").count(), 1, "{text}");
     assert!(!text.contains("Reading additional input"), "{text}");
     assert!(!text.contains("Ignoring unknown features"), "{text}");
+    let detail = h
+        .app
+        .messages
+        .last()
+        .and_then(|m| m.card.as_ref())
+        .and_then(|card| card.detail.as_deref())
+        .unwrap();
+    assert!(!detail.contains(cap), "{detail}");
+    assert!(!detail.contains("Reading additional input"), "{detail}");
+    assert!(!detail.contains("Ignoring unknown features"), "{detail}");
     assert!(
-        text.contains("something new") && text.contains("exited with code 1"),
-        "{text}"
+        detail.contains("something new") && detail.contains("exited with code 1"),
+        "{detail}"
     );
 }
 

@@ -478,6 +478,14 @@ impl App {
         }
     }
     pub(in crate::tui) fn finalize_turn(&mut self, outcome: TurnOutcome) {
+        self.finalize_turn_with_workspace(outcome, None);
+    }
+
+    pub(in crate::tui) fn finalize_turn_with_workspace(
+        &mut self,
+        outcome: TurnOutcome,
+        workspace_warning: Option<String>,
+    ) {
         self.poll_steer();
         if self.pending_steer.take().is_some() {
             self.push_system("Steering was not confirmed before the turn ended. Your draft is kept; check native history before resending.");
@@ -620,9 +628,8 @@ impl App {
         if outcome.cancelled {
             self.push_system("Cancelled. Queued messages are paused. Finished actions were kept.");
         }
-        if failed && outcome.stderr_tail.contains("already has an active writer") {
-            self.push_system("this Codex session is open in another client or pane. Close its active turn, then retry the restored prompt; /new starts a separate conversation. Concordia will not replay it automatically.");
-        }
+
+        let draft_restored = self.turn_finished(outcome.cancelled, failed);
         if failed {
             let session = self
                 .native_session_id
@@ -633,47 +640,69 @@ impl App {
                 Some(code) => format!("provider exited with code {code}"),
                 None => "provider could not run".to_string(),
             };
-            self.push_system(format!(
-                "{} session {}: {reason}. The prompt is kept; retry when ready.",
-                self.provider.as_str(),
-                session
-            ));
             let tail = outcome.stderr_tail.trim();
-            if tail.contains("apply_patch verification failed") {
-                self.push_card(StreamCard {
-                    id: format!("provider-diagnostics:{}", self.messages.len()),
-                    title: "Provider diagnostics: patch verification failed".into(),
-                    detail: Some(format!("These are tool diagnostics retained by the provider; they may predate its exit. They do not establish why the process stopped.\n\n{tail}")),
-                    status: CardStatus::Error,
-                });
-                self.push_system("A patch did not match the current file. Inspect the diagnostics and current files before retrying; completed edits remain in the workspace.");
+            let title = if tail.contains("already has an active writer") {
+                "Turn failed. This chat is open in another client or pane."
+            } else if workspace_warning.is_some() {
+                "Turn failed. Check the workspace before retrying."
+            } else if outcome.exit_code.is_none() {
+                "Could not start the turn."
+            } else if draft_restored {
+                "Turn failed. Your draft is back."
+            } else {
+                "Turn failed."
+            };
+            let mut detail = format!("{reason}.\n{} session {session}", self.provider.as_str());
+            if let Some(warning) = workspace_warning {
+                detail.push_str(&format!("\n\n{warning}"));
             }
-            let lines: Vec<&str> = tail.lines().collect();
-            let said: Vec<String> = self
+            if tail.contains("already has an active writer") {
+                detail.push_str("\n\nEnd the turn in the other client before retrying. Use /new to start another chat.");
+            }
+            if tail.contains("apply_patch verification failed") {
+                detail.push_str(
+                    "\n\nA patch did not match the current file. Earlier tool errors may not explain why the turn stopped. Check the files before retrying.",
+                );
+            }
+            let recent_errors = self
                 .messages
                 .iter()
                 .rev()
                 .take(8)
-                .filter(|m| m.role == MsgRole::System)
-                .map(|m| m.text.trim().to_string())
-                .collect();
-            for l in lines.iter().skip(lines.len().saturating_sub(6)) {
-                let t = l.trim();
-                if tail.contains("apply_patch verification failed")
-                    || t.is_empty()
-                    || is_cli_noise(t)
-                    || said.iter().any(|s| s == t)
-                {
-                    continue;
+                .filter(|message| message.role == MsgRole::System)
+                .map(|message| message.text.trim())
+                .collect::<Vec<_>>();
+            let lines = tail.lines().collect::<Vec<_>>();
+            let start = if tail.contains("apply_patch verification failed") {
+                0
+            } else {
+                lines.len().saturating_sub(6)
+            };
+            for &line in &lines[start..] {
+                let text = line.trim();
+                if !text.is_empty() && !is_cli_noise(text) && !recent_errors.contains(&text) {
+                    detail.push('\n');
+                    detail.push_str(line);
                 }
-                self.push_system(format!("  {}", l.trim_end()));
             }
+            self.push_card(StreamCard {
+                id: format!("turn-failure:{}", self.messages.len()),
+                title: title.into(),
+                detail: Some(detail),
+                status: CardStatus::Error,
+            });
+        } else if let Some(warning) = workspace_warning {
+            self.push_card(StreamCard {
+                id: format!("workspace-warning:{}", self.messages.len()),
+                title: "Check the workspace before continuing.".into(),
+                detail: Some(warning),
+                status: CardStatus::Error,
+            });
         }
         self.live_cards.clear();
         self.live_text.clear();
         self.streamed_text_committed = false;
         self.live_thinking.clear();
-        self.turn_finished(outcome.cancelled, failed);
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
         self.update_usage_block();

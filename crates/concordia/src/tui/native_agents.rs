@@ -206,18 +206,16 @@ fn fixed_column(value: &str, width: usize) -> String {
 
 fn agent_label(depth: usize, status: Status, metadata: &Facts) -> String {
     format!(
-        "{}{} {} {}{}{}{} {} {}",
+        "{}{} {role:<13} {}{} {}  {}",
         "  ".repeat(depth),
         status.icon(),
-        fixed_column(&metadata.role, 8),
         fixed_column(&metadata.model, 20),
         fixed_column(&metadata.effort, 6),
         context_bar(metadata.used, metadata.limit, 6),
-        " ",
         metadata
             .turns
             .map_or_else(|| "unknown".into(), |value| value.to_string()),
-        ""
+        role = metadata.role,
     )
 }
 
@@ -744,11 +742,12 @@ impl State {
     pub fn count(&self) -> usize {
         self.entries.len()
     }
-    fn toggle_group(&mut self) {
-        self.other_runs_open = !self.other_runs_open;
-    }
-    fn toggle(&mut self, id: &str) {
-        if !self.collapsed.remove(id) {
+    fn set_open(&mut self, id: &str, open: Option<bool>) {
+        if id == GROUP_ID {
+            self.other_runs_open = open.unwrap_or(!self.other_runs_open);
+        } else if open.unwrap_or_else(|| self.collapsed.contains(id)) {
+            self.collapsed.remove(id);
+        } else {
             self.collapsed.insert(id.into());
         }
     }
@@ -1026,15 +1025,12 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let percentage = metadata
                     .compaction
                     .map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
-                let status_text = format!(
-                    "{} {}",
-                    status.icon(),
-                    if status == Status::Done {
-                        "Inactive"
-                    } else {
-                        status.word()
-                    }
-                );
+                let status_text = format!("{} {}", status.icon(), status.word());
+                let status_color = match status {
+                    Status::Running => Color::Yellow,
+                    Status::Done => Color::Green,
+                    Status::Error => Color::Red,
+                };
                 let header = format!("#{} {}", row_number, metadata.role);
                 let header_gap = usize::from(columns[0].width.saturating_sub(2))
                     .saturating_sub(header.chars().count() + status_text.chars().count());
@@ -1047,7 +1043,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw(" ".repeat(header_gap)),
-                        Span::styled(status_text, Style::default().fg(Color::Green)),
+                        Span::styled(status_text, Style::default().fg(status_color)),
                     ]),
                     Line::styled(
                         format!("{} · {}", metadata.model, metadata.effort),
@@ -1221,8 +1217,7 @@ impl App {
         self.footer_left = if empty {
             "Esc close".into()
         } else {
-            "\u{2190}/\u{2192} collapse \u{b7} \u{2191}\u{2193} Enter inspect \u{b7} type to filter \u{b7} Esc close"
-                .into()
+            "↑↓ move · ← collapse · → expand · Enter inspect · Esc close".into()
         };
         if empty {
             if let Some(picker) = self.picker.as_mut() {
@@ -1230,9 +1225,9 @@ impl App {
             }
         }
     }
-    pub(super) fn toggle_agents_row(&mut self, id: &str) {
+    pub(super) fn set_agents_row_open(&mut self, id: &str, open: Option<bool>) {
         if id == GROUP_ID {
-            self.native_agents.toggle_group();
+            self.native_agents.set_open(id, open);
             self.refresh_agents_picker();
             return;
         }
@@ -1247,7 +1242,7 @@ impl App {
                 .find(|(_, stored)| *stored == index)
                 .map(|(id, _)| id.clone());
             if let Some(entry_id) = entry_id {
-                self.native_agents.toggle(&entry_id);
+                self.native_agents.set_open(&entry_id, open);
                 self.refresh_agents_picker();
             }
         }
@@ -1387,7 +1382,7 @@ mod tests {
         let messages = vec![chat("c1", "shell", &detail)];
         let mut state = State::default();
         state.rebuild(&messages);
-        state.toggle_group();
+        state.set_open(GROUP_ID, Some(true));
         let dir = tempfile::tempdir().unwrap();
         let rows = state.rows(&messages, &[], dir.path());
         assert_eq!(rows.len(), 2);
@@ -1481,7 +1476,7 @@ mod tests {
         assert!(rows[0].detail.contains("native work"));
         assert_eq!(rows[1].id, GROUP_ID);
         assert_eq!(rows[1].label, "▸ Other runs on this machine (2)");
-        state.toggle_group();
+        state.set_open(GROUP_ID, Some(true));
         let rows = state.rows(&messages, &[], dir.path());
         assert_eq!(rows.len(), 4);
         assert!(rows[1].label.starts_with("▾"));

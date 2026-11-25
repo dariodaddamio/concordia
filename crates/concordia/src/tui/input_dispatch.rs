@@ -339,7 +339,7 @@ pub(super) fn handle_key(
             if let Some(index) = picker.state.selected() {
                 if let Some(row) = picker.filtered().get(index) {
                     let id = row.id.clone();
-                    app.toggle_agents_row(&id);
+                    app.set_agents_row_open(&id, Some(key.code == KeyCode::Right));
                 }
             }
             return false;
@@ -985,7 +985,7 @@ fn input_index_at(app: &App, x: u16, y: u16) -> usize {
 
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if matches!(m.kind, MouseEventKind::Down(_)) {
-        app.rename_editor = None;
+        app.end_tab_rename();
     }
     if local_terminal::mouse(app, m) {
         return;

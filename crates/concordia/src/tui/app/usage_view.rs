@@ -1,7 +1,7 @@
 use super::super::*;
 
 pub(in crate::tui) const USAGE_FOOTER: &str =
-    "←↑↓→ move · PgUp/PgDn scroll card · r refresh · t tokens · Esc";
+    "←↑↓→ move · Enter select · PgUp/PgDn scroll · R refresh · T tokens · Esc close";
 
 impl App {
     pub(in crate::tui) fn refresh_usage(&mut self) {
@@ -246,11 +246,12 @@ impl App {
             .into_iter()
             .filter_map(|a| a.home_path.map(|h| (a.account, a.provider, h)))
             .collect();
-        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
+        let rows_data =
+            usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account, true);
         let rows: Vec<PickerRow> = if rows_data.is_empty() {
             vec![PickerRow {
-                id: "none".into(),
-                label: "no accounts".into(),
+                id: "usage-add".into(),
+                label: "Add account".into(),
                 detail: String::new(),
             }]
         } else {

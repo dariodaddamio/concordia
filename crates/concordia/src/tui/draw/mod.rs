@@ -2,14 +2,14 @@ use super::reply_header;
 use super::*;
 
 fn card_copy_prefix(text: &str) -> usize {
-    let mut chars = text.chars();
-    if chars.next() != Some('\u{2502}') || chars.next() != Some(' ') {
-        return 0;
+    if ["◉ ", "✗ ", "✓ "]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+    {
+        2
+    } else {
+        0
     }
-    let rest: Vec<char> = chars.collect();
-    rest.iter()
-        .position(|c| c.is_alphanumeric())
-        .map_or(2, |index| index + 2)
 }
 
 pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
@@ -193,35 +193,34 @@ fn cell_width(text: &str) -> usize {
 }
 
 fn dropdown_label(kind: PickerKind, label: &str) -> String {
-    let label = if kind == PickerKind::Provider {
+    if kind == PickerKind::Provider {
         label
-            .split_once(" \u{b7} ")
+            .split_once(" · ")
             .map_or(label, |(_, account)| account)
     } else {
         label
-    };
-    let current = label.ends_with(" \u{b7} current");
-    let name = label.split(" \u{b7} ").next().unwrap_or(label);
-    if current && name != label {
-        format!("{name} \u{b7} current")
-    } else {
-        name.to_owned()
     }
+    .to_owned()
 }
 
 fn dropdown_detail(kind: PickerKind, detail: &str) -> String {
-    if kind != PickerKind::Provider {
-        return String::new();
+    match kind {
+        PickerKind::Model => detail.split(" · ").next().unwrap_or(detail).to_owned(),
+        PickerKind::Provider => {
+            let limits = detail
+                .split(" · ")
+                .filter(|part| part.contains("% left") || part.ends_with(" usage-based"))
+                .map(|part| part.split(" (").next().unwrap_or(part))
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if limits.is_empty() {
+                detail.to_owned()
+            } else {
+                limits
+            }
+        }
+        _ => detail.to_owned(),
     }
-    if detail.starts_with("not connected") {
-        return "not connected".into();
-    }
-    detail
-        .split(" \u{b7} ")
-        .filter(|part| part.contains("% left") || part.ends_with(" usage-based"))
-        .map(|part| part.split(" (").next().unwrap_or(part))
-        .collect::<Vec<_>>()
-        .join(" \u{b7} ")
 }
 
 const DROPDOWN_ROWS: usize = 10;
@@ -325,7 +324,15 @@ fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<
 
 fn fit_panel_title(title: &str, popup_width: u16) -> String {
     let room = (popup_width as usize).saturating_sub(6);
-    ellipsis(title, room)
+    if title.is_empty() {
+        String::new()
+    } else {
+        panel_title(&ellipsis(title, room))
+    }
+}
+
+pub(super) fn panel_title(title: &str) -> String {
+    format!(" {} ", title.trim())
 }
 
 fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
@@ -487,13 +494,13 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     let room = list.width as usize;
     let value_width = rows
         .iter()
-        .map(|(tab, row)| view.tabs[*tab].rows[*row].value.chars().count() + 4)
+        .map(|(tab, row)| cell_width(&view.tabs[*tab].rows[*row].value) + 4)
         .max()
         .unwrap_or(0)
         .min(room / 2);
     let label_width = labels
         .iter()
-        .map(|label| label.chars().count() + 4)
+        .map(|label| cell_width(label) + 4)
         .max()
         .unwrap_or(0)
         .min(room.saturating_sub(value_width + 2));
@@ -502,7 +509,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         let item = &view.tabs[*tab].rows[*row];
         let is_selected = position == selected;
         let label = ellipsis(&labels[position], label_width.saturating_sub(3));
-        let leader = label_width.saturating_sub(label.chars().count() + 2);
+        let leader = label_width.saturating_sub(cell_width(&label) + 2);
         let value = ellipsis(&item.value, value_width.saturating_sub(4));
         let value_style = settings_value_style(
             (item.action == "permissions").then(|| mode_color(trust)),
@@ -518,18 +525,22 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             base
         };
-        let pad = room.saturating_sub(label_width + value.chars().count() + 4);
+        let value_rect = Rect::new(
+            list.x + label_width as u16 + 1,
+            list.y + (position - top) as u16,
+            (cell_width(&value) + 4) as u16,
+            1,
+        );
         lines.push(Line::from(vec![
             Span::styled(format!(" {label} "), label_style),
             Span::styled(format!("{} ", "·".repeat(leader)), base.fg(theme::muted())),
             Span::styled("[ ", base.fg(theme::muted())),
             Span::styled(value, base.patch(value_style)),
             Span::styled(" ]", base.fg(theme::muted())),
-            Span::styled(" ".repeat(pad), base),
         ]));
-        let row_rect = Rect::new(list.x, list.y + (position - top) as u16, list.width, 1);
+        let row_rect = Rect::new(list.x, value_rect.y, value_rect.right() - list.x, 1);
         if is_selected && item.action == "permissions" {
-            app.areas.trust_anchor = Some(row_rect);
+            app.areas.trust_anchor = Some(value_rect);
         }
         view.row_areas.push((row_rect, position));
     }
@@ -543,7 +554,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         .unwrap_or_default();
     if help_width > 0 {
         let help = Rect::new(
-            body.right().saturating_sub(help_width),
+            list.x + (label_width + value_width) as u16 + 2,
             body.y,
             help_width,
             body.height.min(12),
@@ -1006,6 +1017,7 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {
         return;
     }
+    const CANCEL: &str = "[ Esc ] cancel";
     let key = Style::default().fg(Color::DarkGray);
     let right = format!(
         " \u{b7} {} \u{b7} ",
@@ -1032,22 +1044,24 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
         status.push(c);
         width += n;
     }
-    let prefix = format!(
-        " {} {status}",
+    let marker = if matches!(app.phase, Phase::Tool(_)) {
+        "◉"
+    } else {
         app.phase
             .frame_with_motion(app.tick_count, app.appearance.ui.motion)
-    );
+    };
+    let prefix = format!(" {marker} {status}");
     let x =
         area.x + (Line::from(prefix.clone()).width() + Line::from(right.clone()).width()) as u16;
-    if x + 7 <= area.right() {
-        app.areas.run_cancel = Rect::new(x, area.y, 7, 1);
+    let cancel_width = CANCEL.len() as u16;
+    if x + cancel_width <= area.right() {
+        app.areas.run_cancel = Rect::new(x, area.y, cancel_width, 1);
     }
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(prefix, Style::default().fg(app.phase.color())),
             Span::styled(right, Style::default().fg(Color::DarkGray)),
-            Span::styled("[ Esc ]", key),
-            Span::raw(" cancel"),
+            Span::styled(CANCEL, key),
         ])),
         area,
     );
@@ -1074,6 +1088,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     app.areas.header_attention = None;
     app.areas.home_documentation = None;
     let bar = Style::default().bg(BAR_BG).fg(Color::Indexed(252));
+    let welcome = landing::welcome_visible(app);
     let model = app.model_label();
     let model_unset = model == "choose model";
     let account = app.account_heading();
@@ -1101,6 +1116,15 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(navigation, bar.fg(Color::Cyan)),
         Span::styled(brand, bar.fg(Color::Indexed(75))),
     ];
+    if welcome {
+        left.push(Span::styled(
+            " No account connected ",
+            bar.fg(theme::muted()),
+        ));
+        draw_header_attention(app, area, &mut left, bar);
+        f.render_widget(Paragraph::new(Line::from(left)).style(bar), area);
+        return;
+    }
     let provider_x = left.iter().map(Span::width).sum::<usize>();
     let effort_text = app
         .effort
@@ -1181,18 +1205,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
             left.push(Span::styled(agents, bar.fg(Color::Cyan)));
         }
     }
-    let needs_you = app.needs_you.len();
-    if needs_you > 0 {
-        let badge = format!("  Attention {needs_you} (Ctrl+N)");
-        if left.iter().map(Span::width).sum::<usize>() + badge.len() <= available {
-            let x = left.iter().map(Span::width).sum::<usize>() as u16;
-            app.areas.header_attention = Some(Rect::new(area.x + x, area.y, badge.len() as u16, 1));
-            left.push(Span::styled(
-                badge,
-                bar.fg(Color::Yellow).add_modifier(Modifier::BOLD),
-            ));
-        }
-    }
+    draw_header_attention(app, area, &mut left, bar);
     let usage_color = match app.usage_tone {
         UsageTone::Ok => Color::Green,
         UsageTone::Warn => Color::Yellow,
@@ -1266,6 +1279,26 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
                 ..area
             },
         );
+    }
+}
+
+fn draw_header_attention(app: &mut App, area: Rect, spans: &mut Vec<Span<'_>>, style: Style) {
+    let count = app.needs_you.len();
+    let used = spans.iter().map(Span::width).sum::<usize>();
+    if count > 0 {
+        let badge = format!("  Attention {count} (Ctrl+N)");
+        if used + badge.len() <= area.width as usize {
+            app.areas.header_attention = Some(Rect::new(
+                area.x + used as u16,
+                area.y,
+                badge.len() as u16,
+                1,
+            ));
+            spans.push(Span::styled(
+                badge,
+                style.fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ));
+        }
     }
 }
 
@@ -1430,6 +1463,15 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
     let mut in_block = false;
     let count = app.messages.len();
+    if app.messages.is_empty() && !app.busy {
+        blocks.push(TBlock {
+            gutter: "i ",
+            gutter_style: Style::default().fg(Color::Indexed(75)),
+            style: Style::default().fg(Color::Indexed(245)),
+            text: START_HINT,
+            ..spacer()
+        });
+    }
     for (i, m) in app.messages.iter().enumerate() {
         if groups.hidden[i] {
             continue;
@@ -1685,8 +1727,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                     Paragraph::new(format!(
                         "\u{25be} Collapse \u{b7} {}",
                         crate::provider::stream_cards::format_card_line(card)
-                            .trim_start_matches('│')
-                            .trim()
                     ))
                     .style(
                         Style::default()
@@ -1757,7 +1797,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             let query = app.activity.query_with_cursor();
             let block = Block::default()
                 .title(format!(
-                    "Activity · Find: {query} · {} matches",
+                    " Activity · Find: {query} · {} matches ",
                     app.activity.matches.len()
                 ))
                 .borders(Borders::ALL);
@@ -2170,7 +2210,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         let title = fit_panel_title(&picker.title, popup.width);
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" {title} "))
+            .title(title)
             .padding(ratatui::widgets::Padding::horizontal(1));
         f.render_widget(Paragraph::new(visible).block(block), popup);
         modal::draw_close(f, popup, app, modal::Target::Picker);
@@ -2178,7 +2218,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     }
     if picker.kind == PickerKind::Usage {
         let width = area.width.saturating_sub(2);
-        let cols = (width / 54).max(1) as usize;
+        let cols = (width / 52).max(1) as usize;
         picker.usage_cols = cols;
         let rows = picker
             .filtered()
@@ -2207,7 +2247,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .iter()
             .map(|(_, label, detail)| {
                 let width = cell_width.saturating_sub(2) as usize;
-                let mut lines = wrap(label, width);
+                let (heading, body) = label.split_once('\n').unwrap_or((label, ""));
+                let mut lines = Vec::new();
+                if let Some((_, profile)) = heading.split_once(" · ") {
+                    lines.extend(wrap(profile, width));
+                }
+                lines.extend(wrap(body, width));
                 if !detail.is_empty() {
                     lines.extend(wrap(detail, width));
                 }
@@ -2237,12 +2282,16 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        let cell_height = visible_lines
-            .chunks(cols)
-            .map(|chunk| chunk.iter().map(Vec::len).max().unwrap_or(1) as u16 + 2)
-            .collect::<Vec<_>>();
-        let row_count = cell_height.len();
-        let content_height = cell_height.iter().sum::<u16>() + row_count.saturating_sub(1) as u16;
+        let card_height = cell_lines
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1)
+            .clamp(1, USAGE_CARD_LINES) as u16
+            + 2;
+        let row_count = rows.len().div_ceil(cols);
+        let stride = card_height + 1;
+        let content_height = (row_count as u16 * stride).saturating_sub(1);
         let height = content_height.max(1).min(area.height);
         let popup = Rect {
             x: area.x + 1,
@@ -2251,31 +2300,15 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height,
         };
         f.render_widget(Clear, popup);
-        let selected_row = selected / cols;
-        let mut first_row = 0usize;
-        while first_row < selected_row {
-            let gap_before = first_row as u16;
-            let gap_to_selected = selected_row as u16;
-            let top: u16 = cell_height[..selected_row].iter().sum::<u16>() + gap_to_selected;
-            let visible: u16 = cell_height[first_row..=selected_row].iter().sum::<u16>()
-                + selected_row.saturating_sub(first_row) as u16;
-            if top < cell_height[..first_row].iter().sum::<u16>() + gap_before + popup.height
-                && visible <= popup.height
-            {
-                break;
-            }
-            first_row += 1;
-        }
-        let mut y = popup.y;
-        for (index, (id, _label, detail)) in rows.into_iter().enumerate() {
+        let rows_visible = usize::from(popup.height.saturating_add(1) / stride).max(1);
+        let first_row = (selected / cols).saturating_sub(rows_visible - 1);
+        for (index, (id, label, detail)) in rows.into_iter().enumerate().skip(first_row * cols) {
             let col = index % cols;
             let row = index / cols;
-            if row < first_row {
-                continue;
-            }
-            if y >= popup.bottom() {
+            if row - first_row >= rows_visible {
                 break;
             }
+            let y = popup.y + (row - first_row) as u16 * stride;
             let cell = Rect {
                 x: popup.x + col as u16 * cell_width,
                 y,
@@ -2284,10 +2317,13 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                         .right()
                         .saturating_sub(popup.x + col as u16 * cell_width),
                 ),
-                height: cell_height[row].min(popup.bottom().saturating_sub(y)),
+                height: card_height.min(popup.bottom().saturating_sub(y)),
             };
+            let heading = label.lines().next().unwrap_or_default();
+            let heading = heading.split_once(" · ").map_or(heading, |(name, _)| name);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .title(fit_panel_title(heading, cell.width))
                 .border_style(if index == selected {
                     Style::default().fg(Color::Cyan)
                 } else {
@@ -2297,7 +2333,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(crate::usage::UsageTone::Ok) => Color::Green,
                 Some(crate::usage::UsageTone::Warn) => Color::Yellow,
                 Some(crate::usage::UsageTone::Bad) => Color::Red,
-                Some(crate::usage::UsageTone::Mute) => Color::DarkGray,
+                Some(crate::usage::UsageTone::Mute) => Color::Reset,
                 None => Color::Reset,
             };
             let mut lines = visible_lines[index]
@@ -2313,12 +2349,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             }
             f.render_widget(Paragraph::new(lines).block(block), cell);
             app.picker_rows.push((cell, index));
-            if col + 1 == cols || index + 1 == visible_lines.len() {
-                y = y.saturating_add(cell_height[row]);
-                if row + 1 < row_count {
-                    y = y.saturating_add(1);
-                }
-            }
         }
         modal::draw_close(f, popup, app, modal::Target::Picker);
         return;
@@ -2329,7 +2359,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .filter(|(kind, _)| *kind == picker.kind)
         .map(|(_, chip)| chip);
     let width = if picker.kind == PickerKind::Trust {
-        area.width.saturating_sub(2).min(54)
+        let width = area.width.saturating_sub(2).min(54);
+        app.areas
+            .trust_anchor
+            .map(|anchor| screen.right().saturating_sub(anchor.x))
+            .filter(|available| *available >= 36)
+            .map_or(width, |available| width.min(available))
     } else if let Some(chip) = dropdown {
         dropdown_width(
             picker.kind,
@@ -2479,7 +2514,9 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .filter(|_| picker.kind == PickerKind::Trust)
     {
         popup.width = popup.width.min(screen.width);
-        popup.x = anchor.right().saturating_sub(popup.width).max(anchor.x);
+        popup.x = anchor
+            .x
+            .clamp(screen.x, screen.right().saturating_sub(popup.width));
         let below = screen.bottom().saturating_sub(anchor.bottom());
         popup.height = popup
             .height
@@ -2640,10 +2677,12 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 ));
             }
             if let Some(detail) = fitted_detail {
-                spans.extend([Span::styled(
-                    format!("  {detail}"),
-                    Style::default().fg(Color::DarkGray),
-                )]);
+                let style = if detail == crate::usage::NO_USAGE_DATA {
+                    Style::default()
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(format!("  {detail}"), style));
             }
             ListItem::new(Line::from(spans))
         })
@@ -2909,6 +2948,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         (warning, Style::default().fg(Color::Red))
     } else if let Some(m) = flash {
         (m, Style::default().fg(Color::Indexed(179)))
+    } else if app.rename_editor.is_some() && !app.mcp_add_editor {
+        (
+            "Enter save title · Esc close",
+            Style::default().fg(Color::DarkGray),
+        )
     } else if app.activity.detail.is_some() {
         (
             "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
@@ -2921,7 +2965,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     {
         (
             if w < 75 {
-                "Enter apply \u{b7} Esc cancel"
+                "Enter select \u{b7} Esc close"
             } else {
                 app.footer_left.as_str()
             },
@@ -3007,12 +3051,12 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",
             Style::default().fg(Color::DarkGray),
         )
-    } else if app.has_selection() {
+    } else if app.has_selection() && app.picker.is_none() {
         (
             "right-click or Ctrl+C to copy \u{b7} click to clear",
             Style::default().fg(Color::Indexed(179)),
         )
-    } else if app.view.scroll > 0 {
+    } else if app.view.scroll > 0 && app.picker.is_none() {
         (scrolled.as_str(), Style::default().fg(Color::Indexed(179)))
     } else if app.questions.waiting() && app.picker.is_none() {
         (
@@ -3022,7 +3066,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     } else if app.busy && app.picker.is_none() {
         (
             if app.pending_steer.is_some() {
-                "Waiting for steering confirmation · Ctrl+C cancel"
+                "Waiting for steering confirmation · Esc cancel"
             } else if app.can_steer_draft() {
                 if app.busy_send_confirmation.as_ref().is_some_and(|armed| {
                     armed.prompt == app.composer_value()
@@ -3030,9 +3074,9 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
                         && armed.conversation == app.deleg.d.conversation_id()
                         && armed.armed.elapsed() <= Duration::from_secs(5)
                 }) {
-                    "Enter again steer · Tab queue · Ctrl+C cancel"
+                    "Enter again steer · Tab queue · Esc cancel"
                 } else {
-                    "Enter choose steer · Tab queue · Ctrl+C cancel"
+                    "Enter choose steer · Tab queue · Esc cancel"
                 }
             } else if app.busy_send_confirmation.as_ref().is_some_and(|armed| {
                 armed.prompt == app.composer_value()
@@ -3040,11 +3084,11 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
                     && armed.conversation == app.deleg.d.conversation_id()
                     && armed.armed.elapsed() <= Duration::from_secs(5)
             }) {
-                "Enter again interrupt + send · Tab queue · Ctrl+C cancel"
+                "Enter again interrupt + send · Tab queue · Esc cancel"
             } else if app.idle_notice.is_some() {
-                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel \u{b7} Ctrl+K options"
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Esc cancel \u{b7} Ctrl+K options"
             } else {
-                "Tab queue \u{b7} Ctrl+O expand \u{b7} Ctrl+C cancel"
+                "Tab queue \u{b7} Ctrl+O expand \u{b7} Esc cancel"
             },
             Style::default().fg(Color::DarkGray),
         )

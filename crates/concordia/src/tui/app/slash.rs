@@ -43,7 +43,7 @@ impl App {
             rows,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter run · Esc cancels with nothing sent".into();
+        self.footer_left = "↑↓ move · Enter run · Esc close".into();
     }
 
     fn run_mcp_command(&mut self, args: &str) {
@@ -570,7 +570,7 @@ impl App {
         }
         if let SlashCommand::Customization(hooks) = &cmd {
             settings::catalog(self, *hooks);
-            self.footer_left = "↑↓ choose · Enter open source · Esc close".into();
+            self.footer_left = "↑↓ move · Enter open source · Esc close".into();
             return true;
         }
         if let SlashCommand::Harness(arg) = &cmd {

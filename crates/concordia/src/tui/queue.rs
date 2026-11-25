@@ -198,7 +198,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let mut rects = Vec::new();
     if q.paused {
         lines.push(Line::from(Span::styled(
-            fit(" queue paused - Ctrl+R resumes", w),
+            fit(" queue paused · Ctrl+R resume", w),
             Style::default().fg(WARN),
         )));
     }
@@ -299,7 +299,7 @@ fn draw_editor(f: &mut Frame, area: Rect, app: &mut App) {
         let mut lines = Vec::new();
         if q.paused && area.height > 1 {
             lines.push(Line::from(Span::styled(
-                fit(" queue paused - Ctrl+R resumes", width),
+                fit(" queue paused · Ctrl+R resume", width),
                 Style::default().fg(WARN),
             )));
         }
@@ -765,7 +765,7 @@ impl App {
         }
     }
 
-    pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
+    pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) -> bool {
         let sent = self.last_sent.take();
         if cancelled || failed {
             self.queue.dispatch.clear_automatic();
@@ -776,12 +776,13 @@ impl App {
                     && self.images.count() == 0
                 {
                     self.restore_composer(&p);
-                    self.push_system("your prompt is back in the box");
+                    return true;
                 }
             }
         } else {
             self.queue.dispatch.set_automatic();
         }
+        false
     }
 
     pub(super) fn on_turn_done(
@@ -792,7 +793,7 @@ impl App {
         if self.cancel_requested {
             outcome.cancelled = true;
         }
-        let scope_closed = self.finish_main_scope(&outcome);
+        let (scope_closed, workspace_warning) = self.finish_main_scope(&outcome);
         if !scope_closed {
             self.queue.dispatch = Dispatch::Idle;
             self.pause_queue();
@@ -821,7 +822,7 @@ impl App {
             self.prepare_usage_continuation(&outcome)
         };
         let idle_handoff = outcome.cancelled && self.handoff_after_cancel;
-        self.finalize_turn(outcome);
+        self.finalize_turn_with_workspace(outcome, workspace_warning);
         if idle_handoff {
             self.handoff_after_cancel = false;
             self.push_system(
@@ -908,7 +909,7 @@ impl App {
         while !self.busy && !self.queue.paused && !self.queue.items.is_empty() {
             if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
                 self.queue.paused = true;
-                self.push_system("queue paused - an update is running");
+                self.push_system("queue paused · update in progress");
                 break;
             }
             let line = self.queue.items.remove(0);

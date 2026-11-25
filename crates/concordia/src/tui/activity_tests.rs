@@ -58,7 +58,7 @@ fn expansion_and_detail_use_independent_message_identity() {
         .as_deref()
         .unwrap()
         .contains("Inspect project · 2 operations"));
-    assert!(groups.text[0].as_deref().unwrap().starts_with("│ ✓ "));
+    assert!(groups.text[0].as_deref().unwrap().starts_with("✓ "));
     assert_eq!(groups.hidden, vec![false, true, false, false, false, false]);
     a.toggle_card(0, false);
     let groups = grouped_cards(&messages, &a, false);
@@ -246,16 +246,17 @@ fn activity_modal_handles_older_and_newer_cards_through_main_key_handler() {
     app.begin_queue_edit(pending);
     app.messages.push(card("one", "older", "one full result"));
     app.messages.push(card("two", "newer", "two full result"));
-    app.activity.open(2);
+    let newest = app.messages.len() - 1;
+    app.activity.open(newest);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &tx);
-    assert_eq!(app.activity.detail, Some(1));
+    assert_eq!(app.activity.detail, Some(newest - 1));
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
         &tx,
     );
-    assert_eq!(app.activity.detail, Some(2));
+    assert_eq!(app.activity.detail, Some(newest));
     assert_eq!(app.editor.text(), "preserve draft");
     assert_eq!(
         app.queue.edit.as_ref().unwrap().editor.text(),
@@ -360,7 +361,7 @@ fn selected_match_in_tall_output_is_present_in_the_drawn_detail_viewport() {
         .collect::<Vec<_>>()
         .join("\n");
     app.messages.push(card("long", "tool output", &body));
-    app.activity.open(1);
+    app.activity.open(app.messages.len() - 1);
     app.activity.query = "needle".into();
     app.activity.query_cursor = 6;
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

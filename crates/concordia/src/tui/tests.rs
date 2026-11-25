@@ -1,6 +1,8 @@
 use super::*;
 #[path = "tests/app.rs"]
 mod app;
+#[path = "tests/consistency.rs"]
+mod consistency;
 #[path = "tests/draw.rs"]
 mod draw;
 #[path = "tests/input_dispatch.rs"]

@@ -377,11 +377,11 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 vec![row(
                     "custom",
                     "Enter a hex color",
-                    "Example: #FFB000 · Enter saves · Esc cancels",
+                    "Example: #FFB000 · Enter save · Esc close",
                 )],
                 true,
             );
-            app.footer_left = "Type #RRGGBB · Enter saves · Esc cancels".into();
+            app.footer_left = "Type #RRGGBB · Enter save · Esc close".into();
         }
         (PickerKind::BrandColor, value) => save(app, "color", value),
         _ => {}

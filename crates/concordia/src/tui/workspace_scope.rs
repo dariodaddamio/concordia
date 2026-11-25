@@ -102,10 +102,10 @@ impl App {
         }
     }
 
-    pub(super) fn finish_main_scope(&mut self, outcome: &TurnOutcome) -> bool {
+    pub(super) fn finish_main_scope(&mut self, outcome: &TurnOutcome) -> (bool, Option<String>) {
         let admission_failed = std::mem::take(&mut self.scopes.admission_failed);
         let Some((owner, invoked)) = self.scopes.active.take() else {
-            return !admission_failed;
+            return (!admission_failed, None);
         };
         let not_started = !invoked.load(std::sync::atomic::Ordering::SeqCst);
         let confirmed = not_started
@@ -122,20 +122,21 @@ impl App {
             &owner.attempt_id,
             confirmed,
         ) {
+            Ok(()) if confirmed => (true, None),
             Ok(()) => {
-                if !confirmed {
-                    self.push_system(if outcome.exit_code.is_some() {
-                        "Native process exited before all tool completions were confirmed; workspace reservation retained. Inspect unfinished tool effects and remaining child processes, then acknowledge stopped in the workspace panel before explicit continuation."
-                    } else {
-                        "Native process exit is uncertain; workspace reservation retained. Inspect the old process, then acknowledge stopped in the workspace panel before explicit continuation."
-                    });
-                }
-                confirmed
+                let reason = if outcome.exit_code.is_some() {
+                    "The provider stopped before confirming that all tools finished."
+                } else {
+                    "Concordia could not confirm that the provider stopped."
+                };
+                (false, Some(format!("{reason} Check unfinished changes and running processes. Then confirm the turn stopped in the workspace panel before continuing.")))
             }
-            Err(error) => {
-                self.push_system(format!("workspace reservation could not be released: {error}; automatic continuation paused"));
-                false
-            }
+            Err(error) => (
+                false,
+                Some(format!(
+                    "Could not release the workspace reservation: {error}."
+                )),
+            ),
         }
     }
 

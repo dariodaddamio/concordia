@@ -422,7 +422,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                                 release_url: None,
                             });
                         }
-                        app.footer_left = "Enter confirm · Esc cancel".into();
+                        app.footer_left = "Enter confirm · Esc close".into();
                     }
                     Err(error) => app.flash(error),
                 }
@@ -430,12 +430,12 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
             }
             KeyCode::Backspace => {
                 path.pop();
-                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc cancel".into())], install_available: false, release_url: None });
+                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc close".into())], install_available: false, release_url: None });
                 return true;
             }
             KeyCode::Char(c) if !c.is_control() && path.chars().count() < 4096 => {
                 path.push(c);
-                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc cancel".into())], install_available: false, release_url: None });
+                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc close".into())], install_available: false, release_url: None });
                 return true;
             }
             KeyCode::Char(_) => {
@@ -454,14 +454,13 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                 PreviewLine::Title("New local integration".into()),
                 PreviewLine::Field("Path", String::new()),
                 PreviewLine::Hint(
-                    "Type or paste a local folder/manifest path · Enter inspect · Esc cancel"
-                        .into(),
+                    "Type or paste a local folder/manifest path · Enter inspect · Esc close".into(),
                 ),
             ],
             install_available: false,
             release_url: None,
         });
-        app.footer_left = "Type path · Enter inspect · Esc cancel".into();
+        app.footer_left = "Type path · Enter inspect · Esc close".into();
         return true;
     }
     if app.integrations.review.is_some() && key.code == KeyCode::Enter {
@@ -557,7 +556,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
             release_url: None,
         });
     }
-    app.footer_left = "Enter confirm · Esc cancel".into();
+    app.footer_left = "Enter confirm · Esc close".into();
     true
 }
 
@@ -787,7 +786,7 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
         lines: vec![
             PreviewLine::Title("New local integration".into()),
             PreviewLine::Field("Path", path.clone()),
-            PreviewLine::Hint("Enter inspect · Esc cancel".into()),
+            PreviewLine::Hint("Enter inspect · Esc close".into()),
         ],
         install_available: false,
         release_url: None,

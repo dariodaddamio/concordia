@@ -225,10 +225,13 @@ mod tests {
             .validate_for(ProviderKind::Codex, dir.path(), Some(&home))
             .unwrap();
             app.reserve_main_scope(&owner).unwrap();
-            assert!(app.finish_main_scope(&TurnOutcome {
-                stderr_tail: "synthetic pre-spawn image validation failure".into(),
-                ..Default::default()
-            }));
+            assert!(
+                app.finish_main_scope(&TurnOutcome {
+                    stderr_tail: "synthetic pre-spawn image validation failure".into(),
+                    ..Default::default()
+                })
+                .0
+            );
             let registry = crate::workspaces::load(dir.path()).unwrap();
             assert!(registry
                 .reservations

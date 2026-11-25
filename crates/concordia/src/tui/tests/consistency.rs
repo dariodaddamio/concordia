@@ -1,0 +1,295 @@
+use super::*;
+
+#[test]
+fn header_dropdowns_start_on_the_current_choice() {
+    let iso = Isolated::new();
+    let home = iso.base.path().join(".codex");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("models_cache.json"),
+        r#"{"models":[{"slug":"another-model","display_name":"Another model","visibility":"list"},{"slug":"gpt-5.6-luna","display_name":"GPT-5.6 Luna","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"}]}]}"#,
+    ).unwrap();
+    for width in [80, 120, 160] {
+        let mut h = Harness::new(width, 30);
+        h.app.model = "gpt-5.6-luna".into();
+        h.app.effort = Some("medium".into());
+        h.draw();
+        let header = h.screen();
+        assert!(header.lines().next().unwrap().contains("GPT-5.6 Luna"));
+        assert!(!header.lines().next().unwrap().contains("gpt-5.6-luna"));
+        for (chip, id) in [
+            (h.app.areas.header_provider, "provider:codex"),
+            (h.app.areas.header_model, "model:gpt-5.6-luna"),
+            (h.app.areas.header_effort, "effort:medium"),
+        ] {
+            let chip = chip.unwrap();
+            h.click(chip.x, chip.y);
+            let picker = h.app.picker.as_ref().unwrap();
+            assert_eq!(picker.filtered()[picker.state.selected().unwrap()].id, id);
+            assert_eq!(h.app.areas.header_dropdown.unwrap().y, chip.bottom());
+            if picker.kind == PickerKind::Model {
+                assert!(h.screen().contains("gpt-5.6-luna"));
+            }
+            h.key(KeyCode::Esc, KeyModifiers::NONE);
+        }
+    }
+}
+
+#[test]
+fn account_picker_distinguishes_connection_from_usage() {
+    let iso = Isolated::new();
+    let cursor = iso.base.path().join(".cursor");
+    std::fs::create_dir_all(&cursor).unwrap();
+    std::fs::write(
+        cursor.join("cli-config.json"),
+        r#"{"authInfo":{"email":"fixture@example.invalid"}}"#,
+    )
+    .unwrap();
+    std::fs::write(cursor.join("concordia-api-key"), "synthetic").unwrap();
+    let mut h = Harness::new(120, 36);
+    h.app.usage_fetcher = UsageFetcher::with_runner(
+        h.app.state_root.clone(),
+        std::sync::Arc::new(|_| Err("no usage fixture".into())),
+    )
+    .with_cursor_runner(std::sync::Arc::new(|_| Err("no usage fixture".into())));
+    h.app.open_provider_picker();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !h
+        .app
+        .picker
+        .as_ref()
+        .unwrap()
+        .rows
+        .iter()
+        .any(|row| row.id == "provider:cursor" && row.detail == "no usage data")
+    {
+        assert!(Instant::now() < deadline, "usage fixture is unavailable");
+        std::thread::sleep(Duration::from_millis(10));
+        h.app.usage_fetcher.poll();
+        h.app.open_provider_picker();
+    }
+    h.draw();
+    let screen = h.screen();
+    assert!(screen
+        .lines()
+        .any(|line| line.contains("Cursor") && line.contains("no usage data")));
+    assert!(screen
+        .lines()
+        .any(|line| line.contains("Claude") && line.contains("not connected")));
+    let buf = h.term.backend().buffer();
+    let connected = find_cell(buf, "no usage data");
+    let disconnected = find_cell(buf, "not connected");
+    assert_ne!(buf[connected].fg, buf[disconnected].fg);
+    h.app.open_use_picker();
+    h.draw();
+    let screen = h.screen();
+    assert!(!screen.contains("fixture@example.invalid"));
+    for action in [
+        "Add account",
+        "Remove account",
+        "Choose next provider",
+        "Set up Grok Bot routine",
+    ] {
+        assert!(screen.contains(action), "{screen}");
+    }
+    assert!(!screen.contains("+ Add"));
+    assert!(!screen.contains("- Remove"));
+}
+
+#[test]
+fn panel_titles_and_picker_footers_use_shared_spacing_and_keys() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        for command in [
+            "/use", "/use add", "/usage", "/resume", "/model", "/mode", "/config", "/open",
+        ] {
+            h.send(command);
+            let screen = h.screen();
+            for row in screen.lines() {
+                for (left, right) in [('┌', '┐'), ('╭', '╮')] {
+                    for panel in row.split_inclusive(right) {
+                        if let Some((_, title)) = panel.split_once(left) {
+                            if let Some((words, _)) = title.split_once('─') {
+                                assert!(
+                                    words.is_empty()
+                                        || words.starts_with(' ') && words.ends_with(' '),
+                                    "{command}\n{row}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let footer = footer_row(&h);
+            assert!(footer.contains("Esc close"), "{command}\n{footer}");
+            assert!(!footer.contains("Enter apply"), "{command}\n{footer}");
+            h.key(KeyCode::Esc, KeyModifiers::NONE);
+        }
+    }
+}
+
+#[test]
+fn usage_cards_put_titles_in_borders_and_reveal_selected_rows() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        let rows = (0..8)
+            .map(|i| PickerRow {
+                id: format!("usage:fixture-{i}"),
+                label: format!("Account {i}\nno usage data"),
+                detail: "line one\nline two\nline three".repeat(i % 2),
+            })
+            .collect();
+        h.app
+            .show_picker(PickerKind::Usage, "usage".into(), rows, false);
+        h.draw();
+        let columns = h.app.picker.as_ref().unwrap().usage_cols;
+        let cards = &h.app.picker_rows;
+        let mut previous = None;
+        for (card, index) in cards.iter().step_by(columns) {
+            let screen = h.screen();
+            assert!(screen
+                .lines()
+                .nth(card.y as usize)
+                .unwrap()
+                .contains(&format!("┌ Account {index} ")));
+            if let Some(bottom) = previous {
+                assert_eq!(card.y, bottom + 1);
+            }
+            previous = Some(card.bottom());
+        }
+        for _ in 0..7 {
+            h.key(KeyCode::Right, KeyModifiers::NONE);
+        }
+        assert!(h.screen().contains("┌ Account 7 "));
+    }
+}
+
+#[test]
+fn rename_footer_follows_the_editor_on_save_escape_and_click() {
+    let mut h = Harness::new(120, 30);
+    for action in [KeyCode::Enter, KeyCode::Esc, KeyCode::Null] {
+        h.key(KeyCode::F(2), KeyModifiers::NONE);
+        h.type_str("Fixture title");
+        assert!(footer_row(&h).contains("Enter save title"));
+        if action == KeyCode::Null {
+            let input = h.app.areas.input;
+            h.click(input.x, input.y);
+        } else {
+            h.key(action, KeyModifiers::NONE);
+        }
+        assert!(h.app.rename_editor.is_none());
+        assert!(!footer_row(&h).contains("save title"));
+    }
+}
+
+#[test]
+fn empty_chat_and_running_tools_show_only_their_own_hints() {
+    let mut h = Harness::new(120, 30);
+    assert!(h.screen().contains(START_HINT));
+    h.app.push_user("Run the tests".into());
+    h.app.busy = true;
+    h.app.apply_progress(TurnProgress::Card(StreamCard {
+        id: "shell-fixture".into(),
+        title: "Run command".into(),
+        detail: Some("command: cargo test".into()),
+        status: CardStatus::Running,
+    }));
+    h.draw();
+    let screen = h.screen();
+    assert!(!screen.contains(START_HINT));
+    assert!(screen.contains("▸ ◉ Run"), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .any(|line| line.trim_start().starts_with("◉ Run") && line.contains("[ Esc ] cancel")),
+        "{screen}"
+    );
+    assert!(footer_row(&h).contains("Esc cancel"));
+    assert!(!screen.contains("Ctrl+C cancel"));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(!h.app.busy);
+}
+
+#[test]
+fn home_keeps_chat_rows_clear_of_the_intro() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        let cwd = h.app.cwd.clone();
+        landing::open_with(
+            &mut h.app,
+            vec![landing_session("intro-fixture", &cwd, "Parser review", 1)],
+            None,
+        );
+        h.draw();
+        let screen = h.screen();
+        let chats = screen
+            .lines()
+            .position(|row| row.contains("┌ chats "))
+            .unwrap();
+        for label in ["What's new", "Documentation", "F1  Shortcuts"] {
+            assert!(
+                screen.lines().take(chats).any(|row| row.contains(label))
+                    || !screen.contains(label)
+            );
+        }
+        assert!(screen.contains("Parser review"));
+    }
+}
+
+#[test]
+fn settings_selection_and_popup_follow_the_value_cells() {
+    for width in [80, 120, 160] {
+        let mut h = Harness::new(width, 30);
+        settings::open(&mut h.app);
+        h.draw();
+        let anchor = h.app.areas.trust_anchor.unwrap();
+        let buf = h.term.backend().buffer();
+        assert_eq!(buf[(anchor.x, anchor.y)].symbol(), "[");
+        assert_eq!(buf[(anchor.right() - 1, anchor.y)].symbol(), "]");
+        assert_ne!(
+            buf[(anchor.right() - 1, anchor.y)].bg,
+            buf[(anchor.right(), anchor.y)].bg
+        );
+        h.enter();
+        let popup = h.app.areas.permissions_popup;
+        assert_eq!(popup.x, anchor.x);
+        assert!(popup.y == anchor.bottom() || popup.bottom() == anchor.y);
+    }
+}
+
+#[test]
+fn agent_roles_and_completed_status_are_readable() {
+    for width in [80, 120, 160] {
+        let mut h = Harness::new(width, 30);
+        for (i, role) in ["Orchestrator", "Re-Reviewer"].into_iter().enumerate() {
+            h.app.push_card(StreamCard {
+                id: format!("native-agent:fixture-{i}"),
+                title: format!("agent fixture-{i}"),
+                detail: Some(format!(
+                    "Role: {role}\nModel: Fixture\nTask: Review the parser"
+                )),
+                status: CardStatus::Done,
+            });
+        }
+        h.key(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let screen = h.screen();
+        let rows = screen
+            .lines()
+            .filter_map(|row| {
+                row.split_once('│')
+                    .and_then(|(_, detail)| detail.split_once("││"))
+            })
+            .map(|(_, list)| list)
+            .collect::<Vec<_>>();
+        assert!(
+            rows.iter().any(|row| row.contains("Orchestrator")),
+            "{screen}"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("Re-Reviewer")),
+            "{screen}"
+        );
+        assert!(screen.contains("✓ finished"), "{screen}");
+        assert!(!screen.contains("✓ Inactive"));
+    }
+}

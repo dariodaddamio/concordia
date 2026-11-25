@@ -129,8 +129,8 @@ const MAX_INPUT_ROWS: usize = 6;
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
-const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
-const START_HINT: &str = "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.";
+const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy";
+const START_HINT: &str = "Type a message and press Enter. Start with / for commands.";
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 const HISTORY_MAX: usize = persist::HISTORY_CAP;
 const LOGIN_POLL_TICKS: u32 = 10;
@@ -279,7 +279,17 @@ fn level_of(text: &str) -> Level {
 fn fit_segments(text: &str, width: usize) -> String {
     let segs: Vec<&str> = text.split(" \u{b7} ").collect();
     for keep in (1..=segs.len()).rev() {
-        let s = segs[..keep].join(" \u{b7} ");
+        let end = segs.last().filter(|&&last| last == "Esc close");
+        let s = if let Some(end) = end.filter(|_| keep < segs.len()) {
+            segs[..keep - 1]
+                .iter()
+                .copied()
+                .chain([*end])
+                .collect::<Vec<_>>()
+                .join(" · ")
+        } else {
+            segs[..keep].join(" \u{b7} ")
+        };
         if s.chars().count() <= width {
             return s;
         }
@@ -300,7 +310,7 @@ const HINTS: [(&str, &str); 6] = [
     ("/ commands", "/ cmds"),
     ("Shift+Tab permissions", "Shift+Tab perms"),
     ("drag to select", "drag select"),
-    ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
+    ("Ctrl+C copy", "Ctrl+C copy"),
 ];
 const HINT_RANK: [usize; 6] = [0, 1, 3, 4, 5, 2];
 

@@ -86,7 +86,7 @@ public static class ConcordiaAuditWindow {
             using (var graphics = Graphics.FromImage(bitmap)) {
                 IntPtr dc = graphics.GetHdc();
                 try {
-                    if (!PrintWindow(window, dc, 3)) throw new InvalidOperationException("PrintWindow failed.");
+                    if (!PrintWindow(window, dc, 1)) throw new InvalidOperationException("PrintWindow failed.");
                 } finally { graphics.ReleaseHdc(dc); }
             }
             int first = bitmap.GetPixel(0, 0).ToArgb();
@@ -514,7 +514,7 @@ try {
     Stop-AuditWindow
 
     Start-AuditWindow (New-Fixture 'queue' 'claude')
-    Capture 'busy-turn' 'Run `/native claude off`, then send `[wait] [fail] deliberate failure` to fake Claude.' 'Run command|Tab queue|Ctrl\+C cancel' {
+    Capture 'busy-turn' 'Run `/native claude off`, then send `[wait] [fail] deliberate failure` to fake Claude.' 'Run command|Tab queue|Esc cancel' {
         Submit '/native claude off'
         Submit '[wait] [fail] deliberate failure'
         Wait-Grid 'Run command' | Out-Null
@@ -526,9 +526,9 @@ try {
         Wait-Grid 'No output from' 75 | Out-Null
         Press k @('CTRL')
     } { Press Esc }
-    Capture 'failed-turn' 'Release the fake provider gate to finish the active turn with exit code 3.' 'exited with code 3|deliberate interaction failure' {
+    Capture 'failed-turn' 'Release the fake provider gate to finish the active turn with exit code 3.' 'Turn failed\.' {
         Write-Utf8 (Join-Path $session.Fixture.Root 'gate') ''
-        Wait-Grid 'exited with code 3|deliberate interaction failure' | Out-Null
+        Wait-Grid 'Turn failed\.' | Out-Null
     }
     Capture 'paused-queue' 'Keep the queued items after the fake turn exits with code 3.' 'queue paused'
 } finally {

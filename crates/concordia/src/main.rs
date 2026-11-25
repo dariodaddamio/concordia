@@ -143,7 +143,7 @@ fn print_help() {
          Slash: /use [add] /model /usage /resume /agents /config /new /threads /update /version /copy /doctor /exit\n\
          Files: /open PATH[:LINE[:COLUMN]] · /close ID\n\
          Workers: open the Agents panel with Ctrl+G; inspect, retry and cancel from the selected run (docs/delegation.md)\n\
-         Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
+         Auth mode shown bottom-right. Esc cancels a turn · Ctrl+C copies selected text · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor|grok] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
          wheel scrolls, right-click copies the selection or pastes.\n\

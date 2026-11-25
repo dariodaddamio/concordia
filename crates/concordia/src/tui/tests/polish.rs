@@ -59,7 +59,10 @@ fn account_rows_are_coloured_by_state() {
         Some(&UsageTone::Mute),
         "not connected reads as inactive"
     );
-    assert!(h.app.picker_tones.contains_key("provider:codex"));
+    assert_ne!(
+        h.app.picker_tones.get("provider:codex"),
+        Some(&UsageTone::Mute)
+    );
 }
 
 #[test]
@@ -125,6 +128,7 @@ fn settings_permissions_opens_under_its_row_not_in_the_footer() {
         Some(PickerKind::Trust)
     );
     let popup = h.app.areas.permissions_popup;
+    assert_eq!(popup.x, row.x);
     assert!(
         popup.y == row.bottom() || popup.bottom() == row.y,
         "popup {popup:?} touches row {row:?}"

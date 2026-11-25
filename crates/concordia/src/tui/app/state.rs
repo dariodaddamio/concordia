@@ -634,7 +634,7 @@ impl App {
         }
         let label =
             crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
-                .map(|entry| crate::models::format_model_heading(&entry.display_name, &self.model))
+                .map(|entry| entry.display_name)
                 .unwrap_or_else(|| self.model.clone());
         *cache = Some((
             self.provider,
@@ -792,7 +792,11 @@ impl App {
                 .iter()
                 .rev()
                 .find(|c| c.status == CardStatus::Running)
-                .map(crate::provider::stream_cards::format_card_line)
+                .map(|card| {
+                    crate::provider::stream_cards::compact_card_summary(card)
+                        .body()
+                        .to_owned()
+                })
                 .unwrap_or_else(|| format!("Running {name}")),
         }
     }
@@ -1435,8 +1439,7 @@ impl App {
         picker.filter = filter;
         picker.state.select(Some(selected));
         picker.select_clamp();
-        self.footer_left =
-            "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter select · R refresh · type to filter · Esc close".into();
         true
     }
 
@@ -2014,12 +2017,7 @@ impl App {
             permission_row_pressed: None,
             card_header_pressed: None,
             header_credits_pressed: false,
-            messages: vec![ChatLine {
-                role: MsgRole::System,
-                text: super::super::START_HINT.into(),
-                card: None,
-                meta: None,
-            }],
+            messages: Vec::new(),
             idle_notice: None,
             handoff_after_cancel: false,
             editor: Editor::default(),
@@ -2218,20 +2216,20 @@ pub(in crate::tui) fn model_picker_rows(
                         .iter()
                         .any(|effort| effort.model_id.as_deref() == Some(chosen))
             });
+            let efforts = model.effort_names().join(", ");
             PickerRow {
                 id: format!("model:{}", model.id),
                 label: {
-                    let heading = model.heading();
                     if current {
-                        format!("{heading} · current")
+                        format!("{} · current", model.display_name)
                     } else {
-                        heading
+                        model.display_name
                     }
                 },
                 detail: if model.efforts.is_empty() {
-                    "no provider-reported effort levels".into()
+                    model.id
                 } else {
-                    format!("efforts: {}", model.effort_names().join(", "))
+                    format!("{} · Effort: {efforts}", model.id)
                 },
             }
         })

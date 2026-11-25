@@ -989,6 +989,14 @@ pub struct CardSummary {
     pub files: Vec<(std::ops::Range<usize>, String)>,
 }
 
+impl CardSummary {
+    pub(crate) fn body(&self) -> &str {
+        self.text
+            .split_once(' ')
+            .map_or(&self.text, |(_, body)| body)
+    }
+}
+
 pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     let mark = match card.status {
         CardStatus::Running => "◉",
@@ -996,9 +1004,13 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
         CardStatus::Done => "✓",
     };
     let mut summary = CardSummary {
-        text: format!("│ {mark} {} ", ToolKind::of(card).icon()),
+        text: format!("{mark} "),
         files: Vec::new(),
     };
+    if card.id.starts_with("turn-failure:") || card.id.starts_with("workspace-warning:") {
+        summary.text.push_str(&card.title);
+        return summary;
+    }
     let detail = card.detail.as_deref().unwrap_or("");
     let header_detail = detail
         .split_once("\n\nNative tool input and output:\n")
@@ -1666,7 +1678,7 @@ mod tests {
         let summary = compact_card_summary(&composite);
         assert_eq!(
             summary.text,
-            "│ ✓ › Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
+            "✓ Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
         );
         assert_eq!(summary.files.len(), 1);
         let (range, target) = &summary.files[0];
@@ -1725,10 +1737,10 @@ mod tests {
             .contains("+ Run build"));
         composite.detail = Some(format!("if (dynamic) {{ {script} }}"));
         let fallback = compact_card_summary(&composite);
-        assert_eq!(fallback.text, "│ ◉ › Run tools");
+        assert_eq!(fallback.text, "◉ Run tools");
         assert!(fallback.files.is_empty());
         composite.detail = Some("text(await tools.exec_command({cmd:dynamic}));".into());
-        assert_eq!(compact_card_summary(&composite).text, "│ ◉ › Run tools");
+        assert_eq!(compact_card_summary(&composite).text, "◉ Run tools");
         composite.detail = Some(
             "// text(await tools.apply_patch(\"*** Begin Patch\\n*** Update File: fake.rs\"));"
                 .into(),
@@ -1771,7 +1783,7 @@ mod tests {
         };
         assert_eq!(
             compact_card_summary(&dynamic_tail).text,
-            "│ ✓ › Ran tools",
+            "✓ Ran tools",
             "hidden calls are validated too"
         );
         let names = (0..6)

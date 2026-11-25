@@ -584,7 +584,11 @@ fn a_failed_provider_explains_itself_instead_of_showing_an_empty_reply() {
         stderr_tail: "warn: something\nError: login expired\nrun `codex login`".into(),
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(h.screen().contains("Turn failed."));
+    assert!(!h.screen().contains("login expired"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider exited with code 3"), "{t}");
     assert!(t.contains("login expired"), "{t}");
     assert!(t.contains("codex login"), "{t}");
@@ -722,7 +726,10 @@ fn a_provider_that_could_not_start_says_so() {
         stderr_tail: "spawn codex: program not found".into(),
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(h.screen().contains("Could not start the turn."));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider could not run"), "{t}");
     assert!(t.contains("program not found"), "{t}");
 }
@@ -740,7 +747,10 @@ fn only_the_last_few_stderr_lines_are_shown() {
         stderr_tail: tail,
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(!h.screen().contains("noise"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("noise 11") && t.contains("noise 6"));
     assert!(!t.contains("noise 5"), "{t}");
 }
@@ -780,6 +790,10 @@ fn a_failed_turn_with_partial_text_keeps_the_text_and_adds_the_failure() {
     });
     let t = h.transcript_text();
     assert!(t.contains("partial answer"));
+    assert!(t.contains("Turn failed."));
+    assert!(!t.contains("connection reset"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider exited with code 2"));
     assert!(t.contains("connection reset"));
 }
@@ -1714,7 +1728,7 @@ fn model_picker_lists_provider_efforts_in_the_row() {
         .find(|row| row.id == "model:sol")
         .unwrap()
         .detail
-        .contains("efforts: low"));
+        .contains("Effort: low"));
     assert!(!rows
         .iter()
         .find(|row| row.id == "model:sol")
@@ -2115,14 +2129,14 @@ fn retained_patch_errors_are_inspectable_without_claiming_the_exit_cause() {
         .messages
         .iter()
         .filter_map(|m| m.card.as_ref())
-        .find(|c| c.title.starts_with("Provider diagnostics"))
+        .find(|c| c.title.starts_with("Turn failed"))
         .unwrap();
     assert!(diagnostics.detail.as_deref().unwrap().contains(old_error));
     assert!(diagnostics
         .detail
         .as_deref()
         .unwrap()
-        .contains("do not establish why"));
+        .contains("may not explain why"));
     assert!(!h
         .app
         .messages

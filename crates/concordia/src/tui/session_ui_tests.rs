@@ -375,7 +375,7 @@ fn native_agents_are_visible_and_open_full_report_without_dispatching_a_turn() {
         .label
         .contains("failed/interrupted"));
     app.apply_picker_selection(None);
-    assert_eq!(app.activity.detail, Some(1));
+    assert_eq!(app.activity.detail, Some(app.messages.len() - 1));
     assert!(rx.try_recv().is_err());
     let launch = StreamCard {
         id: "toolu-background".into(),

@@ -8,8 +8,7 @@ fn row(id: &str, label: impl Into<String>, detail: impl Into<String>) -> PickerR
     }
 }
 
-pub(super) const FOOTER: &str =
-    "←/→ or Tab tabs · ↑/↓ rows · Enter or Space change · type to filter · Esc close";
+pub(super) const FOOTER: &str = "←→ tabs · ↑↓ move · Enter select · Esc close";
 
 const TABS: [&str; 6] = [
     "General",

@@ -57,7 +57,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         }
     }
     f.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::LEFT).title("Workers")),
+        Paragraph::new(lines).block(Block::default().borders(Borders::LEFT).title(" Workers ")),
         area,
     );
 }

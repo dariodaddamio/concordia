@@ -474,7 +474,7 @@ fn cancelling_pauses_the_queue_and_ctrl_r_resumes_it() {
         ..Default::default()
     });
     assert!(h.sent().is_empty(), "nothing fires after a cancel");
-    assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
+    assert!(h.row_with("queue paused · Ctrl+R resume").is_some());
     assert_eq!(
         h.app.editor.text(),
         "",
@@ -513,12 +513,12 @@ fn a_failed_turn_pauses_and_returns_its_prompt() {
     assert!(h.sent().is_empty());
     assert!(h.app.queue.paused);
     assert_eq!(h.app.editor.text(), "one");
-    assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
+    assert!(h.row_with("queue paused · Ctrl+R resume").is_some());
     assert!(h
         .app
         .messages
         .iter()
-        .any(|m| m.text.contains("back in the box")));
+        .any(|m| m.text.contains("Your draft is back")));
 }
 
 #[test]
@@ -624,7 +624,7 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
         .messages
         .iter()
         .any(|m| m.text.contains("Your draft and queued messages are kept.")));
-    assert!(h.row_with("queue paused - Ctrl+R resumes").is_some());
+    assert!(h.row_with("queue paused · Ctrl+R resume").is_some());
     h.key(KeyCode::Char('r'), KeyModifiers::CONTROL);
     h.app.queue_advance(&h.tx);
     assert_eq!(h.sent(), vec!["two"]);

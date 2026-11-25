@@ -766,6 +766,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 if let Some(index) = app.tab_hits.iter().position(|r| {
                                     r.contains(ratatui::layout::Position::new(m.column, m.row))
                                 }) {
+                                    app.end_tab_rename();
                                     if app.tab_close_hits.get(index).is_some_and(|r| {
                                         r.contains(ratatui::layout::Position::new(m.column, m.row))
                                     }) {
@@ -875,7 +876,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             Event::Resize(..) => {
                                 terminal.autoresize()?;
                             }
-                            Event::FocusGained => {}
+                            Event::FocusLost => app.end_tab_rename(),
                             _ => {}
                         }
                         if app.tab_request.is_some()
@@ -1014,7 +1015,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             if tabs.active != active {
                 for (index, tab) in tabs.tabs.iter_mut().enumerate() {
                     if index != tabs.active {
-                        tab.app.rename_editor = None;
+                        tab.app.end_tab_rename();
                     }
                 }
                 if close_armed.is_some_and(|(owner, _)| owner != tabs.active().id) {

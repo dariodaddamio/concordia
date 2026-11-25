@@ -783,6 +783,14 @@ pub(super) fn editing_goal(_app: &App) -> bool {
     false
 }
 
+pub(super) fn welcome_visible(app: &App) -> bool {
+    visible(app)
+        && app.landing.as_ref().is_some_and(|landing| landing.welcome)
+        && crate::store::load_store(&app.state_root)
+            .accounts
+            .is_empty()
+}
+
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
         && app
@@ -981,7 +989,11 @@ fn next(selected: usize, count: usize) -> usize {
 }
 
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
+    let welcome = welcome_visible(app);
     if let Some(landing) = app.landing.as_ref() {
+        if welcome {
+            return super::contains(landing.chats_area, x, y);
+        }
         let label = landing.pane == Pane::Chats
             && landing.hidden_total > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -1018,9 +1030,17 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         }
         return true;
     }
+    let welcome = welcome_visible(app);
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
+    if welcome
+        && m.kind == MouseEventKind::Down(MouseButton::Left)
+        && super::contains(landing.chats_area, m.column, m.row)
+    {
+        app.open_use_picker();
+        return true;
+    }
     let inside = |r: Rect| {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
@@ -1167,7 +1187,7 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     if snapshot.windows.is_empty() {
         let state = snapshot.summary.trim();
         let state = if state.is_empty() {
-            "usage unknown"
+            crate::usage::NO_USAGE_DATA
         } else {
             state
         };
@@ -1247,10 +1267,12 @@ pub(super) fn apply_usage(
 }
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
-    let compact_intro = area.width >= 76 && area.height < 24;
+    let welcome_visible = welcome_visible(app);
     let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
-        app.footer_left = if landing.mode == Mode::Browse
+        app.footer_left = if welcome_visible {
+            "Enter add account · Esc chat"
+        } else if landing.mode == Mode::Browse
             && landing.pane == Pane::Chats
             && !app.editor.text().is_empty()
         {
@@ -1323,11 +1345,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
-    let welcome_visible = landing.welcome
-        && crate::store::load_store(&app.state_root)
-            .accounts
-            .is_empty();
-    let show_welcome_intro = welcome_visible && app.areas.home_documentation.is_none();
     let usage_content = if landing.meters.is_empty() {
         0
     } else {
@@ -1339,25 +1356,21 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let content = {
         let chats = landing.rows().len();
         let intro = if welcome_visible {
-            4 + landing.provider_health.len() + if show_welcome_intro { 8 } else { 0 }
-        } else if compact_intro {
-            7
+            4 + landing.provider_health.len()
         } else {
             0
         };
-        let stacked = if compact_intro && !welcome_visible {
-            chats.saturating_add(intro)
-        } else {
-            chats.max(intro)
-        };
-        stacked.max(usage_content).min(u16::MAX as usize - 2) as u16
+        chats
+            .max(intro)
+            .max(usage_content)
+            .min(u16::MAX as usize - 2) as u16
     };
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
         ..area
     };
     let narrow_goals = false;
-    let panes = if area.width >= TWO_PANES_MIN {
+    let panes = if !welcome_visible && area.width >= TWO_PANES_MIN {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -1381,7 +1394,11 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     if !narrow_goals {
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .title(" chats ")
+            .title(if welcome_visible {
+                " Welcome to Concordia "
+            } else {
+                " chats "
+            })
             .border_style(border(landing.pane == Pane::Chats));
         let usage = if !landing.tokens_ready {
             Some(" reading usage… ".into())
@@ -1408,18 +1425,16 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             None
         };
-        if let Some(usage) = usage {
+        if let Some(usage) = usage.filter(|_| !welcome_visible) {
             block = block.title_bottom(Line::styled(usage, dim).right_aligned());
         }
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);
         if welcome_visible {
             let mut lines = vec![
-                Line::styled("Welcome to Concordia", selected),
-                Line::from(
-                    "Concordia keeps your provider chats, accounts and continuity together.",
-                ),
-                Line::from("Local CLI health check (no network or provider turn):"),
+                Line::from("Connect an account to start chatting."),
+                Line::default(),
+                Line::from("Installed provider CLIs"),
             ];
             for (provider, found) in &landing.provider_health {
                 lines.push(Line::from(format!(
@@ -1428,47 +1443,22 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     if *found { "found" } else { "not found" }
                 )));
             }
-            lines.push(Line::styled(
-                "Next: /use to add an account (Enter)",
-                selected,
-            ));
-            if show_welcome_intro {
-                lines.push(Line::default());
-                lines.push(Line::styled("What's new", selected));
-                for item in super::brand::whats_new(3, inner.width as usize) {
-                    lines.push(Line::from(item));
-                }
-                lines.push(Line::default());
-                app.areas.home_documentation = super::brand::push_documentation(&mut lines, inner);
-                lines.push(Line::from("F1  Shortcuts"));
-            }
+            lines.push(Line::styled("[ Enter ] Add account", selected));
+            landing.chats_area = if lines.len() <= inner.height as usize {
+                Rect::new(
+                    inner.x,
+                    inner.y + lines.len() as u16 - 1,
+                    inner.width.min(21),
+                    1,
+                )
+            } else {
+                Rect::default()
+            };
             f.render_widget(Paragraph::new(lines), inner);
             landing.goals_area = Rect::default();
             return;
         }
-        let intro_rows = if compact_intro {
-            let mut lines = vec![Line::styled("What's new", selected)];
-            lines.extend(
-                super::brand::whats_new(3, inner.width as usize)
-                    .into_iter()
-                    .map(Line::from),
-            );
-            lines.push(Line::default());
-            app.areas.home_documentation = super::brand::push_documentation(&mut lines, inner);
-            lines.push(Line::from("F1  Shortcuts"));
-            let rows = (lines.len() as u16).min(inner.height);
-            f.render_widget(Paragraph::new(lines), inner);
-            landing.goals_area = Rect::default();
-            rows
-        } else {
-            0
-        };
-        let list_area = Rect::new(
-            inner.x,
-            inner.y + intro_rows,
-            inner.width,
-            inner.height - intro_rows,
-        );
+        let list_area = inner;
         landing.chats_area = list_area;
         let rows = landing.rows();
         let height = list_area.height as usize;

@@ -156,16 +156,10 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         })
         .map_err(|error| error.to_string())?;
     }
-    let description: String = match mode {
-        Mode::CursorAcp => "on (Cursor ACP)".into(),
-        Mode::GrokAcp => "on (Grok Build ACP)".into(),
-        Mode::OpencodeAcp => "on (opencode ACP)".into(),
-        Mode::CodexAppServer => "on (Codex app-server)".into(),
-        Mode::ClaudeStdio => format!(
-            "on (Claude native stdio; CLI {} control interface required)",
-            crate::capacity::claude_capacity::CLI_VERSION
-        ),
-        Mode::Standard => "off (standard text transport)".into(),
+    let mode = if mode == Mode::Standard {
+        "standard CLI mode"
+    } else {
+        "interactive mode"
     };
-    Ok(format!("{account}: native text input {description}. New turns and new workers on this account use it; workers already running keep their setting."))
+    Ok(format!("{account}: New turns will use {mode}."))
 }

@@ -79,7 +79,7 @@ impl UsageWindow {
         self.resets
             .as_deref()
             .map(reset_phrase)
-            .unwrap_or_else(|| "reset time unavailable".into())
+            .unwrap_or_else(|| RESET_UNKNOWN.into())
     }
 
     pub(crate) fn billing_text(&self) -> Option<String> {
@@ -128,6 +128,9 @@ pub struct UsageSnapshot {
     pub windows: Vec<UsageWindow>,
     pub limit_hit: bool,
 }
+
+pub(crate) const NO_USAGE_DATA: &str = "no usage data";
+pub(crate) const RESET_UNKNOWN: &str = "reset time unavailable";
 
 impl UsageSnapshot {
     pub fn no_data(summary: impl Into<String>, detail: impl Into<String>) -> Self {
@@ -211,7 +214,7 @@ fn reset_phrase_at(r: &str, now: Option<WallTime>) -> String {
         return r.into();
     }
     if r.starts_with("already reset") {
-        return "reset time unavailable".to_string();
+        return RESET_UNKNOWN.to_string();
     }
     if let Some((now, then)) = now.zip(parse_wall(r, now)) {
         let minutes = minutes_until(now, then);
@@ -458,7 +461,7 @@ fn snapshot_from_windows(
     parts.extend(extras.iter().cloned());
     if parts.is_empty() {
         return UsageSnapshot::no_data(
-            "no data yet - chat once",
+            NO_USAGE_DATA,
             "Codex reports its limits after a turn; chat once to see them",
         );
     }
@@ -570,14 +573,14 @@ pub fn read_codex_usage(codex_home: &Path) -> UsageSnapshot {
         return snapshot;
     }
     UsageSnapshot::no_data(
-        "no data yet - chat once",
+        NO_USAGE_DATA,
         "Codex only reports its limits after a turn, so there is nothing to read yet - chat once with Codex",
     )
 }
 
 pub fn cursor_usage() -> UsageSnapshot {
     UsageSnapshot::no_data(
-        "not shown by Cursor CLI",
+        NO_USAGE_DATA,
         "Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage",
     )
 }
@@ -607,12 +610,16 @@ pub fn usage_rows_for_accounts(
     fetcher: &mut UsageFetcher,
     accounts: &[(String, crate::store::ProviderKind, std::path::PathBuf)],
     current_account: &str,
+    show_email: bool,
 ) -> Vec<UsageRow> {
     let mut rows = Vec::new();
     let mut rest = Vec::new();
     for (id, provider, home) in accounts {
         let snap = fetcher.snapshot(*provider, id, home);
-        let identity = crate::identity::inspect_provider(*provider, home);
+        let mut identity = crate::identity::inspect_provider(*provider, home);
+        if !show_email {
+            identity.login = None;
+        }
         let row = profiled_picker_row(id, *provider, &snap, &identity);
         if id == current_account {
             rows.push(row);
@@ -668,7 +675,6 @@ pub fn profiled_picker_row(
     if !snap.windows.is_empty() {
         row.detail.clear();
     }
-    let email = identity.login.as_deref().filter(|s| s.contains('@'));
     let plan = identity
         .plan
         .as_deref()
@@ -693,7 +699,11 @@ pub fn profiled_picker_row(
         .map(|(_, limits)| limits.to_string())
         .unwrap_or_else(|| snap.used_left_text());
     let mut head_parts = vec![head];
-    if let Some(email) = email {
+    if let Some(email) = identity
+        .login
+        .as_deref()
+        .filter(|login| login.contains('@'))
+    {
         head_parts.push(format!("Email: {email}"));
     }
     if let Some(plan) = plan {
@@ -1467,7 +1477,7 @@ impl UsageFetcher {
                 let mut snap = read_codex_usage(home);
                 if snap.windows.is_empty() {
                     return if let Some(reason) = reason {
-                        UsageSnapshot::no_data("live limits unavailable", format!("Live refresh unavailable: {reason}. No recorded quota windows; /usage tries again."))
+                        UsageSnapshot::no_data(NO_USAGE_DATA, format!("Live refresh unavailable: {reason}. No recorded quota windows; /usage tries again."))
                     } else {
                         UsageSnapshot::no_data("reading live limits", "Requesting current quota windows; no recorded limits are available yet.")
                     };
@@ -1490,7 +1500,7 @@ impl UsageFetcher {
             Err(None) => claude_waiting(),
             Err(Some(_)) if cursor => cursor_usage(),
             Err(Some(err)) => UsageSnapshot::no_data(
-                "limits unavailable",
+                NO_USAGE_DATA,
                 format!(
                     "could not read {} limits ({err}); /usage tries again",
                     crate::accounts::display_account_name(provider, provider.as_str())
@@ -2177,12 +2187,12 @@ mod tests {
     #[test]
     fn cursor_and_codex_no_data_wording() {
         let c = cursor_usage();
-        assert_eq!(c.summary, "not shown by Cursor CLI");
+        assert_eq!(c.summary, NO_USAGE_DATA);
         assert!(c.detail.contains("cursor.com/dashboard/usage"));
         assert_eq!(usage_tone(&c), UsageTone::Mute);
         let dir = tempfile::tempdir().unwrap();
         let x = read_codex_usage(dir.path());
-        assert!(x.summary.starts_with("no data yet"));
+        assert_eq!(x.summary, NO_USAGE_DATA);
         assert_eq!(usage_tone(&x), UsageTone::Mute);
     }
 
@@ -2300,7 +2310,7 @@ mod tests {
         f.snapshot(ProviderKind::Claude, "claude", &home);
         wait_for(&mut f);
         let s = f.snapshot(ProviderKind::Claude, "claude", &home);
-        assert_eq!(s.summary, "limits unavailable");
+        assert_eq!(s.summary, NO_USAGE_DATA);
         assert!(s.detail.contains("boom"));
         assert_eq!(usage_tone(&s), UsageTone::Mute);
     }
@@ -2318,7 +2328,7 @@ mod tests {
             ),
             ("codex".to_string(), ProviderKind::Codex, root.path().into()),
         ];
-        let rows = usage_rows_for_accounts(&mut f, &accounts, "codex");
+        let rows = usage_rows_for_accounts(&mut f, &accounts, "codex", false);
         assert_eq!(rows[0].id, "codex");
         assert!(rows[1].label.contains("checking limits"));
         assert_eq!(rows[1].tone, UsageTone::Mute);
@@ -2414,7 +2424,7 @@ mod tests {
         h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
         wait_for(&mut h);
         let s = h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
-        assert_eq!(s.summary, "not shown by Cursor CLI");
+        assert_eq!(s.summary, NO_USAGE_DATA);
         let junk: UsageRunner = Arc::new(|_| Ok("garbage".into()));
         let mut j = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(junk);
         j.snapshot(ProviderKind::Cursor, "cursor-junk", &home);
@@ -2422,7 +2432,7 @@ mod tests {
         assert_eq!(
             j.snapshot(ProviderKind::Cursor, "cursor-junk", &home)
                 .summary,
-            "not shown by Cursor CLI"
+            NO_USAGE_DATA
         );
     }
 

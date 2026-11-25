@@ -221,8 +221,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                 app.refresh_account_email();
                 app.model = saved.model;
                 app.refresh_usage();
-                app.messages
-                    .retain(|message| message.text != super::super::START_HINT);
                 app.restore_state_for_record(Some(&saved.recovery));
                 app.restored_attention = saved.attention_pending;
                 let notices = std::mem::take(&mut app.messages);

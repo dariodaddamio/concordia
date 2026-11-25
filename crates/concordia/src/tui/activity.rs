@@ -185,14 +185,7 @@ pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: boo
             end += 1;
         }
         if end - start > 1 {
-            let icon = messages[start]
-                .card
-                .as_ref()
-                .map_or("›", |card| ToolKind::of(card).icon());
-            let summary = format!(
-                "│ ✓ {icon} {category} · {} operations · completed",
-                end - start
-            );
+            let summary = format!("✓ {category} · {} operations", end - start);
             if activity.is_expanded(start, all) {
                 let card = messages[start].card.as_ref().unwrap();
                 grouped.text[start] = Some(format!(

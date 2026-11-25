@@ -328,10 +328,12 @@ fn first_launch_without_accounts_shows_welcome_and_use_action() {
     landing::open_with(&mut h.app, Vec::new(), None);
     h.draw();
     assert!(h.screen().contains("Welcome to Concordia"));
-    assert!(h.screen().contains("/use to add an account"));
+    assert!(h.screen().contains("No account connected"));
+    assert!(!h.screen().contains("Subscription:"));
+    assert!(!h.screen().contains(" chats "));
     h.key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(h.app.picker.is_some(), "Enter should open the /use flow");
-    assert!(h.screen().contains("+ add account"));
+    assert!(h.screen().contains("Add account"));
 }
 
 #[test]

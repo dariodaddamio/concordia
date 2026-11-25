@@ -18,7 +18,7 @@ impl App {
             choices,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter apply · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter select · Esc close".into();
     }
 
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
@@ -26,15 +26,15 @@ impl App {
             picker.title = format!("{command} · This panel lets you {does}.");
             if command != "/harness" {
                 self.footer_left = if undo.starts_with("Esc") {
-                    "↑↓ choose · Enter apply · Esc cancel".into()
+                    "↑↓ move · Enter select · Esc close".into()
                 } else {
-                    format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}")
+                    format!("↑↓ move · Enter select · Esc close · undo: {undo}")
                 };
             }
         }
         if command == "/model" {
             self.footer_left =
-                "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+                "↑↓ move · Enter select · R refresh · type to filter · Esc close".into();
         }
     }
 
@@ -50,7 +50,7 @@ impl App {
             }],
             true,
         );
-        self.footer_left = "↑↓ choose · Enter select · type to filter · Esc close".into();
+        self.footer_left = "↑↓ move · Enter select · type to filter · Esc close".into();
         let state_root = self.state_root.clone();
         let cwd = self.cwd.clone();
         self.start_picker_load(PickerKind::Resume, "concordia-resume-list", move || {
@@ -394,7 +394,8 @@ impl App {
                     .map(|home| (a.account.clone(), a.provider, home.clone()))
             })
             .collect();
-        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
+        let rows_data =
+            usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account, false);
         let mut rows = Vec::new();
         for urow in rows_data {
             let Some(a) = ready.iter().find(|a| a.account == urow.id) else {
@@ -407,8 +408,12 @@ impl App {
             );
             let default_name = display_account_name(a.provider, &a.account);
             let label = urow.label.replacen(&default_name, &heading, 1);
-            self.picker_tones
-                .insert(format!("use:{}", a.account), urow.tone);
+            if urow.tone != UsageTone::Mute {
+                self.picker_tones
+                    .insert(format!("use:{}", a.account), urow.tone);
+            } else {
+                self.picker_tones.remove(&format!("use:{}", a.account));
+            }
             let mut detail = urow.detail;
             if let Some(other) = duplicates
                 .iter()
@@ -425,23 +430,23 @@ impl App {
         }
         rows.push(PickerRow {
             id: "use-add".into(),
-            label: "+ add account".into(),
+            label: "Add account".into(),
             detail: if ready.is_empty() {
-                "no logged-in accounts yet - connect Codex, Claude or Cursor".into()
+                "connect a provider account to start chatting".into()
             } else {
-                "connect another Codex, Claude or Cursor account".into()
+                "connect another provider account".into()
             },
         });
         if !ready.is_empty() {
             rows.push(PickerRow {
                 id: "use-remove".into(),
-                label: "- remove account".into(),
+                label: "Remove account".into(),
                 detail: "take an account out of Concordia".into(),
             });
         }
         rows.push(PickerRow {
             id: "use-handoff".into(),
-            label: "next provider for this session".into(),
+            label: "Choose next provider".into(),
             detail: self.handoff_description(),
         });
         rows.extend(
@@ -458,7 +463,7 @@ impl App {
         );
         rows.push(PickerRow {
             id: "use-grok-bot-setup".into(),
-            label: "+ configure Grok Bot routine".into(),
+            label: "Set up Grok Bot routine".into(),
             detail: "webhook key stays in Windows Credential Manager; see Grok Bot setup guide"
                 .into(),
         });
@@ -663,7 +668,7 @@ impl App {
                             detail: if !available && reset.is_some() {
                                 format!(
                                     "at limit · {}",
-                                    reset.as_deref().unwrap_or("reset time unavailable")
+                                    reset.as_deref().unwrap_or(crate::usage::RESET_UNKNOWN)
                                 )
                             } else if !available {
                                 "usage unavailable · capacity must be confirmed before continuing"
@@ -955,7 +960,7 @@ impl App {
                         }],
                         false,
                     );
-                    self.footer_left = "Enter run official installer · Esc cancel".into();
+                    self.footer_left = "Enter run official installer · Esc close".into();
                     self.push_system(format!(
                         "{e}. Install it with `{command}` in your own terminal, or confirm below to open the installer window."
                     ));
@@ -990,8 +995,7 @@ impl App {
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
-        self.footer_left =
-            "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter select · R refresh · type to filter · Esc close".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
         {
@@ -1020,14 +1024,21 @@ impl App {
                 let snap = self
                     .usage_fetcher
                     .snapshot(account.provider, &account.account, &home);
-                (crate::usage::usage_tone(&snap), snap.used_left_text())
+                let detail = snap.used_left_text();
+                let detail = if detail.is_empty() {
+                    crate::usage::NO_USAGE_DATA.into()
+                } else {
+                    detail
+                };
+                (crate::usage::usage_tone(&snap), detail)
             } else {
-                (
-                    UsageTone::Mute,
-                    "not connected · native login available".into(),
-                )
+                (UsageTone::Mute, "not connected".into())
             };
-            self.picker_tones.insert(id.clone(), tone);
+            if !connected || tone != UsageTone::Mute {
+                self.picker_tones.insert(id.clone(), tone);
+            } else {
+                self.picker_tones.remove(&id);
+            }
             let name = self.named_account(account.provider, &account.account);
             let current = account.account == self.account;
             rows.push(PickerRow {
@@ -1041,11 +1052,14 @@ impl App {
                 detail,
             });
         }
-        self.show_picker(
+        let current = format!("provider:{}", self.account);
+        let selected = rows.iter().position(|row| row.id == current).unwrap_or(0);
+        self.show_picker_at(
             PickerKind::Provider,
             "providers and accounts".into(),
             rows,
             false,
+            selected,
         );
     }
 
@@ -1111,7 +1125,7 @@ impl App {
             .map(|effort| effort.name.clone())
             .or(role_effort)
             .or_else(|| {
-                model.effort_for_preference(saved_effort.as_deref().or(self.effort.as_deref()))
+                model.effort_for_preference(self.effort.as_deref().or(saved_effort.as_deref()))
             });
         let preferred = preferred_owned.as_deref();
         let selected = model
@@ -1150,7 +1164,7 @@ impl App {
             selected,
         );
         self.effort_model = Some(model_id.to_owned());
-        self.footer_left = "\u{2191}\u{2193} choose effort \u{b7} Enter applies model + effort \u{b7} Esc keeps current selection".into();
+        self.footer_left = "\u{2191}\u{2193} move \u{b7} Enter select \u{b7} Esc close".into();
     }
 
     pub(in crate::tui) fn choose_effort(&mut self, effort: &str) {
@@ -1280,7 +1294,7 @@ impl App {
         if let Some(picker) = self.picker.as_mut() {
             picker.title = "model · refreshing...".into();
         }
-        self.footer_left = "refreshing... · Esc closes · UI remains responsive".into();
+        self.footer_left = "Refreshing models… · Esc close".into();
     }
     pub(in crate::tui) fn show_picker(
         &mut self,
@@ -1303,7 +1317,7 @@ impl App {
             }],
             false,
         );
-        self.footer_left = "Esc cancels".into();
+        self.footer_left = "Esc close".into();
         let state_root = self.state_root.clone();
         self.start_picker_load(PickerKind::Doctor, "concordia-doctor", move || {
             let checks = crate::doctor::run_fast_checks_at(&state_root);
@@ -1353,7 +1367,7 @@ impl App {
             })
             .collect();
         self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
-        self.footer_left = "↑↓ select · Enter review fix · Esc".into();
+        self.footer_left = "↑↓ move · Enter review fix · Esc close".into();
     }
     pub(in crate::tui) fn open_doctor_confirmation(&mut self, fix_index: usize) {
         let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {
@@ -1373,7 +1387,7 @@ impl App {
             vec![row],
             false,
         );
-        self.footer_left = "y apply · n cancel · Esc".into();
+        self.footer_left = "Y apply · N / Esc close".into();
     }
     pub(in crate::tui) fn apply_doctor_fix(&mut self, fix_index: usize) {
         let Some(fix) = self
@@ -1436,15 +1450,15 @@ impl App {
         });
         self.footer_left = if filterable {
             if kind == PickerKind::Files {
-                "↑↓ choose · Enter open · F4 actions · type to filter · Esc close".into()
+                "↑↓ move · Enter open · F4 actions · type to filter · Esc close".into()
             } else {
-                "↑↓ choose · Enter select · type to filter · Esc close".into()
+                "↑↓ move · Enter select · type to filter · Esc close".into()
             }
         } else {
             if kind == PickerKind::Usage {
-                "↑↓ choose · Enter select · r refresh · Esc close".into()
+                "↑↓ move · Enter select · r refresh · Esc close".into()
             } else {
-                "↑↓ choose · Enter select · Esc close".into()
+                "↑↓ move · Enter select · Esc close".into()
             }
         };
     }
@@ -1559,13 +1573,19 @@ impl App {
         #[cfg(test)]
         self.flash("release page opened");
     }
+    pub(in crate::tui) fn end_tab_rename(&mut self) {
+        if !self.mcp_add_editor {
+            self.rename_editor = None;
+        }
+    }
+
     pub(in crate::tui) fn begin_mcp_add(&mut self) {
         let mut editor = Editor::default();
         editor.set_text("NAME COMMAND [ARGS...]");
         editor.select_all();
         self.mcp_add_editor = true;
         self.rename_editor = Some(editor);
-        self.footer_left = "type NAME COMMAND [ARGS...] · Enter preview · Esc cancel".into();
+        self.footer_left = "type NAME COMMAND [ARGS...] · Enter preview · Esc close".into();
     }
 
     pub(in crate::tui) fn begin_mcp_import(&mut self) {
@@ -1586,7 +1606,7 @@ impl App {
             rows,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter add server · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter add server · Esc close".into();
     }
 
     fn apply_mcp_import(&mut self, index: usize) {
@@ -1645,7 +1665,7 @@ impl App {
             detail: format!("Adds an enabled local stdio server with arguments [{}]. Undo with /mcp remove {name}.", args.join(" ")),
         }], false);
         self.mcp_add_preview = Some((name, command, args));
-        self.footer_left = "Enter confirm · Esc cancel".into();
+        self.footer_left = "Enter confirm · Esc close".into();
     }
 
     pub(in crate::tui) fn apply_mcp_add(&mut self) {
@@ -1756,7 +1776,7 @@ impl App {
             return;
         }
         if kind == PickerKind::Agents && id == crate::tui::native_agents::GROUP_ID {
-            self.toggle_agents_row(&id);
+            self.set_agents_row_open(&id, None);
             return;
         }
         let effort_model = self.effort_model.take();
@@ -1854,7 +1874,6 @@ impl App {
                         editor.set_text(self.session_ui.title.as_deref().unwrap_or_default());
                         editor.select_all();
                         self.rename_editor = Some(editor);
-                        self.footer_left = "type a title · Enter save · Esc cancel".into();
                     }
                     "rename:clear" => {
                         if self.rename_session("") {
@@ -2077,7 +2096,7 @@ impl App {
                 {
                     match crate::connect::install_provider(provider) {
                         Ok(()) => self.push_system(format!(
-                            "{} installer opened. Finish it there, then return and choose + add account again; Concordia will not sign you in automatically or assume the version is compatible.",
+                            "{} installer opened. Finish it there, then return and choose Add account again; Concordia will not sign you in automatically or assume the version is compatible.",
                             provider.as_str()
                         )),
                         Err(error) => self.push_system(format!(
@@ -2257,7 +2276,9 @@ impl App {
                 }
             }
             PickerKind::Usage => {
-                if let Some(account) = id.strip_prefix("usage:") {
+                if id == "usage-add" {
+                    self.open_add_provider_picker();
+                } else if let Some(account) = id.strip_prefix("usage:") {
                     if account == self.account {
                         return;
                     }

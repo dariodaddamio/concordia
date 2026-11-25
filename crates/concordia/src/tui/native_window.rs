@@ -63,6 +63,7 @@ pub(super) struct RasterImage {
 struct Screen {
     size: Size,
     pixels: Size,
+    requested_size: Size,
     cells: Vec<Cell>,
     cursor: Position,
     cursor_visible: bool,
@@ -200,6 +201,7 @@ fn open_with_sender(
         screen: Mutex::new(Screen {
             size: Size::new(120, 42),
             pixels: Size::new(1080, 840),
+            requested_size: Size::new(120, 42),
             cells: vec![Cell::default(); 120 * 42],
             cursor: Position::default(),
             cursor_visible: false,
@@ -498,17 +500,16 @@ impl Backend for WindowBackend {
         Backend::flush(self)
     }
     fn size(&self) -> io::Result<Size> {
-        Ok(self
-            .shared
-            .screen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .size)
+        let mut screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+        let requested = screen.requested_size;
+        let pixels = screen.pixels;
+        screen.resize(requested.width, requested.height, pixels);
+        Ok(screen.size)
     }
     fn window_size(&mut self) -> io::Result<WindowSize> {
         let screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
         Ok(WindowSize {
-            columns_rows: screen.size,
+            columns_rows: screen.requested_size,
             pixels: screen.pixels,
         })
     }
@@ -869,18 +870,14 @@ impl Window {
         }
         let cols = (client.right / self.cell_width).clamp(1, i32::from(MAX_COLS)) as u16;
         let rows = (client.bottom / self.cell_height).clamp(1, i32::from(MAX_ROWS)) as u16;
-        self.shared
-            .screen
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .resize(
-                cols,
-                rows,
-                Size::new(
-                    client.right.min(i32::from(u16::MAX)) as u16,
-                    client.bottom.min(i32::from(u16::MAX)) as u16,
-                ),
+        {
+            let mut screen = self.shared.screen.lock().unwrap_or_else(|e| e.into_inner());
+            screen.requested_size = Size::new(cols, rows);
+            screen.pixels = Size::new(
+                client.right.min(i32::from(u16::MAX)) as u16,
+                client.bottom.min(i32::from(u16::MAX)) as u16,
             );
+        }
         self.emit(Event::Resize(cols, rows));
         self.shared.dirty.store(true, Ordering::Release);
         InvalidateRect(hwnd, null(), 0);
@@ -935,7 +932,7 @@ impl Window {
         }
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
-        if client.right <= 0 || client.bottom <= 0 {
+        if client.right <= 0 || client.bottom <= 0 || IsIconic(hwnd) != 0 {
             if supplied_dc.is_none() {
                 EndPaint(hwnd, &paint);
             }
@@ -1726,6 +1723,7 @@ impl Drop for PixelBuffer {
 }
 
 unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde_json::Value {
+    const PW_CLIENTONLY: u32 = 1;
     let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
     let mut client: RECT = mem::zeroed();
     GetClientRect(hwnd, &mut client);
@@ -1736,7 +1734,7 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
         return serde_json::json!({"ok": false, "error": "no pixel buffer"});
     };
     UpdateWindow(hwnd);
-    let captured = PrintWindow(hwnd, actual.dc, 1 | 2) != 0;
+    let captured = PrintWindow(hwnd, actual.dc, PW_CLIENTONLY) != 0;
     let blink = window.blink;
     window.blink = false;
     let cached = window.surface.take();
@@ -2567,6 +2565,7 @@ unsafe extern "system" fn window_proc(
         message,
         WM_CLOSE
             | WM_PAINT
+            | WM_PRINT
             | WM_PRINTCLIENT
             | UPDATE
             | TITLE
@@ -2621,6 +2620,10 @@ unsafe extern "system" fn window_proc(
                 window.caret_timer = false;
             }
             window.paint(hwnd, None);
+            0
+        }
+        WM_PRINT if lparam & PRF_CLIENT as LPARAM != 0 => {
+            window.paint(hwnd, Some(wparam as HDC));
             0
         }
         WM_PRINTCLIENT => {
@@ -2734,7 +2737,11 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_SIZE => {
-            window.resized(hwnd);
+            if wparam as u32 == SIZE_MINIMIZED {
+                window.emit(Event::FocusLost);
+            } else {
+                window.resized(hwnd);
+            }
             0
         }
         WM_DPICHANGED => {
@@ -3144,6 +3151,7 @@ mod image_rect_tests {
         let mut screen = Screen {
             size: Size::new(10, 4),
             pixels: Size::new(90, 80),
+            requested_size: Size::new(10, 4),
             cells: vec![Cell::new("x"); 40],
             cursor: Position::default(),
             cursor_visible: true,

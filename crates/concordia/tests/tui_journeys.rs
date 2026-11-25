@@ -15,7 +15,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, PostMessageW, WM_CLOSE, WM_KEYDOWN, WM_KEYUP,
+    EnumWindows, GetWindowTextW, IsIconic, PostMessageW, ShowWindowAsync, SW_MINIMIZE, SW_RESTORE,
+    WM_CLOSE, WM_KEYDOWN, WM_KEYUP,
 };
 
 const BIN: &str = env!("CARGO_BIN_EXE_concordia");
@@ -1632,7 +1633,7 @@ fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
             && screen.contains("What's new")
             && !screen.contains("Fixed (")
             && screen.contains("5h")
-            && screen.contains("reset unavailable")
+            && screen.contains("reset time unavailable")
             && screen.contains("Codex")
             && screen.contains("Claude")
             && screen.contains("Cursor")
@@ -1970,7 +1971,7 @@ fn provider_failure_pauses_queue_and_preserves_a_newer_draft() {
     s.paste("newer draft");
     s.release();
     s.until("failure reported and queue paused", |s| {
-        s.screen().contains("queue paused") && s.screen().contains("provider exited with code 3")
+        s.screen().contains("queue paused") && s.screen().contains("Turn failed.")
     });
     s.until("newer draft preserved", |s| s.draft() == "newer draft");
     assert_eq!(s.prompts().len(), 1);
@@ -3703,6 +3704,43 @@ fn assert_no_stale_images(check: &Value, label: &str) {
             "{label}: actual pixels outside the thumbnail: {check}"
         );
     }
+}
+
+#[test]
+fn restore_refills_the_native_client_and_ends_tab_rename() {
+    let _guard = JOURNEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    setup(dir.path(), ProviderKind::Codex);
+    let mut s = Session::launch(dir.path());
+    let hwnd = process_windows(s.child.id()).into_iter().next().unwrap();
+    for (columns, rows) in [(80, 24), (160, 45)] {
+        s.request(serde_json::json!({"op":"resize", "columns":columns, "rows":rows}));
+        s.until("full grid ready to minimize", |s| {
+            let frame = s.request(serde_json::json!({"op":"snapshot"}));
+            frame["columns"] == columns
+                && frame["rows"] == rows
+                && frame["grid"][rows as usize - 1]
+                    .as_str()
+                    .is_some_and(|row| row.contains("Enter send"))
+        });
+    }
+    s.request(serde_json::json!({"op":"key","code":"F2"}));
+    s.until("rename active", |s| s.screen().contains("Enter save title"));
+    assert_ne!(unsafe { ShowWindowAsync(hwnd, SW_MINIMIZE) }, 0);
+    s.until("window minimized", |_| unsafe { IsIconic(hwnd) != 0 });
+    assert_ne!(unsafe { ShowWindowAsync(hwnd, SW_RESTORE) }, 0);
+    s.until("window restored", |_| unsafe { IsIconic(hwnd) == 0 });
+    s.until("rename ended on restore", |s| {
+        let grid = s.request(serde_json::json!({"op":"snapshot"}));
+        grid["columns"] == 160
+            && grid["rows"] == 45
+            && grid["grid"][44]
+                .as_str()
+                .is_some_and(|row| row.contains("Enter send") && !row.contains("save title"))
+    });
+    let restored = s.pixels("restore", "");
+    assert_clean(&restored, "restore");
+    s.exit();
 }
 
 #[test]

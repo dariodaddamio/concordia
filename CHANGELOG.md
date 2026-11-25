@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-25b, local source)
+
+- Restoring the Windows window redraws the whole grid and ends tab renaming when focus leaves.
+- Account, model and effort pickers start on the current choice. Account and usage screens use the same status labels.
+- Home and Settings reflow more cleanly, and the Settings permissions menu opens by the value.
+- Turn status, tool cards and the Agents panel show fewer markers. Failed turns keep technical details under Expand.
+
 ### Fixed (2026-11-25a, local source)
 
 - Home omits chats that Doctor reports as unopenable, including chats with missing handoff maps.

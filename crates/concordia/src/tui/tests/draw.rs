@@ -801,9 +801,9 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
         }
         assert!(left.contains("Enter send"), "w={w}: {row:?}");
     }
-    assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy or cancel"));
+    assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy"));
     let narrow = footer_row(&Harness::new(60, 12));
-    assert!(narrow.contains("Ctrl+C copy/stop") || narrow.contains("Ctrl+C copy or cancel"));
+    assert!(narrow.contains("Ctrl+C copy"));
     assert!(!footer_row(&Harness::new(40, 12)).contains("drag"));
 }
 
