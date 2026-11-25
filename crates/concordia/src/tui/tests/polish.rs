@@ -134,6 +134,11 @@ fn settings_permissions_opens_under_its_row_not_in_the_footer() {
         "popup {popup:?} touches row {row:?}"
     );
     assert!(h.screen().contains("all providers"), "{}", h.screen());
+    assert!(
+        !h.screen().contains("Help"),
+        "the Help pane hides while the permissions menu covers it: {}",
+        h.screen()
+    );
 }
 
 #[test]

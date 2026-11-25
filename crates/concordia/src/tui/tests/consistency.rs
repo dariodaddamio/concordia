@@ -423,12 +423,20 @@ fn settings_selection_and_popup_follow_the_value_cells() {
         let popup = h.app.areas.permissions_popup;
         assert_eq!(popup.x, anchor.x);
         assert!(popup.y == anchor.bottom() || popup.bottom() == anchor.y);
+        let rows: Vec<u16> = h
+            .app
+            .settings_view
+            .as_ref()
+            .unwrap()
+            .row_areas
+            .iter()
+            .map(|(rect, _)| rect.y)
+            .filter(|y| (popup.y..popup.bottom()).contains(y))
+            .collect();
         let buf = h.term.backend().buffer();
-        for y in popup.y..popup.bottom() {
-            for x in 0..width {
-                if !contains(popup, x, y) {
-                    assert_eq!(buf[(x, y)], before[(x, y)], "{width} cols at ({x}, {y})");
-                }
+        for y in rows {
+            for x in 0..popup.x {
+                assert_eq!(buf[(x, y)], before[(x, y)], "{width} cols at ({x}, {y})");
             }
         }
     }

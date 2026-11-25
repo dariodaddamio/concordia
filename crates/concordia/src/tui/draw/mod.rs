@@ -340,10 +340,7 @@ pub(super) fn panel_title(title: &str) -> String {
 }
 
 fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
-    let hide_help = app
-        .picker
-        .as_ref()
-        .is_some_and(|picker| picker.kind != PickerKind::Trust);
+    let hide_help = app.picker.is_some();
     let trust = app.trust;
     let Some(view) = app.settings_view.as_mut() else {
         return;
