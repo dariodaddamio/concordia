@@ -218,7 +218,7 @@ fn dropdown_detail(kind: PickerKind, detail: &str) -> String {
     }
     detail
         .split(" \u{b7} ")
-        .filter(|part| part.contains("% left"))
+        .filter(|part| part.contains("% left") || part.ends_with(" usage-based"))
         .map(|part| part.split(" (").next().unwrap_or(part))
         .collect::<Vec<_>>()
         .join(" \u{b7} ")
@@ -251,7 +251,7 @@ fn dropdown_width(
     wanted.min(usize::from(screen.width)) as u16
 }
 
-fn ellipsis(text: &str, width: usize) -> String {
+pub(super) fn ellipsis(text: &str, width: usize) -> String {
     if cell_width(text) <= width {
         return text.into();
     }

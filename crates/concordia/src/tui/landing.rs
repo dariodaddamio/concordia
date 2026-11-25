@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
@@ -459,12 +459,42 @@ impl Drop for RecentChatScanGuard {
 
 fn scan_recent_chats(state_root: &Path) -> (Vec<SessionSummary>, u64) {
     let generation = begin_recent_chat_scan(state_root);
-    let sessions = list_recent_sessions(state_root, RECENT_CHATS);
+    let sessions = scan_home_sessions(state_root);
     if publish_recent_chats(state_root, generation, sessions.clone()) {
         (sessions, generation)
     } else {
         cached_recent_chats(state_root).unwrap_or((sessions, generation))
     }
+}
+
+fn scan_home_sessions(state_root: &Path) -> Vec<SessionSummary> {
+    let mut sessions = list_recent_sessions(state_root, RECENT_CHATS);
+    let candidates: HashSet<_> = sessions
+        .iter()
+        .map(|s| (s.provider, s.account.as_str(), s.session_id.as_str()))
+        .collect();
+    let mut tasks = crate::store::list_tasks(state_root);
+    tasks.retain(|task| {
+        task.sessions.last().is_some_and(|s| {
+            candidates.contains(&(s.provider, s.account.as_str(), s.native_session_id.as_str()))
+        })
+    });
+    let diagnostics = crate::sessions::diagnose_tasks(state_root, &tasks);
+    let unavailable: HashSet<_> = diagnostics
+        .iter()
+        .filter(|chat| chat.cause().is_some())
+        .map(|chat| {
+            (
+                chat.provider,
+                chat.account.as_str(),
+                chat.native_session_id.as_str(),
+            )
+        })
+        .collect();
+    sessions.retain(|s| {
+        !unavailable.contains(&(s.provider, s.account.as_str(), s.session_id.as_str()))
+    });
+    sessions
 }
 
 fn cached_recent_chats(state_root: &Path) -> Option<(Vec<SessionSummary>, u64)> {
@@ -493,7 +523,7 @@ fn rescan_recent_chats(state_root: &Path) {
             };
             let generation = begin_recent_chat_scan(&root);
             let sessions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                list_recent_sessions(&root, RECENT_CHATS)
+                scan_home_sessions(&root)
             }));
             if let Ok(sessions) = sessions {
                 let _ = publish_recent_chats(&root, generation, sessions);
@@ -1084,36 +1114,11 @@ fn clipped(text: String, width: usize) -> String {
     result
 }
 
-fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset: bool) -> String {
+fn meter_window(window: &crate::usage::UsageWindow, cells: usize) -> String {
     let left = window.left_pct().round() as usize;
     let filled = (left * cells / 100).min(cells);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(cells - filled));
-    let reset = window
-        .resets
-        .as_deref()
-        .map(|raw| meter_reset_label(raw, window.expired_for_ui()))
-        .unwrap_or_else(|| "reset unavailable".into());
-    format!(
-        "{} [{bar}] {}%{}",
-        window.label,
-        left,
-        if !include_reset {
-            String::new()
-        } else {
-            format!("  {reset}")
-        }
-    )
-}
-
-fn meter_reset_label(raw: &str, expired: bool) -> String {
-    if raw.starts_with("reset at ") || raw.starts_with("already reset") {
-        return crate::usage::reset_phrase(raw);
-    }
-    if expired {
-        format!("reset at {raw}")
-    } else {
-        format!("resets {raw}")
-    }
+    format!("{} [{bar}] {left}%", window.label)
 }
 
 fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
@@ -1134,12 +1139,12 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     };
     let mut lines = vec![clipped(heading, width)];
     for window in &snapshot.windows {
+        if let Some(billing) = window.billing_text() {
+            lines.push(clipped(format!("  {billing}"), width));
+            continue;
+        }
+        let reset = window.reset_text();
         if window.expired_for_ui() {
-            let reset = window
-                .resets
-                .as_deref()
-                .map(|raw| meter_reset_label(raw, true))
-                .unwrap_or_else(|| "reset unavailable".into());
             lines.push(clipped(
                 format!(
                     "  {} [{}] usage unknown  {reset}",
@@ -1150,21 +1155,14 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
             ));
             continue;
         }
-        let full = format!("  {}", meter_window(window, cells, true));
+        let meter = format!("  {}", meter_window(window, cells));
+        let full = format!("{meter}  {reset}");
         if full.chars().count() <= width {
             lines.push(full);
             continue;
         }
-        lines.push(clipped(
-            format!("  {}", meter_window(window, cells, false)),
-            width,
-        ));
-        if let Some(reset) = window.resets.as_deref() {
-            let reset = meter_reset_label(reset, window.expired_for_ui());
-            if reset != "reset unavailable" {
-                lines.push(clipped(format!("    {reset}"), width));
-            }
-        }
+        lines.push(clipped(meter, width));
+        lines.push(clipped(format!("    {reset}"), width));
     }
     if snapshot.windows.is_empty() {
         let state = snapshot.summary.trim();
@@ -1329,6 +1327,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         && crate::store::load_store(&app.state_root)
             .accounts
             .is_empty();
+    let show_welcome_intro = welcome_visible && app.areas.home_documentation.is_none();
     let usage_content = if landing.meters.is_empty() {
         0
     } else {
@@ -1339,7 +1338,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let content = {
         let chats = landing.rows().len();
-        let intro = if welcome_visible || compact_intro {
+        let intro = if welcome_visible {
+            4 + landing.provider_health.len() + if show_welcome_intro { 8 } else { 0 }
+        } else if compact_intro {
             7
         } else {
             0
@@ -1387,21 +1388,23 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         } else if landing.tokens_error.is_some() {
             Some(" recorded usage unavailable ".into())
         } else if landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial {
-            Some(format!(
-                " {} {} / {} tokens in 24 hours{} ",
-                super::token_line::compact(landing.tokens_all_time),
-                if landing.tokens_partial {
-                    "recorded"
-                } else {
-                    "all time"
-                },
-                super::token_line::compact(landing.tokens_24h),
-                if landing.tokens_partial {
-                    " · partial"
-                } else {
-                    ""
-                }
-            ))
+            let day = super::token_line::compact(landing.tokens_24h);
+            let total = super::token_line::compact(landing.tokens_all_time);
+            let coverage = if landing.tokens_partial {
+                " (incomplete)"
+            } else {
+                ""
+            };
+            let full = format!(
+                " {day} tokens logged in the last 24h · {total} in local history{coverage} "
+            );
+            let width = usize::from(panes[0].width.saturating_sub(2));
+            if full.chars().count() <= width {
+                Some(full)
+            } else {
+                let short = format!(" {day} tokens logged in the last 24h{coverage} ");
+                (short.len() <= width).then_some(short)
+            }
         } else {
             None
         };
@@ -1429,31 +1432,21 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 "Next: /use to add an account (Enter)",
                 selected,
             ));
-            lines.push(Line::default());
-            lines.push(Line::styled("What's new", selected));
-            for item in super::brand::whats_new(3, inner.width as usize) {
-                lines.push(Line::from(item));
+            if show_welcome_intro {
+                lines.push(Line::default());
+                lines.push(Line::styled("What's new", selected));
+                for item in super::brand::whats_new(3, inner.width as usize) {
+                    lines.push(Line::from(item));
+                }
+                lines.push(Line::default());
+                app.areas.home_documentation = super::brand::push_documentation(&mut lines, inner);
+                lines.push(Line::from("F1  Shortcuts"));
             }
-            lines.push(Line::default());
-            let documentation_row = lines.len();
-            lines.push(Line::from(Span::styled(
-                "Documentation",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED),
-            )));
-            lines.push(Line::from("F1  Shortcuts"));
             f.render_widget(Paragraph::new(lines), inner);
-            app.areas.home_documentation = Some(Rect::new(
-                inner.x,
-                inner.y + documentation_row as u16,
-                "Documentation".len() as u16,
-                1,
-            ));
             landing.goals_area = Rect::default();
             return;
         }
-        if compact_intro {
+        let intro_rows = if compact_intro {
             let mut lines = vec![Line::styled("What's new", selected)];
             lines.extend(
                 super::brand::whats_new(3, inner.width as usize)
@@ -1461,33 +1454,21 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     .map(Line::from),
             );
             lines.push(Line::default());
-            let documentation_row = lines.len();
-            lines.push(Line::from(Span::styled(
-                "Documentation",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED),
-            )));
+            app.areas.home_documentation = super::brand::push_documentation(&mut lines, inner);
             lines.push(Line::from("F1  Shortcuts"));
+            let rows = (lines.len() as u16).min(inner.height);
             f.render_widget(Paragraph::new(lines), inner);
-            app.areas.home_documentation = Some(Rect::new(
-                inner.x,
-                inner.y + documentation_row as u16,
-                "Documentation".len() as u16,
-                1,
-            ));
             landing.goals_area = Rect::default();
-        }
-        let list_area = if compact_intro {
-            Rect::new(
-                inner.x,
-                inner.y.saturating_add(7),
-                inner.width,
-                inner.height.saturating_sub(7),
-            )
+            rows
         } else {
-            inner
+            0
         };
+        let list_area = Rect::new(
+            inner.x,
+            inner.y + intro_rows,
+            inner.width,
+            inner.height - intro_rows,
+        );
         landing.chats_area = list_area;
         let rows = landing.rows();
         let height = list_area.height as usize;

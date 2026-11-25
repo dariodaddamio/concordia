@@ -125,6 +125,19 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     {
         return "pointer";
     }
+    if [
+        app.areas.header_home,
+        app.areas.header_provider,
+        app.areas.header_model,
+        app.areas.header_effort,
+        app.areas.header_credits,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|rect| contains(rect, x, y))
+    {
+        return "pointer";
+    }
     if app.picker.is_some() || app.activity.detail.is_some() || workers::overlay_open(app) {
         return "default";
     }
@@ -133,18 +146,6 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
             .areas
             .home_documentation
             .is_some_and(|rect| contains(rect, x, y))
-    {
-        return "pointer";
-    }
-    if [
-        app.areas.header_home,
-        app.areas.header_provider,
-        app.areas.header_model,
-        app.areas.header_effort,
-    ]
-    .into_iter()
-    .flatten()
-    .any(|rect| contains(rect, x, y))
     {
         return "pointer";
     }

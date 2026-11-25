@@ -23,6 +23,8 @@ pub struct UsageWindow {
     pub resets: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub usage_based: bool,
 }
 
 impl UsageWindow {
@@ -73,15 +75,27 @@ impl UsageWindow {
         self.left_pct().round() as i64
     }
 
+    pub(crate) fn reset_text(&self) -> String {
+        self.resets
+            .as_deref()
+            .map(reset_phrase)
+            .unwrap_or_else(|| "reset time unavailable".into())
+    }
+
+    pub(crate) fn billing_text(&self) -> Option<String> {
+        self.usage_based
+            .then(|| format!("{} usage-based", self.name()))
+    }
+
     fn used_left(&self) -> String {
+        if let Some(text) = self.billing_text() {
+            return text;
+        }
         if self.expired() {
             return format!(
                 "{} · {} · current usage unavailable (last reading {}% used)",
                 self.name(),
-                self.resets
-                    .as_deref()
-                    .map(reset_phrase)
-                    .unwrap_or_else(|| "reset time unavailable".into()),
+                self.reset_text(),
                 self.used_i()
             );
         }
@@ -95,15 +109,9 @@ impl UsageWindow {
 
     fn picker_text(&self) -> String {
         let mut text = self.used_left();
-        if !self.expired() {
+        if !self.usage_based && !self.expired() {
             text.push_str(" · ");
-            text.push_str(
-                &self
-                    .resets
-                    .as_deref()
-                    .map(reset_phrase)
-                    .unwrap_or_else(|| "reset time unavailable".into()),
-            );
+            text.push_str(&self.reset_text());
         }
         text
     }
@@ -183,7 +191,7 @@ impl UsageSnapshot {
     fn max_used(&self) -> Option<f64> {
         self.windows
             .iter()
-            .filter(|window| !window.expired() && window.bucket.is_none())
+            .filter(|window| !window.usage_based && !window.expired() && window.bucket.is_none())
             .map(|w| w.used_pct)
             .reduce(f64::max)
             .or_else(|| match (self.primary_pct, self.weekly_pct) {
@@ -339,6 +347,20 @@ fn local_now() -> Option<WallTime> {
     TEST_NOW.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+pub(crate) fn with_test_clock(month: u32, day: u32, hour: u32, minute: u32, run: impl FnOnce()) {
+    TEST_NOW.with(|clock| {
+        let previous = clock.replace(Some(WallTime {
+            month,
+            day,
+            hour,
+            minute,
+        }));
+        run();
+        clock.set(previous);
+    });
+}
+
 #[cfg(not(test))]
 fn local_now() -> Option<WallTime> {
     system_now()
@@ -386,7 +408,7 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
     windows
         .iter()
         .map(|w| {
-            if w.expired() {
+            if w.usage_based || w.expired() {
                 return w.used_left();
             }
             let mut line = format!(
@@ -425,7 +447,9 @@ fn snapshot_from_windows(
             continue;
         }
         let label = w.name();
-        parts.push(if w.expired() {
+        parts.push(if w.usage_based {
+            w.used_left()
+        } else if w.expired() {
             format!("{label} reset · usage unknown")
         } else {
             format!("{label} {}% left", w.left_i())
@@ -446,15 +470,15 @@ fn snapshot_from_windows(
     if !source.is_empty() {
         lines.push(source.to_string());
     }
-    let primary_pct = windows
-        .iter()
-        .find(|w| w.bucket.is_none())
-        .filter(|w| !w.expired())
-        .map(|w| w.used_pct);
-    let weekly_pct = windows
-        .iter()
-        .find(|w| w.bucket.is_none() && w.label.starts_with("7d"))
-        .or_else(|| windows.iter().filter(|w| w.bucket.is_none()).nth(1))
+    let quota = || {
+        windows
+            .iter()
+            .filter(|w| !w.usage_based && w.bucket.is_none())
+    };
+    let primary_pct = quota().next().filter(|w| !w.expired()).map(|w| w.used_pct);
+    let weekly_pct = quota()
+        .find(|w| w.label.starts_with("7d"))
+        .or_else(|| quota().nth(1))
         .filter(|w| !w.expired())
         .map(|w| w.used_pct);
     UsageSnapshot {
@@ -765,6 +789,7 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
             used_pct,
             resets,
             bucket: None,
+            usage_based: false,
         });
     }
     if windows.is_empty() {
@@ -807,7 +832,7 @@ fn cursor_source(note: &str, tail: &str) -> String {
 fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
     let mut plan: Option<String> = None;
     let mut reset: Option<String> = None;
-    let mut on_demand_off = false;
+    let mut on_demand = None;
     let mut windows: Vec<UsageWindow> = Vec::new();
     for raw in strip_ansi(text).lines() {
         let line = raw.trim();
@@ -829,7 +854,25 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
             continue;
         };
         let lower = rest.to_ascii_lowercase();
-        if let Some(i) = lower.find("% used") {
+        let metered = ["usage-based", "pay-as-you-go", "no spending limit"]
+            .iter()
+            .any(|wording| lower.contains(wording));
+        if label == "On-Demand" {
+            let status = lower.trim_start();
+            let status = status.strip_prefix("usage is ").unwrap_or(status);
+            let status = status.split_whitespace().next();
+            if matches!(status, Some("disabled" | "off")) {
+                on_demand = Some(false);
+                windows.retain(|w| w.label != label);
+                continue;
+            }
+            if metered || matches!(status, Some("enabled" | "on")) || lower.contains("% used") {
+                on_demand = Some(true);
+            }
+        }
+        let used_pct = if metered {
+            0.0
+        } else if let Some(i) = lower.find("% used") {
             let digits: String = rest[..i]
                 .chars()
                 .rev()
@@ -841,31 +884,54 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
             let Ok(used_pct) = digits.parse::<f64>() else {
                 continue;
             };
-            windows.retain(|w| w.label != label);
-            windows.push(UsageWindow {
-                label,
-                used_pct,
-                resets: None,
-                bucket: None,
-            });
-        } else if label == "On-Demand" && lower.contains("disabled") {
-            on_demand_off = true;
-        }
+            used_pct
+        } else {
+            continue;
+        };
+        windows.retain(|w| w.label != label);
+        windows.push(UsageWindow {
+            label,
+            used_pct,
+            resets: None,
+            bucket: None,
+            usage_based: metered,
+        });
     }
     if windows.is_empty() {
         return None;
-    }
-    for w in &mut windows {
-        w.resets = reset.clone();
     }
     let mut note = Vec::new();
     if let Some(p) = plan.filter(|p| !p.is_empty()) {
         note.push(format!("Cursor {p}"));
     }
-    if on_demand_off {
-        note.push("on-demand off".to_string());
+    if let Some(enabled) = on_demand {
+        note.push(
+            if enabled {
+                "on-demand on"
+            } else {
+                "on-demand off"
+            }
+            .into(),
+        );
     }
-    Some((windows, note.join(", ")))
+    for w in &mut windows {
+        w.resets.clone_from(&reset);
+    }
+    let note = note.join(", ");
+    classify_cursor_billing(&mut windows, &note);
+    Some((windows, note))
+}
+
+fn classify_cursor_billing(windows: &mut [UsageWindow], note: &str) {
+    let setting = note.rsplit(", ").next();
+    let on_demand = setting == Some("on-demand on")
+        || (setting != Some("on-demand off") && windows.iter().any(|w| w.label == "On-Demand"));
+    for window in windows {
+        if window.usage_based || (window.label == "API" && on_demand) {
+            window.usage_based = true;
+            window.resets = None;
+        }
+    }
 }
 
 fn cursor_row(line: &str) -> Option<(String, &str)> {
@@ -1109,6 +1175,7 @@ pub fn peek_cached_usage_for_model(
     let windows: Vec<&UsageWindow> = cached
         .windows
         .iter()
+        .filter(|window| !window.usage_based)
         .filter(|window| other_pool != Some(window.label.as_str()))
         .filter(|window| match window.bucket.as_deref() {
             Some(bucket) if provider == crate::store::ProviderKind::Codex => bucket_applies(bucket),
@@ -1150,7 +1217,10 @@ fn load_cache(state_root: &Path, identity: &UsageIdentity) -> Option<CachedUsage
         return None;
     }
     let raw = crate::fs_safe::read_text_bounded(&path, 64 * 1024)?;
-    let cached: CachedUsage = serde_json::from_str(&raw).ok()?;
+    let mut cached: CachedUsage = serde_json::from_str(&raw).ok()?;
+    if identity.provider == crate::store::ProviderKind::Cursor {
+        classify_cursor_billing(&mut cached.windows, &cached.note);
+    }
     (cached.identity == *identity
         && cached.fetched_at <= unix_now()
         && cached.windows.len() <= 16
@@ -1205,6 +1275,7 @@ pub(crate) fn fixture_cached_usage(
                 used_pct: 10.0,
                 resets: None,
                 bucket: None,
+                usage_based: false,
             }],
             codex_limits: None,
             note: String::new(),
@@ -1705,6 +1776,7 @@ fn codex_windows(u: &CodexRateLimits, bucket: Option<&str>) -> Vec<UsageWindow> 
                         }
                     }),
                     bucket: bucket.map(str::to_owned),
+                    usage_based: false,
                 });
             }
         }
@@ -1948,12 +2020,14 @@ mod tests {
                     used_pct: 64.0,
                     resets: Some("Oct 29, 4:19am".into()),
                     bucket: None,
+                    usage_based: false,
                 },
                 UsageWindow {
                     label: "7d".into(),
                     used_pct: 21.0,
                     resets: Some("Nov 6, 9am".into()),
                     bucket: None,
+                    usage_based: false,
                 },
             ],
             None,
@@ -2121,6 +2195,7 @@ mod tests {
                     used_pct: p,
                     resets: None,
                     bucket: None,
+                    usage_based: false,
                 }],
                 None,
                 vec![],
@@ -2622,6 +2697,7 @@ mod profile_row_tests {
             used_pct: 20.0,
             resets: None,
             bucket: None,
+            usage_based: false,
         });
         let row = profiled_picker_row("claude", identity.provider, &snapshot, &identity);
         assert_eq!(

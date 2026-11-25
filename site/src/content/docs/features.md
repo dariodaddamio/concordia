@@ -33,6 +33,8 @@ intended direction so the site does not promise unfinished work.
 - Guide provider setup during onboarding and show Concordia and provider update notices.
 - Keep projects in the Projects panel and show delegated and provider runs in the Agents panel.
 - Keep multiple chats in tabs with background, close and resume behavior.
+- In local source candidate `2026-11-25a`, Home skips recent chats that Doctor reports as
+  unopenable, and the header account picker respects hidden accounts.
 - Show provider questions and approvals in Needs attention without replaying uncertain actions.
 - Local source candidate `2026-11-18b`: offer steering or queueing text during a Codex app-server
   turn. Confirm against the exact thread/turn before clearing the draft; never retry uncertain input.
@@ -49,6 +51,8 @@ intended direction so the site does not promise unfinished work.
   editor.
 - Render Markdown, Mermaid diagrams, images and attachment previews.
 - Show live provider usage, model and effort controls, taskbar status and Windows notifications.
+- Show countdowns for quota resets less than 24 hours away and dates for later resets. For Cursor,
+  show API usage as usage-based when on-demand billing is enabled.
 - Support `@chat` references and the `/model` command for active provider models.
 - Connect local Harness and memory extensions through `/harness`, `/skills` and `/hooks`.
 

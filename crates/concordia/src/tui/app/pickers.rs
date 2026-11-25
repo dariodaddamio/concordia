@@ -1003,7 +1003,7 @@ impl App {
         let signed_in = crate::accounts::accounts_with_auth(&self.state_root);
         let mut rows = Vec::new();
         let mut offered = std::collections::HashSet::new();
-        for account in crate::accounts::setup_accounts(&self.state_root) {
+        for account in crate::accounts::list_all_accounts(&self.state_root) {
             let Some(home) = account.home_path else {
                 continue;
             };

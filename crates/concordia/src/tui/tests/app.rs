@@ -607,13 +607,13 @@ fn the_landing_page_shows_the_last_24_hours_of_tokens() {
     while Instant::now() < deadline {
         h.app.on_tick();
         h.draw();
-        if h.screen().contains("3.3k tokens in 24 hours") {
+        if h.screen().contains("3.3k tokens logged in the last 24h") {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        h.screen().contains("3.3k tokens in 24 hours"),
+        h.screen().contains("3.3k tokens logged in the last 24h"),
         "{}",
         h.screen()
     );

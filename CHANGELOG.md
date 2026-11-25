@@ -1,5 +1,17 @@
 # Changelog
 
+### Fixed (2026-11-25a, local source)
+
+- Home omits chats that Doctor reports as unopenable, including chats with missing handoff maps.
+- Home and the account pickers show the same reset time. Resets less than 24 hours away use a
+  countdown, and later resets show a date.
+- What's new marks shortened bullets with an ellipsis, and Documentation opens from the visible link.
+- The header account picker respects hidden accounts. Header chips show a hand cursor while a picker
+  is open.
+- Home labels token counts by time period and explains when local history is incomplete.
+- Cursor API usage shows as usage-based when on-demand billing is enabled. Spending and subscription
+  caps still show their remaining allowance when reported.
+
 ### Fixed (2026-11-20a, local source)
 
 This release comes from qualifying every row of PLAN.md's "Remaining surfaces to qualify" in

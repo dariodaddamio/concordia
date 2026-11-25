@@ -88,6 +88,8 @@ pub fn runs(text: &str) -> Vec<LineRun> {
             }
         } else if line.starts_with("limit reached") {
             out.push((i, 0, n, red_bold()));
+        } else if line.ends_with(" usage-based") {
+            out.push((i, 0, n, dim()));
         } else if line.starts_with("checked ") || line.contains("as of your last chat") {
             out.push((i, 0, n, dim().add_modifier(Modifier::ITALIC)));
         }

@@ -40,6 +40,8 @@ Ask your question and press Enter
 /model
 ```
 
+Use `/doctor` to see why a saved chat is unavailable on Home and find the repair command.
+
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |
