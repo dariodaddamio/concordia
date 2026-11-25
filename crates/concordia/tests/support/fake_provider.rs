@@ -1122,10 +1122,18 @@ fn interaction(args: &[String]) {
         journal("limited");
         std::process::exit(1);
     }
-    let thought = format!(
-        "reasoning-start {} reasoning-end",
-        "checking the requested changes. ".repeat(30)
-    );
+    let visible_prompt = visible_prompt(&prompt);
+    let audit_transcript = std::env::var_os("FAKE_PROVIDER_AUDIT").is_some()
+        && provider == "codex"
+        && visible_prompt.trim() == "Audit the parser sample";
+    let thought = if audit_transcript {
+        "Checking empty input, UTF-8, and where the parser splits tokens.".into()
+    } else {
+        format!(
+            "reasoning-start {} reasoning-end",
+            "checking the requested changes. ".repeat(30)
+        )
+    };
     let command = if prompt.contains("[launch]") {
         "codex exec -m gpt-5.6-luna \"Fix the parser\nsecond line with \\\"quotes\\\"\"".to_owned()
     } else {
@@ -1285,7 +1293,12 @@ fn interaction(args: &[String]) {
         let gate =
             std::path::PathBuf::from(std::env::var("FAKE_PROVIDER_GATE").expect("fake gate"));
         let start = std::time::Instant::now();
-        while !gate.exists() && start.elapsed() < std::time::Duration::from_secs(30) {
+        let wait_seconds = if std::env::var_os("FAKE_PROVIDER_AUDIT").is_some() {
+            120
+        } else {
+            30
+        };
+        while !gate.exists() && start.elapsed() < std::time::Duration::from_secs(wait_seconds) {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
@@ -1294,8 +1307,9 @@ fn interaction(args: &[String]) {
         eprintln!("fake provider: deliberate interaction failure");
         std::process::exit(3);
     }
-    let visible_prompt = visible_prompt(&prompt);
-    let reply = if visible_prompt.trim() == "[mermaid]" {
+    let reply = if audit_transcript {
+        "## Parser review\n\n- Preserved **empty inputs** and `UTF-8`.\n- See the [parser guide](https://example.invalid/parser).\n\n```rust\nlet tokens = parse(input)?;\n```".into()
+    } else if visible_prompt.trim() == "[mermaid]" {
         "```mermaid\nflowchart LR\n A[Prompt] --> B[Provider]\n```".into()
     } else if visible_prompt.trim() == "[choices]" {
         "Which approach do you prefer?\n1. Small patch\n2. Full refactor".into()
@@ -1316,6 +1330,11 @@ fn interaction(args: &[String]) {
             emit(
                 json!({"type":"item.completed","item":{"type":"command_execution","id":"tool","command":command,"aggregated_output":tool_output}}),
             );
+            if audit_transcript {
+                emit(
+                    json!({"type":"item.completed","item":{"type":"file_change","id":"audit-file","status":"completed","changes":[{"path":"parser.rs","kind":"update"}]}}),
+                );
+            }
             emit(
                 json!({"type":"item.completed","item":{"type":"agent_message","id":"reply","text":reply}}),
             );

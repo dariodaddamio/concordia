@@ -12,6 +12,11 @@
 - Cursor API usage shows as usage-based when on-demand billing is enabled. Spending and subscription
   caps still show their remaining allowance when reported.
 
+### Developer tooling
+
+`scripts/audit-shots.ps1` captures native Windows UI states with fake providers and indexes the
+screenshots, text grids and unavailable routes.
+
 ### Fixed (2026-11-20a, local source)
 
 This release comes from qualifying every row of PLAN.md's "Remaining surfaces to qualify" in
