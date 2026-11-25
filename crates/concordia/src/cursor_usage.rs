@@ -242,6 +242,9 @@ fn drive(
         if let Ok(Some(_)) = child.try_wait() {
             return Err("the Cursor agent exited before showing usage".into());
         }
+        if is_login_prompt(&text) {
+            return Err(NOT_LOGGED_IN.into());
+        }
         if !trusted && is_trust_prompt(&text) {
             let _ = writer.write_all(b"a");
             let _ = writer.flush();
@@ -276,6 +279,21 @@ fn drive(
 
 fn count_sub(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
+}
+
+pub const NOT_LOGGED_IN: &str = "Cursor is not logged in; run `agent login` to see usage";
+
+fn is_login_prompt(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "to log in",
+        "not logged in",
+        "logged out",
+        "to sign in",
+        "login required",
+    ]
+    .iter()
+    .any(|phrase| t.contains(phrase))
 }
 
 fn is_trust_prompt(text: &str) -> bool {
@@ -436,6 +454,96 @@ if ([Text.Encoding]::UTF8.GetString($bytes) -ne "/usage$([char]27)[13u") {{ exit
             cwd: dir.path().to_path_buf(),
         };
         assert!(run_usage_in_pty(&spec, Duration::from_secs(4)).is_err());
+    }
+
+    fn fake_logged_out_agent(dir: &Path) -> (PtySpec, PathBuf) {
+        let pressed = dir.join("key-pressed");
+        #[cfg(windows)]
+        let (program, args) = {
+            let script = dir.join("logged-out-agent.ps1");
+            std::fs::write(
+                &script,
+                format!(
+                    r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ProbeInput {{ [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); }}'
+[ProbeInput]::SetConsoleMode([ProbeInput]::GetStdHandle(-10), 0x0200) | Out-Null
+[Console]::WriteLine('Cursor Agent')
+[Console]::WriteLine('Press any key to log in...')
+$bytes = New-Object byte[] 1
+if ([Console]::OpenStandardInput().Read($bytes, 0, 1) -gt 0) {{ [IO.File]::WriteAllText('{}', 'browser') }}
+"#,
+                    pressed.display().to_string().replace('\'', "''")
+                ),
+            )
+            .unwrap();
+            (
+                "powershell.exe".to_string(),
+                vec![
+                    "-NoProfile".into(),
+                    "-File".into(),
+                    script.to_string_lossy().into_owned(),
+                ],
+            )
+        };
+        #[cfg(unix)]
+        let (program, args) = {
+            let script = dir.join("logged-out-agent.sh");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh
+stty -icanon -echo
+echo 'Cursor Agent'
+echo 'Press any key to log in...'
+if [ -n \"$(dd bs=1 count=1 2>/dev/null)\" ]; then echo browser > '{}'; fi
+",
+                    pressed.display()
+                ),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (script.to_string_lossy().into_owned(), Vec::new())
+        };
+        (
+            PtySpec {
+                program,
+                args,
+                env: Vec::new(),
+                cwd: dir.to_path_buf(),
+            },
+            pressed,
+        )
+    }
+
+    #[test]
+    fn a_logged_out_agent_gets_no_keypress_so_no_browser_login_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spec, pressed) = fake_logged_out_agent(dir.path());
+        let started = Instant::now();
+        let error = run_usage_in_pty(&spec, Duration::from_secs(15)).unwrap_err();
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(error, NOT_LOGGED_IN);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited for the timeout instead of stopping at the login prompt"
+        );
+        assert!(
+            !pressed.exists(),
+            "a key reached the login prompt, which opens the browser login"
+        );
+    }
+
+    #[test]
+    fn login_prompts_are_recognised() {
+        assert!(is_login_prompt(
+            " Cursor Agent
+ Press any key to log in..."
+        ));
+        assert!(is_login_prompt("You are not logged in"));
+        assert!(!is_login_prompt(TABLE));
+        assert!(!is_login_prompt(
+            "Do you trust the contents of this directory?"
+        ));
     }
 
     #[test]
