@@ -340,7 +340,10 @@ pub(super) fn panel_title(title: &str) -> String {
 }
 
 fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
-    let popup_open = app.picker.is_some();
+    let hide_help = app
+        .picker
+        .as_ref()
+        .is_some_and(|picker| picker.kind != PickerKind::Trust);
     let trust = app.trust;
     let Some(view) = app.settings_view.as_mut() else {
         return;
@@ -556,7 +559,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         .get(selected)
         .map(|(tab, row)| view.tabs[*tab].rows[*row].description.clone())
         .unwrap_or_default();
-    if help_width > 0 && !popup_open {
+    if help_width > 0 && !hide_help {
         let help = Rect::new(
             list.x + (label_width + value_width) as u16 + 2,
             body.y,
@@ -576,7 +579,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
                 ),
             help,
         );
-    } else if !popup_open {
+    } else if !hide_help {
         let shown = rows.len().min(height) as u16;
         f.render_widget(
             Paragraph::new(Line::styled(ellipsis(&description, width), muted)),
@@ -1801,8 +1804,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             let block = Block::default()
                 .title(fit_panel_title(
                     &format!(
-                        " Activity · Find: {query} · {} matches ",
-                        app.activity.matches.len()
+                        " Activity · Find: {query} · {} ",
+                        text::format_count(app.activity.matches.len() as u64, "match", "matches")
                     ),
                     popup.width,
                 ))
@@ -2515,12 +2518,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         .trust_anchor
         .filter(|_| picker.kind == PickerKind::Trust);
     if let Some(anchor) = settings_anchor {
-        let settings = Rect::new(
-            screen.x + 1,
-            screen.y + 2,
-            screen.width.saturating_sub(2),
-            screen.height.saturating_sub(3),
-        );
         popup.width = popup.width.min(screen.width);
         popup.x = anchor
             .x
@@ -2535,10 +2532,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             anchor.y.saturating_sub(popup.height)
         };
         app.areas.permissions_popup = popup;
-        f.render_widget(
-            Clear,
-            Rect::new(settings.x, popup.y, settings.width, popup.height).intersection(settings),
-        );
     } else if picker.kind == PickerKind::Trust {
         let right = app.areas.permissions.right().min(area.right());
         let bottom = app.areas.permissions.y;
@@ -2546,21 +2539,9 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         popup.height = popup.height.min(bottom.saturating_sub(area.y));
         popup.x = right.saturating_sub(popup.width);
         popup.y = bottom.saturating_sub(popup.height);
-        let input = app.areas.input;
-        if !input.is_empty() {
-            f.render_widget(
-                Clear,
-                Rect::new(
-                    input.x.saturating_sub(1),
-                    input.y.saturating_sub(1),
-                    input.width + 2,
-                    input.height + 2,
-                ),
-            );
-        }
         app.areas.permissions_popup = popup;
     }
-    if dropdown.is_some() || picker.kind == PickerKind::Trust && settings_anchor.is_none() {
+    if dropdown.is_some() {
         let backdrop = app.areas.transcript;
         let width = app
             .areas
@@ -2569,7 +2550,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .max(backdrop.right())
             .saturating_sub(backdrop.x);
         f.render_widget(Clear, Rect::new(backdrop.x, popup.y, width, popup.height));
-    } else if settings_anchor.is_none() {
+    } else if picker.kind != PickerKind::Trust {
         f.render_widget(Clear, Rect::new(area.x, popup.y, area.width, popup.height));
     }
     f.render_widget(Clear, popup);

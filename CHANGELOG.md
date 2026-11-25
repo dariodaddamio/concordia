@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-25d, local source)
+
+- The footer permissions menu opens above its chip and keeps the draft visible on the left.
+- Settings keeps rows and help visible outside the permissions menu.
+- Activity search shows `1 match`, and the quiet-turn notice shows `1 minute`.
+
 ### Fixed (2026-11-25c, local source)
 
 - Failure details stay with the turn that failed.

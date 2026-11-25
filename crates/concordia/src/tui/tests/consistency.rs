@@ -366,30 +366,68 @@ fn doctor_footer_offers_review_on_a_fixable_row() {
 }
 
 #[test]
+fn footer_permissions_overlays_the_composer_with_the_draft_visible() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        h.type_str("keep this draft visible");
+        let chip = h.app.areas.permissions;
+        h.click(chip.x + 1, chip.y);
+        let popup = h.app.areas.permissions_popup;
+        let input = h.app.areas.input;
+        assert_eq!(popup.bottom(), chip.y);
+        assert_eq!(popup.right(), chip.right());
+        assert!(popup.x > input.x && !popup.intersection(input).is_empty());
+        let screen = h.screen();
+        assert!(screen.contains("keep this draft visible"), "{screen}");
+    }
+}
+
+#[test]
+fn activity_search_renders_singular_and_plural_match_counts() {
+    let mut h = Harness::new(100, 28);
+    h.app.push_card(StreamCard {
+        id: "cmd".into(),
+        title: "shell".into(),
+        detail: Some("parser one\nparser two".into()),
+        status: CardStatus::Done,
+    });
+    h.app.activity.open(h.app.messages.len() - 1);
+    h.draw();
+    h.type_str("one");
+    let screen = h.screen();
+    assert!(screen.contains(" · 1 match "), "{screen}");
+    for _ in 0..3 {
+        h.key(KeyCode::Backspace, KeyModifiers::NONE);
+    }
+    h.type_str("parser");
+    let screen = h.screen();
+    assert!(screen.contains(" · 2 matches "), "{screen}");
+}
+
+#[test]
 fn settings_selection_and_popup_follow_the_value_cells() {
     for width in [80, 120, 160] {
         let mut h = Harness::new(width, 30);
         settings::open(&mut h.app);
         h.draw();
         let anchor = h.app.areas.trust_anchor.unwrap();
-        let buf = h.term.backend().buffer();
+        let before = h.term.backend().buffer().clone();
+        let buf = &before;
         assert_eq!(buf[(anchor.x, anchor.y)].symbol(), "[");
         assert_eq!(buf[(anchor.right() - 1, anchor.y)].symbol(), "]");
         assert_ne!(
             buf[(anchor.right() - 1, anchor.y)].bg,
             buf[(anchor.right(), anchor.y)].bg
         );
-        let help = (width >= 120).then(|| find_cell(buf, "Help"));
         h.enter();
         let popup = h.app.areas.permissions_popup;
         assert_eq!(popup.x, anchor.x);
         assert!(popup.y == anchor.bottom() || popup.bottom() == anchor.y);
-        if let Some((x, y)) = help {
-            let buf = h.term.backend().buffer();
-            assert!(!h.screen().contains("Help"));
-            for row in y..y + 12 {
-                if !contains(popup, x - 2, row) {
-                    assert_ne!(buf[(x - 2, row)].symbol(), "│");
+        let buf = h.term.backend().buffer();
+        for y in popup.y..popup.bottom() {
+            for x in 0..width {
+                if !contains(popup, x, y) {
+                    assert_eq!(buf[(x, y)], before[(x, y)], "{width} cols at ({x}, {y})");
                 }
             }
         }

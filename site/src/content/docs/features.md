@@ -52,8 +52,9 @@ intended direction so the site does not promise unfinished work.
 - Run a per-chat PowerShell terminal, preview files with `/open`, and edit through the built-in
   editor.
 - Render Markdown, Mermaid diagrams, images and attachment previews.
-- Keep failure details expandable under the turn's provider header. In Settings, the permission
-  menu opens next to its value and temporarily hides Help.
+- Keep failure details expandable under the turn's provider header.
+- Open the permissions menu above the chat footer chip with the draft still visible on the left.
+  In Settings, the menu opens next to its value and leaves nearby content visible outside the popup.
 - Show live provider usage, model and effort controls, taskbar status and Windows notifications.
 - Show countdowns for quota resets less than 24 hours away and dates for later resets. For Cursor,
   show API usage as usage-based when on-demand billing is enabled.

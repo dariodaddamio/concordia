@@ -43,6 +43,8 @@ Ask your question and press Enter
 On a fresh setup, press Enter on Home to choose a provider to connect. Use `/doctor` to see why a
 saved chat is unavailable on Home and find the repair command.
 
+Click the permissions chip in the chat footer to review permission modes while keeping your draft visible.
+
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |
 | --- | --- | --- | --- |

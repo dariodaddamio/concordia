@@ -1,5 +1,10 @@
 use unicode_width::UnicodeWidthChar;
 
+pub(super) fn format_count(count: u64, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun}")
+}
+
 pub fn normalize_newlines(input: &str) -> std::borrow::Cow<'_, str> {
     if input.contains('\r') {
         std::borrow::Cow::Owned(input.replace("\r\n", "\n").replace('\r', "\n"))

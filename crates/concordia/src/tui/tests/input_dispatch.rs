@@ -601,20 +601,21 @@ fn idle_notice_updates_in_place_and_clears_on_output() {
     let mut h = Harness::new(160, 24);
     h.type_str("draft");
     h.app.busy = true;
-    h.app.busy = true;
-    h.app.apply_progress(TurnProgress::Idle {
-        provider: ProviderKind::Claude,
-        minutes: 10,
-        silent_for: Duration::from_secs(600),
-    });
-    h.app.apply_progress(TurnProgress::Idle {
-        provider: ProviderKind::Claude,
-        minutes: 20,
-        silent_for: Duration::from_secs(1200),
-    });
-    let t = h.transcript_text();
-    assert_eq!(t.matches("No output from Claude Code").count(), 1, "{t}");
-    assert!(t.contains("20 minutes"), "{t}");
+    for (minutes, expected) in [(1, "1 minute."), (2, "2 minutes.")] {
+        h.app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Claude,
+            minutes,
+            silent_for: Duration::from_secs(minutes * 60),
+        });
+        h.draw();
+        let screen = h.screen();
+        assert_eq!(
+            screen.matches("No output from Claude Code").count(),
+            1,
+            "{screen}"
+        );
+        assert!(screen.contains(expected), "{screen}");
+    }
     h.app.apply_progress(TurnProgress::Text("back".into()));
     assert!(!h.transcript_text().contains("No output from"));
 }

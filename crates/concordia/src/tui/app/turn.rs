@@ -333,9 +333,9 @@ impl App {
                 provider, minutes, ..
             } => {
                 let text = format!(
-                    "No output from {} for {} minutes. Esc cancels; click here (or press Ctrl+K) for options.",
+                    "No output from {} for {}. Esc cancels; click here (or press Ctrl+K) for options.",
                     Self::idle_provider_name(provider),
-                    minutes
+                    text::format_count(minutes, "minute", "minutes")
                 );
                 if let Some(line) = self.messages.iter_mut().find(|line| {
                     line.meta
