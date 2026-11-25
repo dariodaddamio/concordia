@@ -848,7 +848,7 @@ fn shift_tab_never_reaches_full() {
     assert!(close.y < mode.y);
     let popup = h.app.areas.permissions_popup;
     assert!(popup.width <= 54 && popup.x >= 40);
-    assert_eq!(popup.bottom(), h.app.areas.input.y - 1);
+    assert_eq!(popup.bottom(), mode.y);
     assert!(h.app.areas.input.width > 0);
     assert!(!h.screen().contains("message · paused"));
     let input = h.app.areas.input;
@@ -996,7 +996,7 @@ fn the_token_line_shows_reported_fields_and_the_turn_time() {
     );
     let s = h.screen();
     assert!(
-        s.contains("in 12.3k - out 1.4k - cached 9.8k")
+        s.contains("in 12.3k · out 1.4k · cached 9.8k")
             && s.contains("Worked for")
             && s.contains("stopped"),
         "{s}"

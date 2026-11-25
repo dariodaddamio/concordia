@@ -54,7 +54,7 @@ pub fn runs(text: &str) -> Vec<LineRun> {
     let Some(head) = lines.next() else {
         return Vec::new();
     };
-    if !head.ends_with(" - limits") {
+    if !head.ends_with(" · limits") && !head.ends_with(" - limits") {
         return Vec::new();
     }
     let mut out = vec![(

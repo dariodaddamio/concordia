@@ -79,7 +79,7 @@ fn a_finished_update_restarts_into_the_new_build_and_a_failed_one_explains() {
     assert!(h.wait_for(|h| h.app.job.is_none()));
     assert!(h
         .transcript_text()
-        .contains("update failed - cargo build failed (101)"));
+        .contains("update failed · cargo build failed (101)"));
     assert!(!h.app.should_quit && h.app.reexec_path.is_none());
 }
 
@@ -685,7 +685,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
             row.text
                 .iter()
                 .collect::<String>()
-                .contains("Thinking - Expand")
+                .contains("Thinking · Expand")
         })
         .unwrap();
     let y = h.app.areas.transcript.y + (row - h.app.view.visible().start) as u16;
@@ -698,7 +698,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         h.app.activity.detail.is_none(),
         "thinking expands in chat, never a modal"
     );
-    assert!(h.screen().contains("Thinking - Collapse"));
+    assert!(h.screen().contains("Thinking · Collapse"));
     assert!(h.screen().contains("first") && h.screen().contains("second idea"));
     assert_eq!(
         h.app.messages[thought_index].text,
@@ -707,14 +707,14 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     h.click(x, y);
     h.draw();
     assert!(!h.app.activity.is_expanded(thought_index, false));
-    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Thinking · Expand"));
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
     assert!(
         !h.app.activity.is_expanded(thought_index, false),
         "Ctrl+O must not reopen earlier thinking when a later card is collapsed"
     );
-    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Thinking · Expand"));
     assert!(h.screen().contains("Collapse"));
     assert!(h.app.activity.detail.is_none());
     h.app.messages.clear();

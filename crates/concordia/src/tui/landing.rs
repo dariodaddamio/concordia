@@ -323,8 +323,37 @@ impl Landing {
         self.work_rx.is_some()
     }
 
-    fn hint(&self) -> &'static str {
-        "Enter open chat · Esc chat"
+    fn hint(&self, welcome: bool, has_draft: bool) -> String {
+        if welcome {
+            return if has_draft { "" } else { "Enter add account" }.into();
+        }
+        if has_draft {
+            return FOOTER_HINT.into();
+        }
+        let mut hints = Vec::new();
+        match self.rows().get(self.chat_sel) {
+            Some(ChatRow::Group(group)) if self.groups[*group].expanded => {
+                hints.push("Enter collapse folder".into());
+            }
+            Some(ChatRow::Group(_)) => hints.push("Enter expand folder".into()),
+            Some(ChatRow::Quick(group)) if self.groups[*group].quick_questions => {
+                hints.push("Enter hide quick chats".into());
+            }
+            Some(ChatRow::Quick(_)) => hints.push("Enter show quick chats".into()),
+            Some(ChatRow::Chat(..) | ChatRow::QuickChat(..)) => {
+                hints.push("Enter open chat".into())
+            }
+            None => {}
+        }
+        hints.push("Esc chat".into());
+        if self.hidden_total > 0 {
+            hints.push(if self.show_all {
+                "h hide".into()
+            } else {
+                format!("h show {} hidden", self.hidden_total)
+            });
+        }
+        hints.join(" · ")
     }
 }
 
@@ -367,7 +396,9 @@ pub(super) fn open_home(app: &mut App) {
 }
 
 pub(super) fn back_to_chat(app: &mut App) {
-    app.tab_request = Some(super::tabs::TabAction::BackToChat);
+    if !welcome_visible(app) {
+        app.tab_request = Some(super::tabs::TabAction::BackToChat);
+    }
 }
 
 pub(super) fn can_host_home(app: &App) -> bool {
@@ -724,7 +755,7 @@ fn open_with_mode(
         meters: Vec::new(),
         sessions_generation: None,
     };
-    app.footer_left = landing.hint().into();
+    app.footer_left = landing.hint(welcome, !app.editor.text().is_empty());
     app.landing = Some(landing);
     refresh_meters(app);
 }
@@ -852,7 +883,6 @@ fn activate_chat(app: &mut App) {
 fn set_pane(app: &mut App, pane: Pane) {
     if let Some(landing) = app.landing.as_mut() {
         landing.pane = pane;
-        app.footer_left = landing.hint().into();
     }
 }
 
@@ -898,6 +928,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
+    let welcome = welcome_visible(app);
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
@@ -914,14 +945,8 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     {
         return false;
     }
-    if key.code == KeyCode::Enter
-        && landing.welcome
-        && crate::store::load_store(&app.state_root)
-            .accounts
-            .is_empty()
-        && landing.pane == Pane::Chats
-    {
-        app.open_use_picker();
+    if key.code == KeyCode::Enter && welcome {
+        app.open_add_provider_picker();
         return true;
     }
     let rows = landing.rows().len();
@@ -938,17 +963,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         {
             activate_chat(app)
         }
-        (KeyCode::Char('h'), Pane::Chats)
-            if plain
-                && landing.all_sessions.len()
-                    != landing_sessions(
-                        landing.all_sessions.clone(),
-                        &app.cwd,
-                        false,
-                        landing.hidden_temp_root.as_deref(),
-                    )
-                    .len() =>
-        {
+        (KeyCode::Char('h'), Pane::Chats) if plain && landing.hidden_total > 0 => {
             landing.show_all = !landing.show_all;
             landing.groups = display_groups(
                 landing_sessions(
@@ -961,7 +976,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             );
             landing.chat_sel = landing.chat_sel.min(landing.rows().len().saturating_sub(1));
             landing.chat_top = 0;
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
             set_pane(app, Pane::Chats);
@@ -1038,7 +1052,7 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         && m.kind == MouseEventKind::Down(MouseButton::Left)
         && super::contains(landing.chats_area, m.column, m.row)
     {
-        app.open_use_picker();
+        app.open_add_provider_picker();
         return true;
     }
     let inside = |r: Rect| {
@@ -1270,26 +1284,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let welcome_visible = welcome_visible(app);
     let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
-        app.footer_left = if welcome_visible {
-            "Enter add account · Esc chat"
-        } else if landing.mode == Mode::Browse
-            && landing.pane == Pane::Chats
-            && !app.editor.text().is_empty()
-        {
-            FOOTER_HINT
-        } else {
-            landing.hint()
-        }
-        .to_string();
-        if landing.pane == Pane::Chats && landing.hidden_total > 0 {
-            let hidden = landing.hidden_total;
-            if landing.show_all {
-                app.footer_left.push_str(" · h hide");
-            } else {
-                app.footer_left
-                    .push_str(&format!(" · h show {hidden} hidden"));
-            }
-        }
+        app.footer_left = landing.hint(welcome_visible, !app.editor.text().is_empty());
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

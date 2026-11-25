@@ -23,7 +23,14 @@ impl App {
 
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
         if let Some(picker) = self.picker.as_mut() {
-            picker.title = format!("{command} · This panel lets you {does}.");
+            if command == "/mode" {
+                return;
+            }
+            picker.title = if command == "/model" {
+                "models".into()
+            } else {
+                format!("{command} · This panel lets you {does}.")
+            };
             if command != "/harness" {
                 self.footer_left = if undo.starts_with("Esc") {
                     "↑↓ move · Enter select · Esc close".into()
@@ -253,7 +260,7 @@ impl App {
     }
     pub(in crate::tui) fn set_mode(&mut self, mode: TrustMode) -> bool {
         if let Err(e) = set_trust_mode(&self.state_root, mode) {
-            self.push_system(format!("mode save failed - {e}"));
+            self.push_system(format!("mode save failed · {e}"));
             return false;
         }
         self.trust = mode;
@@ -293,7 +300,7 @@ impl App {
         match arg {
             None => {
                 self.push_system(format!(
-                    "mode: {} - {}",
+                    "mode: {} · {}",
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
@@ -309,7 +316,7 @@ impl App {
                     }
                     if self.set_mode(mode) {
                         self.push_system(format!(
-                            "mode \u{2192} {} - {}{}",
+                            "mode \u{2192} {} · {}{}",
                             mode_label(mode),
                             mode_blurb(mode),
                             if self.busy {
@@ -320,7 +327,7 @@ impl App {
                         ));
                     }
                 }
-                None => self.push_system(format!("unknown mode {a} - use plan, ask, edit or full")),
+                None => self.push_system(format!("unknown mode {a} · use plan, ask, edit or full")),
             },
         }
     }
@@ -774,7 +781,7 @@ impl App {
             let want = crate::accounts::normalize_account_id(&id);
             match all.into_iter().find(|r| r.id == want) {
                 Some(r) => self.open_remove_confirm(r),
-                None => self.push_system(format!("no account named {id} - try /use remove")),
+                None => self.push_system(format!("no account named {id} · try /use remove")),
             }
             return;
         }
@@ -782,11 +789,11 @@ impl App {
             .iter()
             .map(|r| {
                 let what = if r.owned {
-                    "created by Concordia - its login folder can be deleted"
+                    "created by Concordia · its login folder can be deleted"
                 } else if r.stored {
-                    "registered with Concordia - its files stay where they are"
+                    "registered with Concordia · its files stay where they are"
                 } else {
-                    "your own login - it can only be hidden, never deleted"
+                    "your own login · it can only be hidden, never deleted"
                 };
                 let who = r
                     .home
@@ -860,7 +867,7 @@ impl App {
         }
         crate::logging::info(&format!("remove-account id={id} mode={mode:?}"));
         match crate::connect::remove_account(&self.state_root, id, mode) {
-            Err(e) => self.push_system(format!("remove failed - {e}")),
+            Err(e) => self.push_system(format!("remove failed · {e}")),
             Ok(msg) => {
                 self.push_system(msg);
                 if crate::accounts::normalize_account_id(&self.account)
@@ -891,7 +898,7 @@ impl App {
                             self.need_context_pack = self.messages.iter().any(|message| {
                                 matches!(message.role, MsgRole::User | MsgRole::Assistant)
                             });
-                            self.push_system("no accounts left - /use add to connect one");
+                            self.push_system("no accounts left · /use add to connect one");
                         }
                     }
                 }
@@ -921,7 +928,7 @@ impl App {
     }
     pub(in crate::tui) fn begin_add_account(&mut self, provider: ProviderKind) {
         if self.pending_login.is_some() {
-            self.push_system("a login is already in progress - finish it first");
+            self.push_system("a login is already in progress · finish it first");
             return;
         }
         match (self.connect)(&self.state_root, provider) {
@@ -965,7 +972,7 @@ impl App {
                         "{e}. Install it with `{command}` in your own terminal, or confirm below to open the installer window."
                     ));
                 } else {
-                    self.push_system(format!("add account failed - {e}"));
+                    self.push_system(format!("add account failed · {e}"));
                 }
             }
         }
@@ -1367,7 +1374,7 @@ impl App {
             })
             .collect();
         self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
-        self.footer_left = "↑↓ move · Enter review fix · Esc close".into();
+        self.footer_left = "↑↓ move · Esc close".into();
     }
     pub(in crate::tui) fn open_doctor_confirmation(&mut self, fix_index: usize) {
         let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {

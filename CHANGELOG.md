@@ -1,5 +1,13 @@
 # Changelog
 
+### Fixed (2026-11-25c, local source)
+
+- Failure details stay with the turn that failed.
+- Home shows actions for the selected row and opens provider choices directly during setup.
+- The permissions menu opens beside its control. Settings Help returns when the menu closes.
+- Narrow windows mark shortened text in the command menu, Shortcuts, Agents, and Workers.
+- Doctor offers to review a fix when the selected check has one.
+
 ### Fixed (2026-11-25b, local source)
 
 - Restoring the Windows window redraws the whole grid and ends tab renaming when focus leaves.

@@ -237,6 +237,135 @@ fn home_keeps_chat_rows_clear_of_the_intro() {
 }
 
 #[test]
+fn every_home_footer_hint_performs_its_action() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        for state in [
+            "welcome",
+            "expanded",
+            "collapsed",
+            "hidden",
+            "showing hidden",
+        ] {
+            let setup = || {
+                let mut h = Harness::new(width, height);
+                let cwd = h.app.cwd.clone();
+                let mut sessions = Vec::new();
+                if matches!(state, "expanded" | "collapsed") {
+                    sessions.push(landing_session("fixture", &cwd, "visible", 1));
+                }
+                if state != "welcome" {
+                    let hidden = cwd.join("concordia-test-hidden");
+                    std::fs::create_dir_all(&hidden).unwrap();
+                    sessions.push(landing_session("fixture", &hidden, "hidden", 1));
+                }
+                landing::open_with(&mut h.app, sessions, None);
+                h.draw();
+                if state == "collapsed" {
+                    h.enter();
+                } else if state == "showing hidden" {
+                    h.key(KeyCode::Char('h'), KeyModifiers::NONE);
+                }
+                h
+            };
+            let h = setup();
+            let footer = footer_row(&h);
+            let end = h.app.areas.permissions.x as usize;
+            let hints = footer.chars().take(end).collect::<String>();
+            let hints = hints.trim().split(" · ").collect::<Vec<_>>();
+            assert!(!hints[0].is_empty(), "{state}\n{footer}");
+            for hint in hints {
+                let mut h = setup();
+                match hint {
+                    "Enter add account" => {
+                        h.enter();
+                        assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::AddProvider);
+                    }
+                    "Enter collapse folder" | "Enter expand folder" => {
+                        let chat = if state == "showing hidden" {
+                            "chat hidden"
+                        } else {
+                            "chat visible"
+                        };
+                        let before = h.screen().contains(chat);
+                        h.enter();
+                        let screenshot = h.screen();
+                        assert_ne!(screenshot.contains(chat), before, "{hint}\n{screenshot}");
+                    }
+                    "Esc chat" => {
+                        h.key(KeyCode::Esc, KeyModifiers::NONE);
+                        assert!(matches!(
+                            h.app.tab_request,
+                            Some(tabs::TabAction::BackToChat)
+                        ));
+                    }
+                    "h show 1 hidden" | "h hide" => {
+                        h.key(KeyCode::Char('h'), KeyModifiers::NONE);
+                        assert!(!footer_row(&h).contains(hint));
+                    }
+                    _ => panic!("No action checked for {hint:?} in {state}"),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rendered_chrome_uses_middle_dots() {
+    let mut h = Harness::new(120, 36);
+    h.app.push_user("Run the parser checks".into());
+    h.app.live_thinking = "Checking parser coverage. ".repeat(30);
+    h.app.commit_live_thinking();
+    h.app.push_card(StreamCard {
+        id: "command-fixture".into(),
+        title: "Ran command".into(),
+        detail: Some("command: check parser\nline one\nline two".into()),
+        status: CardStatus::Done,
+    });
+    h.app.finalize_turn(TurnOutcome {
+        failed: true,
+        exit_code: Some(3),
+        ..TurnOutcome::default()
+    });
+    let provider = h.app.reply_meta().1;
+    for (expanded, label) in [(false, "Expand"), (true, "Collapse")] {
+        h.app.expanded_activity = expanded;
+        h.draw();
+        let screen = h.screen();
+        assert!(screen.contains(&format!("Thinking · {label}")), "{screen}");
+        assert!(
+            screen
+                .lines()
+                .any(|row| row.contains("Turn failed.") && row.contains(&format!(" · {label}"))),
+            "{screen}"
+        );
+        assert_eq!(
+            screen.lines().filter(|row| row.trim() == provider).count(),
+            1,
+            "{screen}"
+        );
+        assert!(!screen.contains(" - "), "{screen}");
+    }
+}
+
+#[test]
+fn doctor_footer_offers_review_on_a_fixable_row() {
+    let mut h = Harness::new(80, 24);
+    open_doctor_fixture(&mut h, true);
+    h.draw();
+    assert!(footer_row(&h).contains("Enter review fix"));
+    h.enter();
+    assert_eq!(
+        h.app.picker.as_ref().unwrap().kind,
+        PickerKind::DoctorConfirm
+    );
+    open_doctor_fixture(&mut h, false);
+    h.draw();
+    assert!(!footer_row(&h).contains("Enter"));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.picker.is_none());
+}
+
+#[test]
 fn settings_selection_and_popup_follow_the_value_cells() {
     for width in [80, 120, 160] {
         let mut h = Harness::new(width, 30);
@@ -250,10 +379,20 @@ fn settings_selection_and_popup_follow_the_value_cells() {
             buf[(anchor.right() - 1, anchor.y)].bg,
             buf[(anchor.right(), anchor.y)].bg
         );
+        let help = (width >= 120).then(|| find_cell(buf, "Help"));
         h.enter();
         let popup = h.app.areas.permissions_popup;
         assert_eq!(popup.x, anchor.x);
         assert!(popup.y == anchor.bottom() || popup.bottom() == anchor.y);
+        if let Some((x, y)) = help {
+            let buf = h.term.backend().buffer();
+            assert!(!h.screen().contains("Help"));
+            for row in y..y + 12 {
+                if !contains(popup, x - 2, row) {
+                    assert_ne!(buf[(x - 2, row)].symbol(), "│");
+                }
+            }
+        }
     }
 }
 

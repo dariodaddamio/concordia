@@ -340,19 +340,19 @@ pub fn matching_arguments(
         "/use" => {
             add(
                 "/use".into(),
-                "ACCOUNT | add PROVIDER | remove ACCOUNT - Enter opens accounts".into(),
+                "ACCOUNT | add PROVIDER | remove ACCOUNT · Enter opens accounts".into(),
             );
             add(
                 "/use add".into(),
-                "connect a provider account - Enter opens provider choices".into(),
+                "connect a provider account · Enter opens provider choices".into(),
             );
             add(
                 "/use remove".into(),
-                "remove an account - Enter opens removal choices".into(),
+                "remove an account · Enter opens removal choices".into(),
             );
             add(
                 "/use rename".into(),
-                "ACCOUNT NICKNAME - rename for display; omit nickname to reset".into(),
+                "ACCOUNT NICKNAME · rename for display; omit nickname to reset".into(),
             );
             for provider in ["codex", "claude", "cursor", "grok"]
                 .into_iter()
@@ -387,7 +387,7 @@ pub fn matching_arguments(
         "/model" => {
             add(
                 "/model".into(),
-                "MODEL - choose from this account's catalog; Enter opens models".into(),
+                "MODEL · choose from this account's catalog; Enter opens models".into(),
             );
             for model in models {
                 add(
@@ -399,7 +399,7 @@ pub fn matching_arguments(
         "/mode" => {
             add(
                 "/mode".into(),
-                "plan | ask | edit | full - Enter shows the permission mode".into(),
+                "plan | ask | edit | full · Enter shows the permission mode".into(),
             );
             for (mode, help) in [
                 ("plan", "read-only analysis"),
@@ -429,11 +429,11 @@ pub fn matching_arguments(
             if cmd == "/skills" {
                 add(
                     "/skills remove".into(),
-                    "PATH - stop sharing and remove matching links across accounts".into(),
+                    "PATH · stop sharing and remove matching links across accounts".into(),
                 );
                 add(
                     format!("{cmd} install"),
-                    "[PATH] [--current] - share skill folders across accounts".into(),
+                    "[PATH] [--current] · share skill folders across accounts".into(),
                 );
             }
         }
@@ -445,21 +445,21 @@ pub fn matching_arguments(
             for (suffix, help) in [
                 (
                     "connect",
-                    "PATH [--current] - connect setup across accounts",
+                    "PATH [--current] · connect setup across accounts",
                 ),
                 ("status", "show connected harnesses and verification state"),
                 (
                     "tools",
-                    "NAME or harness/tool - list or run a declared tool",
+                    "NAME or harness/tool · list or run a declared tool",
                 ),
                 (
                     "verify",
-                    "[NAME] [--current] - verify all accounts; may use provider usage",
+                    "[NAME] [--current] · verify all accounts; may use provider usage",
                 ),
-                ("disconnect", "NAME - remove a harness connection"),
+                ("disconnect", "NAME · remove a harness connection"),
                 (
                     "skill",
-                    "[--current] - install the connection skill across accounts",
+                    "[--current] · install the connection skill across accounts",
                 ),
             ] {
                 add(format!("/harness {suffix}"), help.into());

@@ -87,8 +87,12 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         } else {
             draw_transcript(f, chunks[1], app);
         }
-        if app.settings_view.is_none() {
+        if app.settings_view.is_none()
+            && (!landing::welcome_visible(app) || !app.editor.chars().is_empty())
+        {
             draw_input(f, chunks[2], app);
+        } else {
+            app.areas.input = Rect::default();
         }
         draw_run_status(f, run_status, app);
         questions::draw(f, question_area, app);
@@ -552,7 +556,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         .get(selected)
         .map(|(tab, row)| view.tabs[*tab].rows[*row].description.clone())
         .unwrap_or_default();
-    if help_width > 0 {
+    if help_width > 0 && !popup_open {
         let help = Rect::new(
             list.x + (label_width + value_width) as u16 + 2,
             body.y,
@@ -799,10 +803,7 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
             sections.push((category, Vec::new()));
         }
         if let Some((_, rows)) = sections.last_mut() {
-            rows.push((
-                key.to_string(),
-                format!("{} \u{2014} {}", c.name, c.description),
-            ));
+            rows.push((key.to_string(), format!("{} · {}", c.name, c.description)));
         }
     }
     let owned = |rows: &[(&str, &str)]| -> Vec<(String, String)> {
@@ -867,6 +868,7 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
         .unwrap_or(8);
     let heading = Style::default().add_modifier(Modifier::BOLD);
     let key_style = Style::default().fg(Color::Cyan);
+    let description_width = usize::from(area.width).saturating_sub(key_width + 6);
     let mut lines: Vec<Line> = Vec::new();
     for (name, rows) in &sections {
         if !lines.is_empty() {
@@ -878,7 +880,7 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
                 Span::raw("  "),
                 Span::styled(format!("{key:<key_width$}"), key_style),
                 Span::raw("  "),
-                Span::raw(description.clone()),
+                Span::raw(ellipsis(description, description_width)),
             ]));
         }
     }
@@ -941,34 +943,36 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
         height: height.min(input.y.saturating_sub(above.y).max(3)),
     };
     app.areas.palette = rect;
-    f.render_widget(Clear, rect);
-    let cmd_w = entries
-        .iter()
-        .map(|e| e.command.chars().count())
-        .max()
-        .unwrap_or(8)
-        + 2;
+    f.render_widget(Clear, Rect::new(above.x, rect.y, above.width, rect.height));
+    let row_width = usize::from(rect.width.saturating_sub(4));
+    let cmd_w = cmd_col.min(row_width);
     let items: Vec<ListItem> = entries
         .iter()
         .map(|e| {
+            let source = if e.shared {
+                "  shared · choose"
+            } else if e.provider {
+                "  provider"
+            } else if e.custom {
+                "  custom"
+            } else {
+                ""
+            };
+            let help_width = row_width.saturating_sub(cmd_w + cell_width(source));
+            let command = ellipsis(&e.command, cmd_w);
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!("{:<w$}", e.command, w = cmd_w),
+                    format!("{command:<cmd_w$}"),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(e.help.clone(), Style::default().fg(Color::Indexed(245))),
                 Span::styled(
-                    if e.shared {
-                        "  shared · choose"
-                    } else if e.provider {
-                        "  provider"
-                    } else if e.custom {
-                        "  custom"
-                    } else {
-                        ""
-                    },
+                    ellipsis(&e.help, help_width),
+                    Style::default().fg(Color::Indexed(245)),
+                ),
+                Span::styled(
+                    ellipsis(source, row_width.saturating_sub(cmd_w)),
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
@@ -1104,12 +1108,14 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         " concordia  ".into()
     };
-    let navigation = if landing::visible(app) {
+    let navigation = if welcome {
+        ""
+    } else if landing::visible(app) {
         " → Chat "
     } else {
         " ← Home "
     };
-    if app.picker.is_none() {
+    if app.picker.is_none() && !welcome {
         app.areas.header_home = Some(Rect::new(area.x, area.y, area.width.min(8), 1));
     }
     let mut left = vec![
@@ -1358,7 +1364,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Some(format!("Thinking\n{}", m.text.trim_end()))
             }
             MsgRole::Thinking => Some(format!(
-                "Thinking - {}\n{}",
+                "Thinking · {}\n{}",
                 if app.activity.is_expanded(idx, app.expanded_activity) {
                     "Collapse"
                 } else {
@@ -1373,9 +1379,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             MsgRole::System if m.is_map() => {
                 let (heading, rest) = m.text.split_once('\n').unwrap_or((&m.text, ""));
                 Some(if app.activity.is_expanded(idx, app.expanded_activity) {
-                    format!("{heading} - Collapse\n{rest}")
+                    format!("{heading} · Collapse\n{rest}")
                 } else {
-                    format!("{heading} - Expand")
+                    format!("{heading} · Expand")
                 })
             }
             _ => None,
@@ -1413,7 +1419,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 timers[index] = Some((start, start + timer.chars().count()));
             }
             displayed[index] = Some(format!(
-                "{heading}{} - {action}{}{}",
+                "{heading}{} · {action}{}{}",
                 timer.unwrap_or_default(),
                 if tail.is_empty() { "" } else { "\n" },
                 tail
@@ -1462,6 +1468,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         .collect();
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
     let mut in_block = false;
+    let mut reply = None;
     let count = app.messages.len();
     if app.messages.is_empty() && !app.busy {
         blocks.push(TBlock {
@@ -1554,21 +1561,22 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 "▸ "
             };
         }
-        if matches!(m.role, MsgRole::User | MsgRole::Command) && i > 0 {
-            blocks.push(spacer());
+        if matches!(m.role, MsgRole::User | MsgRole::Command) {
+            reply = None;
+            if i > 0 {
+                blocks.push(spacer());
+            }
         }
         match m.role {
             MsgRole::Command => in_block = true,
             MsgRole::System => {}
             _ => in_block = false,
         }
-        if let Some((p, label)) = &m.meta {
-            if label == "__concordia_idle_notice__" {
-            } else {
-                let same = i > 0 && app.messages[i - 1].meta.as_ref().map(|x| &x.1) == Some(label);
-                if !same {
-                    blocks.push(reply_header(*p, label));
-                }
+        if let Some((provider, label)) = &m.meta {
+            let current = (*provider, label.as_str());
+            if label != "__concordia_idle_notice__" && reply != Some(current) {
+                blocks.push(reply_header(*provider, label));
+                reply = Some(current);
             }
         }
         blocks.push(TBlock {
@@ -1596,14 +1604,9 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             blocks.push(spacer());
         }
     }
-    let last_labelled = app
-        .messages
-        .last()
-        .and_then(|x| x.meta.as_ref())
-        .map(|x| &x.1);
     if app.busy
         && (!live_thought.is_empty() || !app.live_text.trim().is_empty())
-        && last_labelled != Some(&cur_meta.1)
+        && reply != Some((cur_meta.0, cur_meta.1.as_str()))
     {
         blocks.push(reply_header(cur_meta.0, &cur_meta.1));
     }
@@ -1755,7 +1758,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         if let Some((title, body)) = content {
             app.activity.search_parts(&[title, body]);
             let popup = centered_rect(80, 75, area);
-            f.render_widget(Clear, popup);
+            f.render_widget(Clear, Rect::new(area.x, popup.y, area.width, popup.height));
             let inner = Block::default().borders(Borders::ALL).inner(popup);
             let avail_w = inner.width.max(1) as usize;
             if app.activity.follow_match || app.activity.render_width != avail_w {
@@ -1796,9 +1799,12 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             }
             let query = app.activity.query_with_cursor();
             let block = Block::default()
-                .title(format!(
-                    " Activity · Find: {query} · {} matches ",
-                    app.activity.matches.len()
+                .title(fit_panel_title(
+                    &format!(
+                        " Activity · Find: {query} · {} matches ",
+                        app.activity.matches.len()
+                    ),
+                    popup.width,
                 ))
                 .borders(Borders::ALL);
             let inner = block.inner(popup);
@@ -2378,11 +2384,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let row_width = width.saturating_sub(6).max(1) as usize;
     let permission_lines = (picker.kind == PickerKind::Trust).then(|| {
-        let bottom = if app.areas.input.height > 0 {
-            app.areas.input.y.saturating_sub(1)
-        } else {
-            app.areas.permissions.y
-        };
+        let bottom = app.areas.permissions.y;
         let available = bottom.saturating_sub(area.y).saturating_sub(2);
         let rows = picker.filtered();
         let expanded_height = rows
@@ -2508,11 +2510,17 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         popup.height = height.min(screen.bottom().saturating_sub(popup.y));
         app.areas.header_dropdown = Some(popup);
     }
-    if let Some(anchor) = app
+    let settings_anchor = app
         .areas
         .trust_anchor
-        .filter(|_| picker.kind == PickerKind::Trust)
-    {
+        .filter(|_| picker.kind == PickerKind::Trust);
+    if let Some(anchor) = settings_anchor {
+        let settings = Rect::new(
+            screen.x + 1,
+            screen.y + 2,
+            screen.width.saturating_sub(2),
+            screen.height.saturating_sub(3),
+        );
         popup.width = popup.width.min(screen.width);
         popup.x = anchor
             .x
@@ -2527,18 +2535,42 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             anchor.y.saturating_sub(popup.height)
         };
         app.areas.permissions_popup = popup;
+        f.render_widget(
+            Clear,
+            Rect::new(settings.x, popup.y, settings.width, popup.height).intersection(settings),
+        );
     } else if picker.kind == PickerKind::Trust {
         let right = app.areas.permissions.right().min(area.right());
-        let bottom = if app.areas.input.height > 0 {
-            app.areas.input.y.saturating_sub(1)
-        } else {
-            app.areas.permissions.y
-        };
+        let bottom = app.areas.permissions.y;
         popup.width = popup.width.min(right.saturating_sub(area.x));
         popup.height = popup.height.min(bottom.saturating_sub(area.y));
         popup.x = right.saturating_sub(popup.width);
         popup.y = bottom.saturating_sub(popup.height);
+        let input = app.areas.input;
+        if !input.is_empty() {
+            f.render_widget(
+                Clear,
+                Rect::new(
+                    input.x.saturating_sub(1),
+                    input.y.saturating_sub(1),
+                    input.width + 2,
+                    input.height + 2,
+                ),
+            );
+        }
         app.areas.permissions_popup = popup;
+    }
+    if dropdown.is_some() || picker.kind == PickerKind::Trust && settings_anchor.is_none() {
+        let backdrop = app.areas.transcript;
+        let width = app
+            .areas
+            .permissions
+            .right()
+            .max(backdrop.right())
+            .saturating_sub(backdrop.x);
+        f.render_widget(Clear, Rect::new(backdrop.x, popup.y, width, popup.height));
+    } else if settings_anchor.is_none() {
+        f.render_widget(Clear, Rect::new(area.x, popup.y, area.width, popup.height));
     }
     f.render_widget(Clear, popup);
     if let Some(rows) = permission_lines {
@@ -2956,6 +2988,21 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     } else if app.activity.detail.is_some() {
         (
             "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
+            Style::default().fg(theme::muted()),
+        )
+    } else if let Some(picker) = app.picker.as_ref().filter(|p| p.kind == PickerKind::Doctor) {
+        let can_fix = picker.state.selected().is_some_and(|index| {
+            picker
+                .filtered()
+                .get(index)
+                .is_some_and(|row| row.id.starts_with("doctor:fix:"))
+        });
+        (
+            if can_fix {
+                "↑↓ move · Enter review fix · Esc close"
+            } else {
+                "↑↓ move · Esc close"
+            },
             Style::default().fg(theme::muted()),
         )
     } else if app

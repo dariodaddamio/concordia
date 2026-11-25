@@ -1148,7 +1148,7 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     }
     if let Some(lines) = reported_output_lines(detail).filter(|lines| *lines > 0) {
         summary.text.push_str(&format!(
-            " - {lines} output {}",
+            " · {lines} output {}",
             if lines == 1 { "line" } else { "lines" }
         ));
     }
@@ -1678,7 +1678,7 @@ mod tests {
         let summary = compact_card_summary(&composite);
         assert_eq!(
             summary.text,
-            "✓ Edit File display_backend.rs  +1 -1 + Ran build - 22 output lines"
+            "✓ Edit File display_backend.rs  +1 -1 + Ran build · 22 output lines"
         );
         assert_eq!(summary.files.len(), 1);
         let (range, target) = &summary.files[0];

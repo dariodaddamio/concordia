@@ -1061,7 +1061,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ),
                     Line::styled(
                         format!(
-                            "{} tokens remaining · last snapshot",
+                            "{} tokens remaining",
                             metadata
                                 .remaining
                                 .or_else(|| {
@@ -1122,11 +1122,13 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         detail_lines.push(Line::from("No agent selected"));
     }
     f.render_widget(
-        Paragraph::new(detail_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Agent details "),
-        ),
+        Paragraph::new(detail_lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Agent details "),
+            ),
         columns[0],
     );
 
@@ -1164,15 +1166,20 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let role = row.label.split_whitespace().nth(1).unwrap_or_default();
             let role_start = row.label.find(role).unwrap_or(0);
             let role_end = role_start + role.len();
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{index:>2} "), style),
-                Span::styled(row.label[..role_start].to_owned(), style),
-                Span::styled(
-                    row.label[role_start..role_end].to_owned(),
-                    style.fg(role_color),
-                ),
-                Span::styled(row.label[role_end..].to_owned(), style),
-            ]))
+            let prefix = format!("{index:>2} ");
+            let width = usize::from(columns[1].width.saturating_sub(4));
+            let label = super::draw::ellipsis(&row.label, width.saturating_sub(prefix.len()));
+            let mut spans = vec![Span::styled(prefix, style)];
+            if label.is_char_boundary(role_start) && label.is_char_boundary(role_end) {
+                spans.extend([
+                    Span::styled(label[..role_start].to_owned(), style),
+                    Span::styled(label[role_start..role_end].to_owned(), style.fg(role_color)),
+                    Span::styled(label[role_end..].to_owned(), style),
+                ]);
+            } else {
+                spans.push(Span::styled(label, style));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let mut state = picker.state;

@@ -231,7 +231,7 @@ fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
         !screen.contains("chat third"),
         "collapsed groups hide their chats"
     );
-    assert!(screen.contains("Enter open chat"), "{screen}");
+    assert!(screen.contains("Enter collapse folder"), "{screen}");
     h.app.editor.set_text("keep the landing draft");
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
@@ -331,9 +331,11 @@ fn first_launch_without_accounts_shows_welcome_and_use_action() {
     assert!(h.screen().contains("No account connected"));
     assert!(!h.screen().contains("Subscription:"));
     assert!(!h.screen().contains(" chats "));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.tab_request.is_none());
     h.key(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(h.app.picker.is_some(), "Enter should open the /use flow");
-    assert!(h.screen().contains("Add account"));
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::AddProvider);
+    assert!(h.screen().contains("add account"));
 }
 
 #[test]

@@ -1281,7 +1281,7 @@ impl App {
             .items()
             .map(|item| PickerRow {
                 id: format!("needs:{}", item.id),
-                label: format!("{} - {}", item.project, item.title),
+                label: format!("{} · {}", item.project, item.title),
                 detail: format!(
                     "{} · {} · {} · waiting {}s · {}",
                     item.chat,
@@ -1389,7 +1389,7 @@ impl App {
                     .as_mut()
                     .filter(|picker| picker.kind == PickerKind::Model)
                 {
-                    picker.title = "model - refresh withheld; previous observations".into();
+                    picker.title = "model · refresh withheld; previous observations".into();
                 }
                 self.footer_left = "model account changed; reopen the model picker".into();
                 self.push_system(
@@ -1405,7 +1405,7 @@ impl App {
                 {
                     picker.rows.clear();
                     picker.state.select(None);
-                    picker.title = "model - refresh unavailable".into();
+                    picker.title = "model · refresh unavailable".into();
                 }
                 self.push_system(format!(
                     "Model refresh unavailable: {error}. No provider model choices are available."
@@ -1431,9 +1431,9 @@ impl App {
             .or_else(|| Some(self.model.trim()).filter(|m| !m.is_empty() && *m != "?"));
         picker.rows = model_picker_rows(models, chosen);
         picker.title = if provider == ProviderKind::Codex {
-            "model - native cache read"
+            "model · native cache read"
         } else {
-            "model - native list refreshed"
+            "model · native list refreshed"
         }
         .into();
         picker.filter = filter;
@@ -1456,7 +1456,7 @@ impl App {
 
     pub(in crate::tui) fn start_job(&mut self, kind: JobKind) {
         if self.job.is_some() {
-            self.push_system("an update is already running - Esc cancels it");
+            self.push_system("an update is already running · Esc cancels it");
             return;
         }
         if kind == JobKind::Update && !self.background_update && self.update_blocked_by_work() {
@@ -1537,10 +1537,10 @@ impl App {
                     result.summary
                 };
                 self.push_system(format!(
-                    "{summary} - restarting{}",
+                    "{summary} · restarting{}",
                     if snapshot.warning_count > 0 {
                         format!(
-                            " - {} build warnings recorded in concordia.log",
+                            " · {} build warnings recorded in concordia.log",
                             snapshot.warning_count
                         )
                     } else {
@@ -1566,7 +1566,7 @@ impl App {
             JobResult::Update(Err(e)) => {
                 self.background_update = false;
                 crate::logging::error(&format!("update-failed {e:#}"));
-                self.push_system(format!("update failed - {e:#}"));
+                self.push_system(format!("update failed · {e:#}"));
                 if showing_update {
                     self.show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
                     self.update_preview = Some(update_ui::failed(&snapshot, &format!("{e:#}")));
@@ -1601,7 +1601,7 @@ impl App {
                 self.update_preview = Some(preview);
             }
             JobResult::Check(Err(e)) => {
-                let message = format!("update check failed - {e:#}");
+                let message = format!("update check failed · {e:#}");
                 crate::logging::error(&format!("update-check-failed {e:#}"));
                 self.update_preview = Some(UpdatePreview {
                     history: Vec::new(),
@@ -1753,7 +1753,7 @@ impl App {
             && !self.background_update
             && !line.starts_with('/')
         {
-            self.push_system("an update is in progress - Esc cancels it, or wait for it to finish");
+            self.push_system("an update is in progress · Esc cancels it, or wait for it to finish");
             return;
         }
         if !self.busy

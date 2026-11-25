@@ -41,7 +41,7 @@ impl App {
     }
     pub(in crate::tui) fn show_usage(&mut self, force: bool) {
         let Some(home) = self.home_path.clone() else {
-            self.push_system("usage - no account selected; try /use");
+            self.push_system("usage · no account selected; try /use");
             return;
         };
         let snap = if force {
@@ -110,7 +110,7 @@ impl App {
             snap.detail.trim()
         );
         let body = details.trim();
-        format!("{heading} - limits\n{body}")
+        format!("{heading} · limits\n{body}")
     }
     pub(in crate::tui) fn update_usage_block(&mut self) {
         let Some(idx) = self.usage_block else {

@@ -48,11 +48,18 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from("No active or recent workers."));
     } else {
         for row in rows {
-            lines.push(Line::from(format!("#{} {}", row.id, row.label)));
-            lines.push(Line::from(format!(
-                "  {} · {}",
-                format!("{:?}", row.state).to_ascii_lowercase(),
-                row.detail
+            let width = usize::from(area.width.saturating_sub(1));
+            lines.push(Line::from(super::draw::ellipsis(
+                &format!("#{} {}", row.id, row.label),
+                width,
+            )));
+            let detail = row.detail.lines().next().unwrap_or_default();
+            lines.push(Line::from(super::draw::ellipsis(
+                &format!(
+                    "  {} · {detail}",
+                    format!("{:?}", row.state).to_ascii_lowercase()
+                ),
+                width,
             )));
         }
     }

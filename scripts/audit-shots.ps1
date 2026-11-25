@@ -417,7 +417,7 @@ try {
     Picker 'picker-usage' '/usage' 'Chat input is paused'
     Picker 'picker-resume' '/resume' 'native session|Review parser edge cases'
     Picker 'picker-model' '/model' 'Fixture model'
-    Picker 'picker-mode' '/mode' '(?m)^Overlay: /mode'
+    Picker 'picker-mode' '/mode' '(?m)^Overlay: permissions'
     Picker 'picker-doctor' '/doctor' '(?m)^Overlay: doctor'
     Picker 'picker-update' '/update' 'source checkout|newest build|up to date|same build'
     Picker 'picker-harness' '/harness' 'No integrations connected|New local integration|Manage'

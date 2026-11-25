@@ -108,7 +108,7 @@ pub fn format_line(usage: &TurnUsage, elapsed: Option<Duration>) -> String {
     if let Some(d) = elapsed {
         parts.push(elapsed_text(d));
     }
-    parts.join(" - ")
+    parts.join(" · ")
 }
 
 #[cfg(test)]
@@ -149,7 +149,7 @@ mod tests {
         };
         assert_eq!(
             format_line(&u, Some(Duration::from_millis(8200))),
-            "in 12.3k - out 1.4k - cached 9.8k - 8.2s"
+            "in 12.3k · out 1.4k · cached 9.8k · 8.2s"
         );
         let only_out = TurnUsage {
             output: Some(5),
@@ -157,7 +157,7 @@ mod tests {
         };
         assert_eq!(
             format_line(&only_out, Some(Duration::from_secs(75))),
-            "out 5 - 1m 15s"
+            "out 5 · 1m 15s"
         );
         assert_eq!(
             format_line(&TurnUsage::default(), Some(Duration::from_secs(2))),

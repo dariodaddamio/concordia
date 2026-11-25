@@ -115,7 +115,7 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
             .collect::<String>()
     };
     assert!(screen(&terminal).contains("message-79"));
-    assert!(screen(&terminal).contains("Thinking - Expand"));
+    assert!(screen(&terminal).contains("Thinking · Expand"));
     let thought_index = app
         .messages
         .iter()
@@ -144,7 +144,7 @@ fn explicit_resume_across_accounts_loads_scrollable_history_and_keeps_unsent_dra
         );
     }
     terminal.draw(|f| draw_ui(f, &mut app)).unwrap();
-    assert!(screen(&terminal).contains("Thinking - Collapse"));
+    assert!(screen(&terminal).contains("Thinking · Collapse"));
     assert!(screen(&terminal).contains("Provider reported inspection"));
     assert!(
         app.activity.detail.is_none(),

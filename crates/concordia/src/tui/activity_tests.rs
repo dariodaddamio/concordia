@@ -80,7 +80,7 @@ fn expansion_and_detail_use_independent_message_identity() {
             status,
         };
         for label in ["Edit File", "Edit file", "Ran"] {
-            let heading = format!("│ {mark} {label} src/café.rs - 2 output lines - Expand");
+            let heading = format!("│ {mark} {label} src/café.rs · 2 output lines · Expand");
             let runs = super::activity::card_runs(&heading, Some(&card));
             let style_at = |index| {
                 runs.iter()
@@ -91,7 +91,7 @@ fn expansion_and_detail_use_independent_message_identity() {
                     )
             };
             let chars = heading.chars().collect::<Vec<_>>();
-            let end = heading.split(" - ").next().unwrap().chars().count();
+            let end = heading.split(" · ").next().unwrap().chars().count();
             for (index, character) in chars.iter().enumerate().take(end).skip(4) {
                 assert!(
                     style_at(index).add_modifier.contains(Modifier::BOLD),
