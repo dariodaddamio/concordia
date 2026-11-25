@@ -16,6 +16,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.permission_rows.clear();
     app.areas.permissions_popup = Rect::default();
     app.areas.header_dropdown = None;
+    app.areas.trust_anchor = None;
     app.areas.run_cancel = Rect::default();
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
@@ -30,7 +31,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         .as_ref()
         .is_some_and(|p| p.kind == PickerKind::Update)
     {
-        // A page owns the screen; preserve the workspace without drawing through it.
         app.areas = Areas::default();
         let page = Layout::vertical([
             Constraint::Length(2),
@@ -55,7 +55,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
                 (screen, Rect::default())
             };
         let chat_area = workspace::draw_in(f, app, chat_screen);
-        // The prompt box grows with its content (up to MAX_INPUT_ROWS), so size it first.
         let text_w = (chat_area.width as usize)
             .saturating_sub(2 + PROMPT_W)
             .max(1);
@@ -72,8 +71,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
             ])
             .split(chat_area)
             .to_vec();
-        // Queue and question panels reserve space first. The worker strip is carved last so it
-        // stays directly above the composer instead of being separated from it by another panel.
         let queue_area = queue::carve(&mut chunks[1], app);
         let question_area = questions::carve(&mut chunks[1], app);
         let strip = workers::carve(&mut chunks[1], app);
@@ -90,7 +87,9 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         } else {
             draw_transcript(f, chunks[1], app);
         }
-        draw_input(f, chunks[2], app);
+        if app.settings_view.is_none() {
+            draw_input(f, chunks[2], app);
+        }
         draw_run_status(f, run_status, app);
         questions::draw(f, question_area, app);
         queue::draw(f, queue_area, app);
@@ -111,7 +110,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     }
     settings::refresh_if_stale(app);
     if app.settings_view.is_some() {
-        // Large surface: the settings screen takes the full width; its popups draw over it.
         app.areas = Areas::default();
         let page = Layout::vertical([
             Constraint::Length(2),
@@ -125,7 +123,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         draw_footer(f, page[2], app);
         raster::begin_frame(app);
         if let Some(kind) = app.picker.as_ref().map(|picker| picker.kind) {
-            // Popups sit inside the settings frame; permissions anchors to its footer chip.
             let inside = Rect::new(
                 page[1].x.saturating_add(1),
                 page[1].y.saturating_add(1),
@@ -152,7 +149,6 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     {
         draw_picker(f, screen, app);
     }
-    // Cover every widget, including provider-controlled titles, menus and detail panes.
     if worker_input::active(app) {
         app.areas = Areas::default();
         worker_input::draw(f, app);
@@ -169,16 +165,11 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
         ])
         .split(screen);
         draw_key_sheet(f, sheet[1], app);
-        // Native image blits are submitted after the ratatui frame. Do not let an
-        // inline image repaint over the shortcut sheet.
         raster::begin_frame(app);
     }
     if app.picker.is_some() || app.activity.detail.is_some() {
-        // The same rule applies to picker and activity overlays. Their Clear widgets
-        // only affect the cell buffer, while the native image layer is submitted later.
         raster::begin_frame(app);
     }
-    // A raw ESC in a cell would bypass ratatui's diff buffer and corrupt the real screen.
     for cell in &mut f.buffer_mut().content {
         if cell.symbol().chars().any(char::is_control) {
             let clean: String = cell
@@ -197,14 +188,18 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     theme::apply(f.buffer_mut(), app.no_color, app.raster.native);
 }
 
-/// Cell width of `text` (ASCII-wide aware via `text::char_width`).
 fn cell_width(text: &str) -> usize {
     text.chars().map(text::char_width).sum()
 }
 
-/// A header dropdown row shows only the name, like a select: `Claude Haiku 5.5 · claude-haiku-5-5
-/// · current` becomes `Claude Haiku 5.5 · current`.
-fn dropdown_label(label: &str) -> String {
+fn dropdown_label(kind: PickerKind, label: &str) -> String {
+    let label = if kind == PickerKind::Provider {
+        label
+            .split_once(" \u{b7} ")
+            .map_or(label, |(_, account)| account)
+    } else {
+        label
+    };
     let current = label.ends_with(" \u{b7} current");
     let name = label.split(" \u{b7} ").next().unwrap_or(label);
     if current && name != label {
@@ -214,15 +209,41 @@ fn dropdown_label(label: &str) -> String {
     }
 }
 
-/// Visible content rows of a header dropdown before it scrolls (plus two border rows).
+fn dropdown_detail(kind: PickerKind, detail: &str) -> String {
+    if kind != PickerKind::Provider {
+        return String::new();
+    }
+    if detail.starts_with("not connected") {
+        return "not connected".into();
+    }
+    detail
+        .split(" \u{b7} ")
+        .filter(|part| part.contains("% left"))
+        .map(|part| part.split(" (").next().unwrap_or(part))
+        .collect::<Vec<_>>()
+        .join(" \u{b7} ")
+}
+
 const DROPDOWN_ROWS: usize = 10;
 
-/// Width of a header dropdown: the longest row or title with border, padding and the `> ` marker,
-/// never narrower than the chip it drops from.
-fn dropdown_width(rows: &[&PickerRow], title: &str, chip: Rect, screen: Rect) -> u16 {
+fn dropdown_width(
+    kind: PickerKind,
+    rows: &[&PickerRow],
+    title: &str,
+    chip: Rect,
+    screen: Rect,
+) -> u16 {
     let longest = rows
         .iter()
-        .map(|row| cell_width(&dropdown_label(&row.label)))
+        .map(|row| {
+            let detail = dropdown_detail(kind, &row.detail);
+            cell_width(&dropdown_label(kind, &row.label))
+                + if detail.is_empty() {
+                    0
+                } else {
+                    cell_width(&detail) + 2
+                }
+        })
         .max()
         .unwrap_or(0)
         .max(cell_width(title));
@@ -230,7 +251,6 @@ fn dropdown_width(rows: &[&PickerRow], title: &str, chip: Rect, screen: Rect) ->
     wanted.min(usize::from(screen.width)) as u16
 }
 
-/// Shortens `text` to `width` cells, cutting at a word boundary and ending with an ellipsis.
 fn ellipsis(text: &str, width: usize) -> String {
     if cell_width(text) <= width {
         return text.into();
@@ -258,7 +278,6 @@ fn ellipsis(text: &str, width: usize) -> String {
     let cut = last_break.filter(|&at| at > 0).unwrap_or(end);
     let mut value = text[..cut].trim_end().to_owned();
     if value.is_empty() {
-        // A single overlong token: keep as many cells as fit, then ellipsis.
         let mut used = 0usize;
         let mut end = 0usize;
         for (index, ch) in text.char_indices() {
@@ -271,7 +290,6 @@ fn ellipsis(text: &str, width: usize) -> String {
         }
         value = text[..end].to_owned();
     }
-    // Text that was already shortened keeps a single ellipsis.
     let mut value = value
         .trim_end_matches(|c: char| matches!(c, '…' | ',' | '·' | ';' | ':') || c.is_whitespace())
         .to_owned();
@@ -279,8 +297,6 @@ fn ellipsis(text: &str, width: usize) -> String {
     value
 }
 
-/// Fit a one-line picker label and muted detail into `width` cells.
-/// Hide or ellipsize the detail first, then the label, always at a word boundary.
 fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<String>) {
     if width == 0 {
         return (String::new(), None);
@@ -289,7 +305,7 @@ fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<
     if detail.is_empty() {
         return (ellipsis(label, width), None);
     }
-    let gap = 2; // two spaces between label and detail
+    let gap = 2;
     if label_w + gap >= width {
         return (ellipsis(label, width), None);
     }
@@ -297,7 +313,6 @@ fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<
     if cell_width(detail) <= detail_room {
         return (label.to_owned(), Some(detail.to_owned()));
     }
-    // Prefer dropping the detail entirely when only a few cells remain.
     if detail_room < 4 {
         return (ellipsis(label, width), None);
     }
@@ -308,17 +323,14 @@ fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<
     (label.to_owned(), Some(fitted))
 }
 
-/// Fit a bordered panel title so it never runs under the close `X` (3 cells + gap).
 fn fit_panel_title(title: &str, popup_width: u16) -> String {
-    // Corners take 2; close control paints over the last 4 (` X ` at right-4).
     let room = (popup_width as usize).saturating_sub(6);
     ellipsis(title, room)
 }
 
-/// The settings screen: a tab strip, rows of `label … current value`, and the selected
-/// row's description. Key hints live in the footer only.
 fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     let popup_open = app.picker.is_some();
+    let trust = app.trust;
     let Some(view) = app.settings_view.as_mut() else {
         return;
     };
@@ -329,7 +341,6 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         .border_style(muted);
     let frame = block.inner(area);
     f.render_widget(block, area);
-    // One column of padding inside the border on each side.
     let inner = Rect::new(
         frame.x.saturating_add(1),
         frame.y,
@@ -343,8 +354,6 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let width = inner.width as usize;
 
-    // Tab strip. When the names do not fit, keep a contiguous visible window around the active
-    // tab and mark hidden tabs at the corresponding edge.
     let filtering = !view.filter.is_empty();
     let full: usize = view
         .tabs
@@ -397,8 +406,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     }
     for index in first..=last {
         let active = index == view.active && !filtering;
-        // The selection mark keeps the active section readable without colour.
-        let text = format!("{}{} ", if active { '>' } else { ' ' }, labels[index]);
+        let text = format!(" {} ", labels[index]);
         let cells = text.chars().count() as u16;
         let style = if active {
             Style::default()
@@ -427,16 +435,36 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
             ])),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
+        let typed = view.filter.chars().map(text::char_width).sum::<usize>() as u16;
+        f.set_cursor_position((
+            (inner.x + 8 + typed).min(inner.right().saturating_sub(1)),
+            inner.y + 1,
+        ));
+    } else {
+        f.render_widget(
+            Paragraph::new(Line::styled("─".repeat(width), muted)),
+            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        );
     }
 
-    // Rows, scrolled so the selected one stays in view. Exactly one blank row, then the
-    // selected row's description.
     let rows = settings::visible(view);
-    let list = Rect::new(
+    let body = Rect::new(
         inner.x,
-        inner.y + 2,
+        inner.y + 3,
         inner.width,
-        inner.height.saturating_sub(4),
+        inner.height.saturating_sub(3),
+    );
+    let help_width = if body.width >= 90 {
+        (body.width / 3).clamp(30, 48)
+    } else {
+        0
+    };
+    let list = Rect::new(
+        body.x + 1,
+        body.y,
+        body.width.saturating_sub(help_width + 3).min(72),
+        body.height
+            .saturating_sub(if help_width == 0 { 2 } else { 0 }),
     );
     let selected = settings::selected_position(view).min(rows.len().saturating_sub(1));
     let height = list.height as usize;
@@ -445,54 +473,113 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         selected.saturating_sub(height - 1)
     };
+    let labels: Vec<String> = rows
+        .iter()
+        .map(|(tab, row)| {
+            let item = &view.tabs[*tab].rows[*row];
+            if filtering {
+                format!("{} › {}", view.tabs[*tab].name, item.label)
+            } else {
+                item.label.clone()
+            }
+        })
+        .collect();
+    let room = list.width as usize;
+    let value_width = rows
+        .iter()
+        .map(|(tab, row)| view.tabs[*tab].rows[*row].value.chars().count() + 4)
+        .max()
+        .unwrap_or(0)
+        .min(room / 2);
+    let label_width = labels
+        .iter()
+        .map(|label| label.chars().count() + 4)
+        .max()
+        .unwrap_or(0)
+        .min(room.saturating_sub(value_width + 2));
     let mut lines = Vec::new();
     for (position, (tab, row)) in rows.iter().enumerate().skip(top).take(height) {
         let item = &view.tabs[*tab].rows[*row];
         let is_selected = position == selected;
-        let label = if filtering {
-            format!("{} › {}", view.tabs[*tab].name, item.label)
-        } else {
-            item.label.clone()
-        };
-        let marker = if is_selected { "> " } else { "  " };
-        let room = width.saturating_sub(marker.chars().count());
-        // The value keeps up to half the row; the label gets the rest, with a gap between.
-        let value = ellipsis(&item.value, room / 2);
-        let label = ellipsis(&label, room.saturating_sub(value.chars().count() + 2));
-        let gap = room.saturating_sub(label.chars().count() + value.chars().count());
-        // Design system, list picker: the selected row is marked by `>` and accent on panel.
-        let style = if is_selected {
-            Style::default()
-                .fg(theme::accent())
-                .bg(theme::selection())
-                .add_modifier(Modifier::BOLD)
+        let label = ellipsis(&labels[position], label_width.saturating_sub(3));
+        let leader = label_width.saturating_sub(label.chars().count() + 2);
+        let value = ellipsis(&item.value, value_width.saturating_sub(4));
+        let value_style = settings_value_style(
+            (item.action == "permissions").then(|| mode_color(trust)),
+            &item.value,
+        );
+        let base = if is_selected {
+            Style::default().bg(theme::selection())
         } else {
             Style::default()
         };
-        lines.push(Line::styled(
-            format!("{marker}{label}{:gap$}{value}", ""),
-            style,
-        ));
-        view.row_areas.push((
-            Rect::new(list.x, list.y + (position - top) as u16, list.width, 1),
-            position,
-        ));
+        let label_style = if is_selected {
+            base.fg(theme::accent()).add_modifier(Modifier::BOLD)
+        } else {
+            base
+        };
+        let pad = room.saturating_sub(label_width + value.chars().count() + 4);
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {label} "), label_style),
+            Span::styled(format!("{} ", "·".repeat(leader)), base.fg(theme::muted())),
+            Span::styled("[ ", base.fg(theme::muted())),
+            Span::styled(value, base.patch(value_style)),
+            Span::styled(" ]", base.fg(theme::muted())),
+            Span::styled(" ".repeat(pad), base),
+        ]));
+        let row_rect = Rect::new(list.x, list.y + (position - top) as u16, list.width, 1);
+        if is_selected && item.action == "permissions" {
+            app.areas.trust_anchor = Some(row_rect);
+        }
+        view.row_areas.push((row_rect, position));
     }
     if rows.is_empty() {
-        lines.push(Line::styled("No setting matches", muted));
+        lines.push(Line::styled(" No setting matches", muted));
     }
     f.render_widget(Paragraph::new(lines), list);
-    if let Some((tab, row)) = rows.get(selected).filter(|_| !popup_open) {
-        let description = ellipsis(&view.tabs[*tab].rows[*row].description, width);
+    let description = rows
+        .get(selected)
+        .map(|(tab, row)| view.tabs[*tab].rows[*row].description.clone())
+        .unwrap_or_default();
+    if help_width > 0 {
+        let help = Rect::new(
+            body.right().saturating_sub(help_width),
+            body.y,
+            help_width,
+            body.height.min(12),
+        );
+        f.render_widget(
+            Paragraph::new(description)
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .style(Style::default().fg(Color::Gray))
+                .block(
+                    Block::default()
+                        .borders(Borders::LEFT)
+                        .border_style(muted)
+                        .title(Span::styled(" Help ", Style::default().fg(theme::accent())))
+                        .padding(ratatui::widgets::Padding::horizontal(2)),
+                ),
+            help,
+        );
+    } else if !popup_open {
         let shown = rows.len().min(height) as u16;
         f.render_widget(
-            Paragraph::new(Line::styled(description, muted)),
+            Paragraph::new(Line::styled(ellipsis(&description, width), muted)),
             Rect::new(inner.x, list.y + shown + 1, inner.width, 1),
         );
     }
 }
 
-/// Keep the title editor in the tab row, including a single-tab window during rename.
+fn settings_value_style(mode: Option<Color>, value: &str) -> Style {
+    let value = value.trim_end_matches(" ›").trim();
+    let color = mode.unwrap_or(match value {
+        "On" | "on" => Color::Green,
+        "Off" | "off" => Color::DarkGray,
+        _ => Color::Cyan,
+    });
+    Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
 fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     app.tab_hits.clear();
     app.tab_close_hits.clear();
@@ -512,8 +599,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
         &app.tab_strip
     };
     let mut rename = None;
-    // Too many tabs for the row: start late enough that the active tab is drawn, and mark the
-    // tabs left out on either side with … as the settings sections do.
     let widths: Vec<usize> = chips
         .iter()
         .enumerate()
@@ -549,7 +634,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
     }
     let mut hidden_right = false;
     for (index, chip) in chips.iter().enumerate().skip(first) {
-        // " 2 ✻ ◐ " : the Ctrl+number, the provider and the status, each one cell wide.
         let prefix = format!(
             " {} {} {} ",
             index + 1,
@@ -562,7 +646,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
             .as_ref()
             .filter(|_| index == app.tab_index);
         let remaining = usize::from(row.right().saturating_sub(x));
-        // Chip body is " {title}  ×  " (1 + title + 5); trailing gap is painted separately.
         let chrome = prefix_width + 6;
         let edit_width = 24usize.min(remaining.saturating_sub(chrome));
         let title = if editor.is_some() {
@@ -626,7 +709,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
                 col,
             ));
         }
-        // On the active (cyan) tab the icons keep the tab's text colour to stay legible.
         let icon_style = |color| {
             if index == app.tab_index || dragged {
                 style
@@ -634,7 +716,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
                 style.fg(color)
             }
         };
-        // The active tab also carries the list-selection mark, so it does not rely on colour.
         let mark = if index == app.tab_index { '>' } else { ' ' };
         spans.push(Span::styled(format!("{mark}{} ", index + 1), style));
         spans.push(Span::styled(
@@ -657,7 +738,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
             Rect::new(row.right() - 1, row.y, 1, 1),
         );
     }
-    // Drop feedback: a bar in the gap where the dragged tab will land.
     if let Some((_, slot)) = app.tab_drag {
         let marker = match slot {
             0 => row.x,
@@ -666,8 +746,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
                 None => app.tab_hits.last().map_or(row.x, |rect| rect.right()),
             },
         };
-        // The insertion slot after the final tab is outside the row's drawable cells when the
-        // strip reaches the window edge. Keep the feedback visible in the last cell in that case.
         let marker = marker.min(row.right().saturating_sub(1));
         if marker >= row.x && marker < row.right() {
             f.render_widget(
@@ -698,10 +776,6 @@ fn draw_tab_strip(f: &mut Frame, app: &mut App) -> (Rect, Option<Position>) {
 }
 
 fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
-    // Large surface: full width between header and footer, like Settings. Scroll/close live in
-    // the footer only.
-    // Sections of (key, description). The key column is as wide as the longest key, so long
-    // keys such as Ctrl+Shift+PgUp never run into their description.
     let mut sections: Vec<(String, Vec<(String, String)>)> = Vec::new();
     for c in crate::commands::command_registry() {
         let Some(key) = c.key_binding else { continue };
@@ -780,7 +854,6 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
         .flat_map(|(_, rows)| rows.iter().map(|(k, _)| k.chars().count()))
         .max()
         .unwrap_or(8);
-    // Headings are bold foreground; yellow is the warning role, not emphasis.
     let heading = Style::default().add_modifier(Modifier::BOLD);
     let key_style = Style::default().fg(Color::Cyan);
     let mut lines: Vec<Line> = Vec::new();
@@ -818,7 +891,6 @@ fn draw_key_sheet(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Slash-command suggestions, floating just above the prompt box.
 fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
     app.areas.palette = Rect::default();
     let entries = app.palette_entries();
@@ -828,7 +900,6 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
     app.palette.clamp(entries.len());
     let shown = entries.len().min(10);
     let height = shown as u16 + 2;
-    // Command column (padded) + the longest description + highlight marker (2) + borders (2).
     let cmd_col = entries
         .iter()
         .map(|e| e.command.chars().count())
@@ -923,7 +994,6 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
 const BAR_BG: Color = Color::Indexed(236);
 const SPINNER: [&str; 4] = ["◇", "◈", "◆", "◈"];
 
-/// Omit unused leading units from the live timer beside the run status.
 fn run_elapsed(seconds: u64) -> String {
     crate::delegate::fmt_elapsed(Duration::from_secs(seconds))
 }
@@ -983,7 +1053,6 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// A quiet colour cue per provider, so the active account is recognisable at a glance.
 pub(super) fn provider_color(p: ProviderKind) -> Color {
     match p {
         ProviderKind::Codex => Color::Indexed(114),
@@ -1010,9 +1079,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
     let account = app.account_heading();
     let right = String::new();
     let available = area.width as usize;
-    // Effort only when the active catalog model reports adjustable efforts.
-    // refresh_binding clears the effort when the model reports none; never read the catalog
-    // from disk while drawing a frame.
     let effort_allowed = !model_unset && app.effort.is_some();
     let brand = if effort_allowed && area.width < 75 {
         String::new()
@@ -1036,7 +1102,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::styled(brand, bar.fg(Color::Indexed(75))),
     ];
     let provider_x = left.iter().map(Span::width).sum::<usize>();
-    // Fit the account chip before the model so narrow widths keep a clickable target.
     let effort_text = app
         .effort
         .as_deref()
@@ -1182,7 +1247,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
                     .as_deref()
                     .map(|reset| format!(", {reset}"))
                     .unwrap_or_default();
-                // A narrow chat column (a file pane beside it) shortens the line at a word.
                 let used: usize = line.iter().map(|span| cell_width(&span.content)).sum();
                 let text = format!(
                     "{}│  Subscription: {subscription}{reset}",
@@ -1207,7 +1271,6 @@ fn draw_header(f: &mut Frame, area: Rect, app: &mut App) {
 
 #[allow(clippy::if_same_then_else)]
 fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
-    // No box: the conversation is the page. A little side padding keeps text off the edges.
     let block = Block::default().padding(ratatui::widgets::Padding::new(1, 1, 0, 0));
     let inner = block.inner(area);
     app.areas.transcript = inner;
@@ -1258,7 +1321,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 })
                 .map(Some)
                 .unwrap_or(None),
-            // Short thinking is shown whole; a toggle that reveals nothing new is noise.
             MsgRole::Thinking if !thinking_expandable(&m.text) => {
                 Some(format!("Thinking\n{}", m.text.trim_end()))
             }
@@ -1327,7 +1389,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     }
     let tip_text = app.visible_tip().map(|t| format!("tip: {t}"));
     let cur_meta = app.reply_meta();
-    // Preserve semantic colour through wrapping, selection and saved-history rendering.
     let msg_runs: Vec<Vec<transcript::LineRun>> = app
         .messages
         .iter()
@@ -1367,7 +1428,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         })
         .collect();
     let mut blocks: Vec<TBlock> = Vec::with_capacity(app.messages.len() * 3 + 4);
-    // Inside a slash-command output block (after its echo) plain lines get no icon.
     let mut in_block = false;
     let count = app.messages.len();
     for (i, m) in app.messages.iter().enumerate() {
@@ -1388,7 +1448,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Style::default().fg(Color::Indexed(179)),
                 Style::default(),
             ),
-            // Command echo: the title of a dim, barred output block.
             MsgRole::Command => (
                 "| ",
                 Style::default().fg(Color::Indexed(244)),
@@ -1396,7 +1455,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                     .fg(Color::Indexed(252))
                     .add_modifier(Modifier::BOLD),
             ),
-            // Command output and notices: neutral bar, small coloured level icon, dim text.
             MsgRole::System => {
                 let lvl = level_of(&m.text);
                 let g = match (lvl, in_block) {
@@ -1454,7 +1512,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 "▸ "
             };
         }
-        // Breathing room between turns, but tool cards stay grouped with what triggered them.
         if matches!(m.role, MsgRole::User | MsgRole::Command) && i > 0 {
             blocks.push(spacer());
         }
@@ -1463,10 +1520,8 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             MsgRole::System => {}
             _ => in_block = false,
         }
-        // Label the start of each agent turn (its cards, thoughts and reply share one label).
         if let Some((p, label)) = &m.meta {
             if label == "__concordia_idle_notice__" {
-                // Marker-only metadata: do not render a provider header.
             } else {
                 let same = i > 0 && app.messages[i - 1].meta.as_ref().map(|x| &x.1) == Some(label);
                 if !same {
@@ -1485,7 +1540,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             linkify: m.role != MsgRole::Meta,
             runs: &msg_runs[i],
             header_files: msg_files[i],
-            // The card border is decoration: selection skips it and copied text starts at the status mark.
             decor_prefix: if m.role == MsgRole::Card {
                 card_copy_prefix(displayed[i].as_deref().unwrap_or(&m.text))
             } else {
@@ -1511,7 +1565,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
     {
         blocks.push(reply_header(cur_meta.0, &cur_meta.1));
     }
-    // Live reasoning while the turn runs: the last few lines, dimmed.
     if app.busy && !live_thought.is_empty() {
         blocks.push(TBlock {
             identity: None,
@@ -1528,7 +1581,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             decor_prefix: 0,
         });
     }
-    // Live assistant text while the turn is still running.
     if app.busy && !app.live_text.trim().is_empty() {
         blocks.push(TBlock {
             identity: None,
@@ -1574,7 +1626,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 .set_symbol("│")
                 .set_style(Style::default().fg(Color::Indexed(238)));
         }
-        // The thumb is placed in eighths of a cell, so it glides instead of jumping a row.
         const LOWER: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let (start, size) = app.view.scroll_thumb_eighths(inner.height);
         let end = start + size;
@@ -1589,14 +1640,11 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
             if bottom == cell_bottom {
                 cell.set_symbol(LOWER[bottom - top]).set_style(thumb);
             } else {
-                // The thumb ends inside this cell: paint the uncovered lower part in reverse.
                 cell.set_symbol(LOWER[cell_bottom - bottom])
                     .set_style(thumb.add_modifier(Modifier::REVERSED));
             }
         }
     }
-    // Paint the complete user block, including blank and trailing cells. Line styling alone
-    // leaves empty paragraph rows at the terminal's default background.
     for (row, index) in app.view.visible().enumerate() {
         let role = app.view.rows[index]
             .identity
@@ -1615,7 +1663,6 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // Keep the expanded card's control reachable after its original header scrolls away.
     let first = app.view.visible().start;
     if inner.height > 1 && inner.width > 0 {
         if let Some(id) = app
@@ -1913,7 +1960,6 @@ fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
     }
 }
 
-/// One `/update` line as styled rows `width` wide; bullets wrap under their text.
 fn update_rows(line: &crate::update::PreviewLine, width: usize) -> Vec<Line<'static>> {
     use crate::update::PreviewLine as P;
     let dim = Style::default().add_modifier(Modifier::DIM);
@@ -2087,8 +2133,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Vec::new()
         };
-        // Content height only: no dead bordered rows. Command panels sit above the composer;
-        // the update page still owns the middle band but shrinks to its lines.
         let height = ((rows.len() + actions.len()) as u16 + 2)
             .min(if is_page {
                 area.height
@@ -2107,13 +2151,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             height,
         };
         f.render_widget(Clear, popup);
-        // Keep one changelog row available even in a very short terminal.
         actions.truncate(popup.height.saturating_sub(3) as usize);
         let view = popup
             .height
             .saturating_sub(2)
             .saturating_sub(actions.len() as u16) as usize;
-        // Scrolling reads these, so it always matches what was last drawn.
         app.update_rows = rows.len();
         app.update_view = view;
         let offset = picker
@@ -2135,7 +2177,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     if picker.kind == PickerKind::Usage {
-        // One margin column each side; cards themselves are the only bordered surfaces.
         let width = area.width.saturating_sub(2);
         let cols = (width / 54).max(1) as usize;
         picker.usage_cols = cols;
@@ -2201,10 +2242,8 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|chunk| chunk.iter().map(Vec::len).max().unwrap_or(1) as u16 + 2)
             .collect::<Vec<_>>();
         let row_count = cell_height.len();
-        // Cards only: one blank row between card rows, nothing trailing under the last row.
         let content_height = cell_height.iter().sum::<u16>() + row_count.saturating_sub(1) as u16;
         let height = content_height.max(1).min(area.height);
-        // Exactly as wide as the cards, so the close control sits on the last card's edge.
         let popup = Rect {
             x: area.x + 1,
             y: area.y,
@@ -2292,13 +2331,18 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     let width = if picker.kind == PickerKind::Trust {
         area.width.saturating_sub(2).min(54)
     } else if let Some(chip) = dropdown {
-        dropdown_width(&picker.filtered(), &picker.filter, chip, screen)
+        dropdown_width(
+            picker.kind,
+            &picker.filtered(),
+            &picker.filter,
+            chip,
+            screen,
+        )
     } else {
         area.width.saturating_sub(4).max(20)
     };
     let row_width = width.saturating_sub(6).max(1) as usize;
     let permission_lines = (picker.kind == PickerKind::Trust).then(|| {
-        // `areas.input` is the composer's inner text area; its border is the row above.
         let bottom = if app.areas.input.height > 0 {
             app.areas.input.y.saturating_sub(1)
         } else {
@@ -2423,17 +2467,31 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         },
     };
     if let Some(chip) = dropdown {
-        // Drops from the header row under the chip, left-aligned to it, clamped to the screen.
         popup.width = popup.width.min(screen.width);
         popup.x = chip.x.min(screen.right().saturating_sub(popup.width));
         popup.y = chip.y.saturating_add(1);
         popup.height = height.min(screen.bottom().saturating_sub(popup.y));
         app.areas.header_dropdown = Some(popup);
     }
-    if picker.kind == PickerKind::Trust {
-        // Anchor beside the permissions chip, but end above the composer when one is drawn.
+    if let Some(anchor) = app
+        .areas
+        .trust_anchor
+        .filter(|_| picker.kind == PickerKind::Trust)
+    {
+        popup.width = popup.width.min(screen.width);
+        popup.x = anchor.right().saturating_sub(popup.width).max(anchor.x);
+        let below = screen.bottom().saturating_sub(anchor.bottom());
+        popup.height = popup
+            .height
+            .min(below.max(anchor.y.saturating_sub(screen.y)));
+        popup.y = if below >= popup.height {
+            anchor.bottom()
+        } else {
+            anchor.y.saturating_sub(popup.height)
+        };
+        app.areas.permissions_popup = popup;
+    } else if picker.kind == PickerKind::Trust {
         let right = app.areas.permissions.right().min(area.right());
-        // `areas.input` is the composer's inner text area; its border is the row above.
         let bottom = if app.areas.input.height > 0 {
             app.areas.input.y.saturating_sub(1)
         } else {
@@ -2499,7 +2557,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let title = fit_panel_title(
         &if dropdown.is_some() {
-            // A dropdown hangs from its labelled chip, so it needs no heading of its own.
             if picker.filter.is_empty() {
                 String::new()
             } else {
@@ -2554,7 +2611,10 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 return ListItem::new(lines);
             }
-            let compact = dropdown.is_some().then(|| dropdown_label(&r.label));
+            let compact = dropdown
+                .is_some()
+                .then(|| dropdown_label(picker.kind, &r.label));
+            let compact_detail = dropdown_detail(picker.kind, &r.detail);
             let label = compact.as_deref().unwrap_or(&r.label);
             let (head, current) = match label.split_once(" \u{b7} current") {
                 Some((h, _)) => (h.to_string(), true),
@@ -2564,7 +2624,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             let current_w = cell_width(current_suffix);
             let fit_width = row_width.saturating_sub(current_w);
             let detail = if compact.is_some() {
-                ""
+                compact_detail.as_str()
             } else {
                 r.detail.as_str()
             };
@@ -2663,7 +2723,6 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     } else {
         Rect::default()
     };
-    // Sending waits for the restart, so the box itself says so, not only the footer.
     let updating = app
         .job
         .as_ref()
@@ -2703,7 +2762,6 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
     if app.input_scroll_anchor.is_some_and(|old| old != anchor) {
         app.input_scroll_anchor = None;
     }
-    // Wheel scrolling is independent of the caret until an edit/navigation/resize.
     if app.input_scroll_anchor.is_none() && cur_row < app.input_scroll {
         app.input_scroll = cur_row;
     } else if app.input_scroll_anchor.is_none() && cur_row >= app.input_scroll + h {
@@ -2768,7 +2826,6 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
         );
     }
 
-    // Real terminal caret (blinks natively, works with IME); hidden while a picker is open.
     if app.picker.is_none()
         && app.activity.detail.is_none()
         && !app.queue.focused
@@ -2792,16 +2849,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         mode_label(mode)
     };
     let color = mode_color(mode);
-    // The mode column is kept only while it leaves room for the first hint.
     const MIN_LEFT: usize = 12;
-    let right = [
-        (100, format!("permissions: {label} ▾ ")),
-        (0, format!("{label} ▾ ")),
+    let badge = format!(" {label} ▾ ");
+    let scope = [
+        (110, "permissions · all providers "),
+        (90, "permissions "),
+        (0, ""),
     ]
     .into_iter()
-    .find(|(min_width, r)| w >= *min_width && r.chars().count() + MIN_LEFT <= w)
-    .map(|(_, r)| r)
-    .unwrap_or_default();
+    .find(|(min_width, scope)| {
+        w >= *min_width && scope.chars().count() + badge.chars().count() + MIN_LEFT <= w
+    })
+    .map(|(_, scope)| scope);
+    let right = scope.map_or_else(String::new, |scope| format!("{scope}{badge}"));
     let rw = right.chars().count() as u16;
     let cols = [
         Rect {
@@ -3000,7 +3060,6 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    // A warning outranks the file-pane hint, so closing from the pane still explains itself.
     let left = if app.workspace.focused.is_some() && app.picker.is_none() && flash.is_none() {
         "File pane · Esc chat · F6 change focus · Ctrl+S save · Ctrl+F find"
     } else {
@@ -3008,8 +3067,6 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     };
     let focus_hint = queue_focus::focus_hint(app).map(|hint| format!("{left} · {hint}"));
     let left = focus_hint.as_deref().unwrap_or(left);
-    // A warning too long for the row beside the permissions control takes the whole row while
-    // it shows; the control returns when the warning expires.
     let (cols, rw) = if flash.is_some_and(|m| m == left)
         && rw > 0
         && left.chars().count() + 2 > usize::from(cols[0].width)
@@ -3046,12 +3103,19 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         cols[0],
     );
     stats_ui::draw_footer_stats(f, cols[0], 1 + shown.chars().count(), app);
-    // Approvals and sandboxing are bypassed in full mode: its red glyph must stay visible.
-    if rw > 0 {
+    if let Some(scope) = scope.filter(|_| rw > 0) {
         f.render_widget(
-            Paragraph::new(right)
-                .alignment(Alignment::Right)
-                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Paragraph::new(Line::from(vec![
+                Span::styled(scope, Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    badge,
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]))
+            .alignment(Alignment::Right),
             cols[1],
         );
     }

@@ -1,29 +1,16 @@
-//! How a planned turn is actually handed to the OS.
-//!
-//! The prompt normally travels as the last argv entry. That is fine for a real `.exe`, but the
-//! Windows installs of these CLIs are usually `.cmd` shims that re-parse their arguments through
-//! `cmd.exe`: newlines are rejected outright, `%VAR%` is silently expanded, non-ASCII is mangled
-//! by the console code page, and a command line over 8191 characters fails to start. Rather than
-//! escape our way through that, prompts that are not provably safe go over **stdin**, which no
-//! shell touches. Simple prompts keep the plain argv path.
-
 use crate::provider::turn::PlannedTurn;
 use crate::store::ProviderKind;
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 
-/// Longest prompt passed in argv behind a batch shim (cmd.exe's limit is 8191 for the whole line).
 const BATCH_ARGV_MAX: usize = 4000;
-/// Longest prompt passed in argv to a real executable (CreateProcess caps the line at 32767).
 const EXE_ARGV_MAX: usize = 24_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub program: String,
     pub args: Vec<String>,
-    /// Extra environment on top of the plan's (e.g. what a bypassed shim would have set).
     pub env: Vec<(String, String)>,
-    /// Prompt to write to the child's stdin, then close.
     pub stdin: Option<String>,
 }
 
@@ -32,7 +19,6 @@ pub fn is_batch_shim(program: &str) -> bool {
     p.ends_with(".cmd") || p.ends_with(".bat")
 }
 
-/// Characters that survive `cmd.exe` argument parsing unchanged.
 fn batch_safe(prompt: &str) -> bool {
     prompt.len() <= BATCH_ARGV_MAX
         && prompt
@@ -41,11 +27,9 @@ fn batch_safe(prompt: &str) -> bool {
 }
 
 pub fn prompt_needs_stdin(prompt: &str, batch: bool) -> bool {
-    // A leading '-' would be parsed by the CLI as an option.
     prompt.starts_with('-') || prompt.len() > EXE_ARGV_MAX || (batch && !batch_safe(prompt))
 }
 
-/// `cursor-agent.ps1` next to an `agent.cmd` shim, which is what the shim itself runs.
 pub(crate) fn cursor_ps1_beside(shim: &Path) -> Option<PathBuf> {
     let ps1 = shim.parent()?.join("cursor-agent.ps1");
     ps1.is_file().then_some(ps1)
@@ -118,18 +102,15 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
     if !prompt_needs_stdin(&plan.prompt, batch) {
         return Ok(launch);
     }
-    // By construction the prompt is the final argv entry for every provider.
     if launch.args.last().map(String::as_str) != Some(plan.prompt.as_str()) {
         bail!("internal: prompt is not the last argument");
     }
     match plan.provider {
         ProviderKind::Codex => {
-            // `codex exec [resume <id>] -` reads the prompt from stdin.
             *launch.args.last_mut().expect("checked above") = "-".into();
             launch.stdin = Some(plan.prompt.clone());
         }
         ProviderKind::Claude => {
-            // `claude -p` with no prompt argument reads it from stdin.
             launch.args.pop();
             launch.stdin = Some(plan.prompt.clone());
         }
@@ -139,8 +120,6 @@ pub fn prepare(plan: &PlannedTurn) -> Result<Launch> {
                     "this prompt starts with '-', which the Cursor CLI would read as an option; reword it"
                 );
             }
-            // No documented stdin prompt for `agent`; skip the cmd.exe layer instead by running
-            // the PowerShell script the shim would have run.
             let shim = Path::new(&plan.command);
             match is_batch_shim(&launch.program).then(|| cursor_ps1_beside(shim)).flatten() {
                 Some(ps1) => {

@@ -1,7 +1,3 @@
-//! Selectable conversational replies. These send messages, never native tool approvals.
-//!
-//! Single questions require trailing choices; explicit bundles may include descriptions and
-//! a trailing progress note. The note row accepts a choice with a note, or a note alone.
 use super::*;
 use serde::{Deserialize, Serialize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -56,7 +52,6 @@ pub(super) struct State {
     selected: usize,
     answers: Vec<String>,
     pub focused: bool,
-    /// The question took focus only because the composer was empty.
     pub auto_focused: bool,
     last_source: String,
     targets: Vec<(Rect, usize)>,
@@ -67,7 +62,6 @@ pub(super) struct State {
     native_selected: Vec<usize>,
     native_texts: Vec<Option<String>>,
     note: String,
-    /// First visible line of the scrolled list, and rows per page, both set by `draw`.
     scroll: usize,
     page: usize,
     origin: Option<Origin>,
@@ -330,10 +324,6 @@ impl State {
         !self.questions.is_empty()
     }
 
-    /// Whether the visible native panel is waiting for a permission or plan decision.
-    ///
-    /// Conversational questions use the same panel, so callers must distinguish these native
-    /// approvals before publishing attention items.
     pub(super) fn native_approval_waiting(&self) -> bool {
         self.native.as_ref().is_some_and(|request| {
             request.is_active()
@@ -495,12 +485,9 @@ impl State {
         self.answers.clear();
         self.note.clear();
         self.scroll = 0;
-        // Inferred conversational replies must never take keyboard ownership from the composer.
-        // F8 or a click explicitly enters the options; native requests keep their own contract.
         self.focused = false;
         self.auto_focused = false;
     }
-    /// Rows the cursor can reach: the choices plus, for conversational replies, the note row.
     fn rows(&self) -> usize {
         self.questions
             .get(self.current)
@@ -639,12 +626,9 @@ fn option(line: &str) -> Option<String> {
     let value = plain(value);
     (!value.is_empty() && value.len() <= 1200).then_some(value)
 }
-/// Inline Markdown emphasis and code marks read as noise in a one-line choice.
 fn plain(text: &str) -> String {
     text.replace("**", "").replace('`', "").trim().to_owned()
 }
-/// A line that asks the user something. List items are answers, not questions, even when they
-/// quote one ("2. **Is it ready?** No.").
 fn asks(line: &str) -> bool {
     if option(line).is_some() || line.starts_with([' ', '\t']) {
         return false;
@@ -670,7 +654,6 @@ fn close(open: &mut Option<Question>, found: &mut Option<Question>, after: &mut 
     }
 }
 fn parse_tool(text: &str) -> Vec<Question> {
-    // Only explicit question-tool cards interpret JSON. Code examples in assistant prose do not.
     if let Some(start) = text.find('{') {
         if let Some(Ok(value)) = serde_json::Deserializer::from_str(&text[start..])
             .into_iter::<serde_json::Value>()
@@ -692,8 +675,6 @@ fn parse_tool(text: &str) -> Vec<Question> {
                         if prompt.is_empty() || prompt.chars().count() > 2000 {
                             return None;
                         }
-                        // Host async prompts use `title` and optional string choices. These
-                        // remain conversational replies, never native permission decisions.
                         let options = match q.get("options") {
                             None if q.get("title").is_some() => Vec::new(),
                             Some(options) => {
@@ -735,8 +716,6 @@ fn parse(text: &str) -> Vec<Question> {
     if let Some(questions) = parse_bundle(text) {
         return questions;
     }
-    // Choices must immediately follow their question and finish the reply. Intervening or
-    // trailing prose makes this ordinary content, not an inferred request for user input.
     let mut found: Option<Question> = None;
     let mut after = 0usize;
     let mut open: Option<Question> = None;
@@ -762,7 +741,6 @@ fn parse(text: &str) -> Vec<Question> {
                     continue;
                 }
             } else if let Some(last) = q.options.last_mut() {
-                // Wrapped or nested text belongs to the choice above it.
                 last.push(' ');
                 last.push_str(&option(line).unwrap_or_else(|| plain(line)));
                 continue;
@@ -787,8 +765,6 @@ fn parse(text: &str) -> Vec<Question> {
     }
 }
 
-/// The relaxed form requires at least two complete, explicit question/choice groups.
-/// It never interprets example code or a lone status list as a request for input.
 fn parse_bundle(text: &str) -> Option<Vec<Question>> {
     if text.len() > 128 * 1024 {
         return Some(Vec::new());
@@ -906,7 +882,6 @@ fn parse_bundle(text: &str) -> Option<Vec<Question>> {
     }
     Some(questions)
 }
-/// `index` past the last choice is the note row: the note is sent on its own.
 fn choose(app: &mut App, index: usize) {
     let previous = app.questions.saved(app.deleg.d.conversation_id());
     if app.questions.native.as_ref().is_some_and(|request| {
@@ -939,7 +914,6 @@ fn choose(app: &mut App, index: usize) {
         if note.trim().is_empty() {
             return;
         }
-        // A free reply stands on its own; never prepend an inferred question or selected option.
         s.answers.push(note);
         if s.native.is_some() {
             s.native_selections.push(selected);
@@ -1036,8 +1010,6 @@ fn choose(app: &mut App, index: usize) {
     if let Some(snapshot) = s.pending.pop_front() {
         s.load(snapshot);
     }
-    // An inferred question has no native response channel. Its reply is a normal
-    // FIFO follow-up, never an instruction to interrupt or replace the active task.
     app.queue.items.push(answer);
     if let Err(error) = app.persist_draft_checked() {
         app.queue.items.pop();
@@ -1105,8 +1077,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.questions.selected = (app.questions.selected + 1) % count
         }
         KeyCode::Home => app.questions.selected = 0,
-        // End means the last actual choice. The optional note row is reached by
-        // moving down from that choice, so End never lands on a non-choice action.
         KeyCode::End => app.questions.selected = choices.saturating_sub(1),
         KeyCode::PageUp => {
             app.questions.selected = app
@@ -1137,7 +1107,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             }
         }
         KeyCode::Enter => choose(app, app.questions.selected),
-        // Native permission choices retain digit shortcuts. Conversational digits are text.
         KeyCode::Char(c @ '1'..='9')
             if native
                 && app.questions.selected < choices
@@ -1145,9 +1114,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         {
             choose(app, c as usize - '1' as usize)
         }
-        // Inferred questions share the composer. A leading digit must not become
-        // a popup note because it is often the first character of an instruction.
-        // Native requests keep the shortcut above.
         KeyCode::Char('1'..='9') if !native && app.questions.auto_focused => {
             app.questions.focused = false;
             app.questions.auto_focused = false;
@@ -1172,7 +1138,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     app.questions.changed();
     true
 }
-/// A deliberate paste into the focused reply panel preserves logical line breaks.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
     if !app.questions.focused
         || app.questions.auto_focused
@@ -1188,8 +1153,6 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
     app.questions.selected = app.questions.questions[app.questions.current].options.len();
     true
 }
-/// Greedy word wrap to `width` columns. Spaces are kept (a trailing space still moves the caret),
-/// words wider than a line are split, and `\n` always starts a new line.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -1262,7 +1225,6 @@ impl Doc {
 }
 
 impl State {
-    /// The prompt and every row wrapped to `inner` columns. `None` when nothing is asked.
     fn doc(&self, inner: usize) -> Option<Doc> {
         let q = self.questions.get(self.current)?;
         let title = if self.questions.len() > 1 {
@@ -1329,7 +1291,6 @@ pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
         let cap = (transcript.height as usize * 60 / 100)
             .min(transcript.height.saturating_sub(3) as usize);
         let h = wanted.min(cap);
-        // One row cannot hold a prompt and an option; leave the transcript alone instead.
         if h < 2 {
             0
         } else {
@@ -1342,8 +1303,6 @@ pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     Rect::new(transcript.x, transcript.bottom(), transcript.width, h)
 }
 
-/// Pick the first visible line so the selected row `[start, end)` is fully inside the window,
-/// leaving a line for each "more" marker. Returns `(offset, more_above, more_below)`.
 fn window(total: usize, start: usize, end: usize, view: usize, prev: usize) -> (usize, bool, bool) {
     if total <= view || view == 0 {
         return (0, false, false);
@@ -1366,7 +1325,6 @@ fn window(total: usize, start: usize, end: usize, view: usize, prev: usize) -> (
             let (_, above, below) = check(off);
             (off, above, below)
         }
-        // A row taller than the window shows its first line.
         None => {
             let off = start.saturating_sub(1).min(total - view);
             let (_, above, below) = check(off);
@@ -1498,7 +1456,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                         ])
                     }
                 };
-                // Continuation lines of a row keep the row's background but not its marker.
                 let rect = Rect::new(area.x + 1, y, area.width.saturating_sub(2), 1);
                 f.render_widget(Paragraph::new(line).style(base), rect);
                 let slot = &mut visible[*ri];
@@ -1522,7 +1479,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 impl State {
-    /// Footer keys for the open question; key hints live only in the footer.
     pub(super) fn footer_hint(&self) -> &'static str {
         let multiple = self.allows_multiple();
         match (self.native.is_some(), multiple, self.focused) {
@@ -1562,7 +1518,6 @@ pub(super) fn mouse(app: &mut App, m: &MouseEvent) -> bool {
                         .get(app.questions.current)
                         .is_some_and(|q| index == q.options.len());
                     if note_row && app.questions.note.trim().is_empty() {
-                        // Clicking the empty note row starts a note rather than sending nothing.
                         app.questions.focused = true;
                         app.questions.auto_focused = false;
                         app.questions.selected = index;
@@ -1690,8 +1645,6 @@ mod tests {
         assert!(app.queue.items.is_empty());
         app.questions.clear();
 
-        // Claude AskUserQuestion uses the same foreground broker, including a real multi-select
-        // toggle sequence. The draft must remain untouched while native input is answered.
         let claude_owner = crate::provider::interaction::InteractionOwner {
             conversation_id: app.deleg.d.conversation_id().to_owned(),
             workspace: dir.path().into(),
@@ -1783,7 +1736,6 @@ mod tests {
             "Plan rejected"
         );
 
-        // A queued request from the prior attempt must never acquire the new attempt's UI.
         let (stale, mut stale_rx) = connection.request(
             "fixture-session", serde_json::json!(2), "session/request_permission".into(),
             serde_json::json!({"sessionId":"fixture-session","options":[{"name":"Allow once","kind":"allow_once","optionId":"allow-once"}]}),
@@ -2571,13 +2523,11 @@ mod tests {
             }
         }
         assert!(!screen.contains('…'));
-        // Continuation lines sit under the option text, not under the number.
         let first = rows.iter().position(|r| r.contains("a000")).unwrap();
         let text_column = column_of(&rows[first], "a000");
         assert_eq!(text_column, 6);
         let next = rows[first + 1].find(|c: char| c != ' ').unwrap();
         assert_eq!(next, text_column);
-        // The click target spans every wrapped row of the option, so the last line chooses it.
         let (rect, index) = app.questions.targets[1];
         assert_eq!(index, 1);
         assert!(rect.height >= 4);

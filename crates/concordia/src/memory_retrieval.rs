@@ -1,4 +1,3 @@
-﻿//! Bounded lexical retrieval and observed handoffs. No persisted conversation text.
 use super::*;
 
 const CANDIDATES: usize = 8;
@@ -48,7 +47,6 @@ pub(super) fn contains_text(value: &Value, query: &str) -> Option<String> {
     }
 }
 
-/// Search a verified page once, using the same native revision/range checks as exact readback.
 fn search_page(root: &Path, id: &str, query: &str, report: &mut Report) -> Result<(), String> {
     let index = load(root, id)?;
     let mut source = open_index_source(root, &index)?;
@@ -64,7 +62,6 @@ fn search_page(root: &Path, id: &str, query: &str, report: &mut Report) -> Resul
                 report.incomplete = true;
                 break;
             }
-            // Preview is untrusted display text. Exact original remains available by pointer.
             let preview: String = crate::text_safe::terminal_safe(&text)
                 .chars()
                 .take(240)
@@ -80,7 +77,6 @@ fn search_page(root: &Path, id: &str, query: &str, report: &mut Report) -> Resul
             });
         }
     }
-    // All candidate hits are withheld if the source's identity/revision changed during the scan.
     let _ = open_index_source(root, &index)?;
     report.incomplete |= index.truncated
         || index
@@ -92,8 +88,6 @@ fn search_page(root: &Path, id: &str, query: &str, report: &mut Report) -> Resul
     Ok(())
 }
 
-/// Initial discovery searches at most eight recent native source windows. Explicit source ids
-/// search any whole-history page; callers can advance its immutable cursor and search that page.
 pub fn recall(
     root: &Path,
     query: &str,
@@ -146,8 +140,6 @@ pub fn recall(
             break;
         }
         candidates += 1;
-        // Cursor replay launches its native read-only client. Broad background discovery never
-        // launches up to eight native clients; explicit indexing enables Cursor page retrieval.
         if session.provider == ProviderKind::Cursor {
             report.unavailable.push(format!(
                 "{} / {}: index this Cursor session explicitly through ACP",
@@ -182,8 +174,6 @@ pub(super) struct Handoff {
     pub workspace: PathBuf,
 }
 
-/// Record an observed source transition without reading history on the UI thread. This records
-/// Concordia's handoff, never an inferred native parent. Readback verifies both ends on demand.
 pub fn observe_handoff(
     root: &Path,
     parent: &Binding,

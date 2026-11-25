@@ -1,8 +1,3 @@
-//! Concordia's adapter for the generic `@dariodaddamio/habena` CLI.
-//!
-//! This deliberately lives in Concordia: Habena owns its generic CLI, while Concordia owns
-//! the provider commands and the receipt identity derived from those commands.
-
 use super::{parse_manifest, Manifest, RunOutcome};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -78,7 +73,6 @@ fn tools(run: &dyn Fn(&[String]) -> RunOutcome, program: &str) -> Result<Vec<Val
         .ok_or_else(|| format!("`{program} tools --json` must return an array"))
 }
 
-/// Build the exact manifest used by both `/harness connect` and receipt refresh.
 pub fn build(
     program: &str,
     cwd: &Path,

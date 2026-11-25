@@ -1,5 +1,3 @@
-//! Test-only process-lifetime probe.
-
 use std::io::Write;
 use std::time::Duration;
 

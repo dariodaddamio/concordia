@@ -1,5 +1,3 @@
-//! Platform process lifetime ownership for provider children.
-
 #[cfg(windows)]
 mod windows {
     use std::sync::{
@@ -45,7 +43,6 @@ mod windows {
                 CloseHandle(handle);
                 return None;
             }
-            // Deliberately leak the one process-lifetime handle: closing it is the kill switch.
             Some(handle as usize)
         })
         .map(|handle| handle as HANDLE)
@@ -75,8 +72,6 @@ mod windows {
         }
     }
 
-    /// Nested beneath the app job; closing a probe owns its descendants even after
-    /// its direct child exits and leaves inherited output pipes open.
     pub(super) struct CaptureJob(usize);
 
     impl CaptureJob {
@@ -187,8 +182,6 @@ pub fn bind_to_concordia(_child: &tokio::process::Child) {}
 #[cfg(not(windows))]
 pub fn bind_std_to_concordia(_child: &std::process::Child) {}
 
-/// Scoped tree ownership for an auxiliary/build child. The launcher must use a
-/// fresh process group on Unix; Windows uses a nested kill-on-close job.
 pub(crate) struct ProcessTree {
     #[cfg(windows)]
     _job: windows::CaptureJob,
@@ -255,8 +248,6 @@ impl Drop for ProcessTree {
     }
 }
 
-/// Capture a small auxiliary command with one deadline for process exit and both
-/// pipes. Output overflow is an error, never a successfully truncated response.
 pub(crate) fn capture(
     command: std::process::Command,
     timeout: std::time::Duration,
@@ -265,7 +256,6 @@ pub(crate) fn capture(
     capture_with_input(command, timeout, output_limit, None)
 }
 
-/// Own stdin delivery and both output pipes under the same process-tree deadline.
 pub(crate) fn capture_with_input(
     command: std::process::Command,
     timeout: std::time::Duration,
@@ -307,7 +297,6 @@ fn capture_controlled(
         fn drop(&mut self) {
             drop(self.tree.take());
             let _ = self.child.kill();
-            // Never replace the caller's deadline with an unbounded wait.
             let until = Instant::now() + Duration::from_millis(200);
             while self.child.try_wait().is_ok_and(|status| status.is_none())
                 && Instant::now() < until

@@ -4,10 +4,8 @@ use crate::provider::stream_cards::{
 };
 use ratatui::style::{Color, Modifier, Style};
 
-/// Kind icons share one accent so the status mark keeps its meaning.
 pub(super) const KIND_ICON: Color = Color::Indexed(110);
 
-/// Style the presentation, never the provider payload. All offsets are Unicode characters.
 pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::transcript::LineRun> {
     let heading = text.lines().next().unwrap_or("");
     let mut runs = Vec::new();
@@ -55,8 +53,6 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
         }
         let mut start = heading.len() - body.len();
         for part in body.split(" + ") {
-            // The action and its subject form one heading. Styling only guessed action words
-            // made adjacent words/files change weight with provider label capitalization.
             let end = part
                 .find(" · ")
                 .or_else(|| part.find(" - "))
@@ -70,7 +66,6 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
             );
             start += part.len() + 3;
         }
-        // Only edit summaries own +/- counts; command flags and output are never coloured as edits.
         if matches!(label.as_str(), "Edit file" | "Write file") {
             for token in heading.split_whitespace() {
                 let color = match token.as_bytes().first() {
@@ -97,7 +92,6 @@ pub(super) fn card_runs(text: &str, card: Option<&StreamCard>) -> Vec<super::tra
     runs
 }
 
-/// `m:ss`, or `h:mm:ss` from an hour.
 pub(super) fn clock(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();
     if secs >= 3600 {
@@ -107,8 +101,6 @@ pub(super) fn clock(duration: std::time::Duration) -> String {
     }
 }
 
-/// A running card shows a timer only when the provider set a timeout:
-/// ` · 0:42 · 9:18 left of 10:00`. Cards without a timeout and finished cards have no timer.
 pub(super) fn card_timer(
     card: &StreamCard,
     started: Option<std::time::Instant>,
@@ -127,7 +119,6 @@ pub(super) fn card_timer(
     ))
 }
 
-/// The title row is an accordion target; links retain their file/web actions.
 pub(super) fn card_header_at(app: &super::App, x: u16, y: u16) -> Option<usize> {
     let area = app.areas.transcript;
     if !super::contains(area, x, y) || app.picker.is_some() || app.activity.detail.is_some() {
@@ -165,7 +156,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::Line;
 use std::collections::HashSet;
 
-/// Presentation only: message indexes, native IDs and complete tool output stay untouched.
 pub(super) struct GroupedCards {
     pub text: Vec<Option<String>>,
     pub hidden: Vec<bool>,
@@ -195,7 +185,6 @@ pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: boo
             end += 1;
         }
         if end - start > 1 {
-            // The first card's icon, so the heading styles the same way as a single card.
             let icon = messages[start]
                 .card
                 .as_ref()
@@ -221,7 +210,6 @@ pub(super) fn grouped_cards(messages: &[ChatLine], activity: &Activity, all: boo
 }
 
 fn group_category(card: &StreamCard) -> Option<&'static str> {
-    // Errors, live operations, approvals, edits and agent cards remain individually visible.
     if card.status != CardStatus::Done || card.id.starts_with("native-agent:") {
         return None;
     }
@@ -473,9 +461,6 @@ impl Activity {
         }
     }
 
-    /// Ctrl+O: expand the last collapsed item of the last message; when none is collapsed,
-    /// collapse its last item. Ctrl+Shift+O (`every`): expand all of them, or collapse all
-    /// when they are already open. Returns the number of items changed.
     pub fn expand_last_message(&mut self, messages: &[ChatLine], all: bool, every: bool) -> usize {
         let hidden = grouped_cards(messages, self, all).hidden;
         let start = messages
@@ -555,8 +540,6 @@ impl Activity {
             let mut line_no = 0;
             for part in parts {
                 for line in part.lines() {
-                    // Case folding can expand a source character. Keep a parallel map back to
-                    // source character columns instead of using folded byte offsets on the source.
                     let mut folded = Vec::new();
                     let mut source_col = Vec::new();
                     for (col, ch) in line.chars().enumerate() {

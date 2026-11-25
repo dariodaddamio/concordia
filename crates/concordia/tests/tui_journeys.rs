@@ -1,5 +1,3 @@
-//! Drives the real TUI in a Windows pseudo-console with synthetic provider processes.
-//! Every provider path, account home, workspace and state folder is isolated.
 #![cfg(windows)]
 
 use concordia::store::{save_store, OrchestratorStore, ProviderKind, StoredAccount, UseSelection};
@@ -171,10 +169,7 @@ fn setup(root: &Path, provider: ProviderKind) {
         ..Default::default()
     };
     save_store(root, &store).unwrap();
-    // Journeys script Cursor's print-mode fake; ACP journeys attach images or opt in explicitly.
     concordia::native_input::command(root, "cursor", "off").unwrap();
-    // The interaction-mode fake speaks Claude's print transport only; Claude's default stdio
-    // adapter has its own native cases, so these UI journeys keep the print transport.
     concordia::native_input::command(root, "claude", "off").unwrap();
 }
 
@@ -585,7 +580,7 @@ impl Session {
     }
 
     fn exit(&mut self) {
-        self.send("\x01"); // clear the draft before native cancel/quit keys
+        self.send("\x01");
         self.send("\x08");
         let start = Instant::now();
         loop {
@@ -598,7 +593,6 @@ impl Session {
                 self.draft(),
                 self.screen()
             );
-            // A busy turn consumes Ctrl+C as cancellation before idle quit can be armed.
             self.send("\x03");
             std::thread::sleep(Duration::from_millis(150));
         }
@@ -722,7 +716,6 @@ fn needs_attention_question_journey_uses_the_codex_app_server_fixture() {
     s.until("app-server turn is idle", |s| s.status_dot() == "idle");
     s.save_check(4);
     s.save_check(6);
-    // Let the periodic tab snapshot record that the resolved item is no longer actionable.
     std::thread::sleep(Duration::from_millis(1200));
     drop(s);
     let mut s = Session::launch(dir.path());
@@ -1288,7 +1281,6 @@ fn question_choices_do_not_swallow_an_unattended_work_instruction() {
             let screen = s.screen();
             screen.contains("2. Full refactor") && screen.contains("Worked for")
         });
-        // Slow individual keys must edit the composer, including an option-shaped first digit.
         s.send("2");
         s.until("digit is a draft, not an answer", |s| s.draft() == "2");
         assert_eq!(s.prompts().len(), 1);
@@ -1578,7 +1570,6 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
     setup(dir.path(), ProviderKind::Codex);
     let usage = dir.path().join("profile/.codex/tmp");
     std::fs::create_dir_all(&usage).unwrap();
-    // Use a native rate-limit fixture, never a live provider turn.
     std::fs::write(
         usage.join("rate_limits.json"),
         serde_json::json!({
@@ -1591,10 +1582,10 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
     let mut s = Session::launch(dir.path());
     s.paste("alpha beta");
     s.until("draft ready", |s| s.draft() == "alpha beta");
-    s.send("\x08"); // Windows Terminal Ctrl+Backspace sends BS; Backspace sends DEL.
+    s.send("\x08");
     s.until("Ctrl+Backspace deletes a word", |s| s.draft() == "alpha ");
     s.paste("gamma");
-    s.send("\x08"); // The native control channel's supported word-deletion key.
+    s.send("\x08");
     s.until("Ctrl+W encoding deletes a word", |s| s.draft() == "alpha ");
     s.send("\x7f");
     s.until("Backspace deletes one character", |s| s.draft() == "alpha");
@@ -1603,7 +1594,6 @@ fn terminal_word_deletion_usage_and_focus_repaint() {
     s.submit("/use");
     s.until("account picker", |s| s.screen().contains("77% left"));
     s.send("\x1b");
-    // Focus transitions repaint from the retained native cell buffer.
     s.send("\x1b[O\x1b[I");
     s.until("focus repaints the full screen", |s| {
         s.screen().contains("concordia")
@@ -1649,8 +1639,6 @@ fn home_intro_and_connected_usage_keep_the_requested_details_visible() {
     });
     let screen = s.screen();
     assert!(!screen.contains("Continue a chat or start a new one."));
-    // What's new quotes CHANGELOG bullets (for example Ctrl+O). Forbid only the old
-    // new-chat affordance, not every plus in changelog copy.
     assert!(
         !screen.lines().any(|line| {
             let trimmed = line.trim();
@@ -1753,7 +1741,7 @@ fn multiline_paste_and_expand_work_through_the_real_terminal_for_each_provider()
             "op": "key",
             "code": "o",
             "modifiers": ["CTRL", "SHIFT"]
-        })); // Ctrl+Shift+O expands every activity item.
+        }));
         s.until("full command visible", |s| {
             s.screen().contains("command-tail")
         });
@@ -1782,14 +1770,14 @@ fn queue_can_be_edited_reordered_and_automatically_sent_with_a_draft_in_progress
         s.queue_current_draft(prompt);
     }
     s.until("two queued", |s| s.queue() == ["second", "third"]);
-    s.send("\x1b[A"); // Up focuses last queue row
+    s.send("\x1b[A");
     s.enter_queue_editor();
     s.paste(" revised");
     s.enter();
     s.until("queue edit saved", |s| {
         s.queue() == ["second", "third revised"]
     });
-    s.send("\x1b[1;3A"); // Alt+Up
+    s.send("\x1b[1;3A");
     s.until("queue reordered", |s| {
         s.queue() == ["third revised", "second"]
     });
@@ -1836,7 +1824,7 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
             "op": "key",
             "code": "o",
             "modifiers": ["CTRL", "SHIFT"]
-        })); // Ctrl+Shift+O expands every activity item.
+        }));
         s.until("full running command visible before completion", |s| {
             s.screen().contains("command-tail")
         });
@@ -1855,7 +1843,7 @@ fn cancellation_pauses_queued_work_and_restart_restores_both_queue_and_draft() {
         assert!(!cancelled.contains("cancelled - queued work paused"));
         s.until("draft preserved", |s| s.draft() == "preserve this draft");
         assert_eq!(s.prompts().len(), 1);
-        drop(s); // abrupt exit, not /exit
+        drop(s);
         let mut s = Session::launch(dir.path());
         s.until("restored draft", |s| {
             s.screen().contains("preserve this draft")
@@ -1937,9 +1925,9 @@ fn undo_redo_and_resize_preserve_a_long_draft() {
     s.paste(&draft);
     s.until("long paste persisted intact", |s| s.draft() == draft);
     assert!(s.prompts().is_empty());
-    s.send("\x1a"); // Ctrl+Z
+    s.send("\x1a");
     s.until("undo entire paste", |s| s.draft().is_empty());
-    s.send("\x19"); // Ctrl+Y
+    s.send("\x19");
     s.until("redo entire paste", |s| s.draft() == draft);
     s.request(serde_json::json!({"op":"resize","columns":60,"rows":18}));
     s.paste(" after resize");
@@ -2005,7 +1993,7 @@ fn ctrl_up_edits_multiline_queue_without_replacing_a_nonempty_draft() {
     s.until("main draft persisted", |s| {
         s.draft() == "main draft\nstays here"
     });
-    s.focus_queue(); // Ctrl+Up, with a nonempty draft
+    s.focus_queue();
     s.enter_queue_editor();
     s.paste("\nsecond line\nthird line");
     s.until("multiline edit visible", |s| {
@@ -2016,7 +2004,7 @@ fn ctrl_up_edits_multiline_queue_without_replacing_a_nonempty_draft() {
     s.until("multiline queue edit saved", |s| {
         s.queue() == ["queued original\nsecond line\nthird line"]
     });
-    s.send("\x1b[1;5B"); // Ctrl+Down returns to the draft
+    s.send("\x1b[1;5B");
     s.paste(" plus");
     s.until("draft resumes unchanged", |s| {
         s.draft() == "main draft\nstays here plus"
@@ -2038,7 +2026,6 @@ fn framed_pastes_and_tab_stay_separate_in_a_single_terminal_write() {
     let mut s = Session::launch(dir.path());
     s.submit("[wait] first");
     s.until("turn started", |s| s.prompts().len() == 1);
-    // No timing boundary exists between these messages: framing must carry the intent.
     s.request(serde_json::json!({"op":"text","text":"queued\tcode\r\nfirst"}));
     s.request(serde_json::json!({"op":"key","code":"Tab"}));
     s.request(serde_json::json!({"op":"text","text":"draft\r\n/exit\r\nsecond"}));
@@ -2068,7 +2055,7 @@ fn explicit_queue_resume_preserves_the_recovered_draft() {
         s.screen().contains("Ctrl+R resumes")
     });
     assert_eq!(s.prompts().len(), 1);
-    s.send("\x12"); // Ctrl+R
+    s.send("\x12");
     s.until("one resumed prompt", |s| s.prompts().len() == 2);
     s.until("followup complete", |s| {
         s.screen().contains("FAKE REPLY: queued followup")
@@ -2089,16 +2076,16 @@ fn activity_detail_search_and_navigation_leave_the_draft_untouched() {
     s.until("reply ready", |s| s.screen().contains("FAKE REPLY:"));
     s.paste("draft must survive");
     s.until("draft saved", |s| s.draft() == "draft must survive");
-    s.send("\x05"); // Ctrl+E
+    s.send("\x05");
     s.until("full activity detail", |s| {
         s.screen().contains("tool-output-end")
     });
     s.paste("tool-output");
     s.until("query visible", |s| s.screen().contains("tool-output"));
     s.enter();
-    s.send("\x1b[6~"); // PageDown is owned by detail view
-    s.send("\x1a"); // Undo must not reach underlying draft
-    s.send("\x12"); // Resume must not reach queue
+    s.send("\x1b[6~");
+    s.send("\x1a");
+    s.send("\x12");
     s.send("\x1b");
     s.paste(" plus");
     s.until("draft retained", |s| s.draft() == "draft must survive plus");
@@ -2144,7 +2131,7 @@ fn crash_restores_the_unsaved_upper_editor_separately_and_holds_dispatch() {
         1,
         "resume cannot send an unresolved edit"
     );
-    s.enter(); // explicitly commit recovered upper edit
+    s.enter();
     s.until("edit committed", |s| {
         s.queue() == ["saved queued item\nunsaved upper edit"]
     });
@@ -2181,7 +2168,7 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
     s.until("detail opened", |s| s.screen().contains("Activity"));
     s.send("query\r\nsecond query\r\n");
     s.paste(&"overflow query ".repeat(160));
-    s.send("\x15"); // Ctrl+U clears only the query
+    s.send("\x15");
     s.send("\x1b");
     s.until("upper edit still visible", |s| {
         s.screen().contains("plus upper edit")
@@ -2193,11 +2180,11 @@ fn modal_crlf_and_overflow_paste_cannot_modify_a_draft_or_upper_edit() {
         "queued item plus upper edit"
     );
     assert_eq!(s.prompts().len(), 1);
-    s.send("\x1b"); // cancel upper edit explicitly
+    s.send("\x1b");
     s.until("upper edit explicitly cancelled", |s| {
         s.recovery_data()["pending_edit"].is_null()
     });
-    s.send("\x1b[1;5B"); // return focus to the draft
+    s.send("\x1b[1;5B");
     s.exit();
 }
 
@@ -2220,7 +2207,7 @@ fn internal_file_panes_split_focus_close_and_never_dispatch_provider_work() {
     });
     s.paste("do not send this from a preview");
     s.send("\r");
-    s.send("\x1b"); // return to chat
+    s.send("\x1b");
     s.submit("/open second.txt");
     s.until("two internal panes", |s| {
         let screen = s.screen();
@@ -2476,7 +2463,7 @@ fn internal_preview_remains_responsive_during_gated_stream() {
     });
     assert_eq!(s.draft(), "draft while preview is open");
     assert!(s.screen().contains("STREAM_PREVIEW_CONTENT"));
-    s.send("\x1b[17~"); // F6 focuses the file, then explicitly discard the fixture edit.
+    s.send("\x1b[17~");
     s.send("\x1b");
     s.send("\x01\x08");
     s.submit("/close 1");
@@ -2500,7 +2487,6 @@ fn native_subagents_can_be_inspected_live_and_after_completion() {
     s.send("\x07");
     s.until("empty Agents view from Home", |s| {
         let screen = s.screen();
-        // Empty Agents: body says so; footer only lists Esc (collapse/inspect need an agent).
         screen.contains("Agents")
             && screen.contains("No agents yet.")
             && screen.contains("Esc close")
@@ -2595,8 +2581,6 @@ fn resuming_a_native_session_restores_recent_messages_without_dispatching_a_prov
     std::fs::write(sessions.join("restore.jsonl"), lines.join("\n") + "\n").unwrap();
     let mut s = Session::launch(dir.path());
     s.submit("/resume");
-    // /resume opens immediately with a disabled Loading row; wait for the background
-    // list before Enter (Enter on loading is a no-op, not a selection).
     s.until("resume list finished loading", |s| {
         let screen = s.screen();
         !screen.contains("Loading chats") && screen.contains("native session")
@@ -2626,7 +2610,7 @@ fn pinned_expanded_tool_header_collapses_through_real_mouse_input() {
         "op": "key",
         "code": "o",
         "modifiers": ["CTRL", "SHIFT"]
-    })); // Ctrl+Shift+O expands every activity item.
+    }));
     s.until("sticky expanded header", |s| {
         s.screen()
             .lines()
@@ -2660,8 +2644,6 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     std::fs::write(home.join("auth.json"), serde_json::json!({"tokens":{"id_token":"e30.eyJlbWFpbCI6ICJtZW1iZXJAZXhhbXBsZS5pbnZhbGlkIiwgImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6IHsiY2hhdGdwdF9wbGFuX3R5cGUiOiAicGx1cyJ9fQ.fixture"}}).to_string()).unwrap();
     std::fs::write(
         home.join("models_cache.json"),
-        // Keep the stored synthetic-model in the catalog so the header still names it;
-        // fixture-model remains available for argument completion and effort selection.
         r#"{"models":[{"slug":"synthetic-model","display_name":"synthetic-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]},{"slug":"fixture-model","display_name":"fixture-model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}]}]}"#,
     )
     .unwrap();
@@ -2773,7 +2755,6 @@ fn usage_profiles_and_account_model_completion_work_in_the_real_terminal() {
     }
     s.until("account metadata shown", |s| {
         let screen = s.screen();
-        // Cards omit Workspace/Credits/Email/Plan when the provider did not report them.
         screen.contains("Email: member@example.invalid") && screen.contains("Plan: Plus")
     });
     s.send("\x1b");
@@ -2824,7 +2805,6 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.until("provider model list", |s| {
         s.screen().contains("fixture-model") && s.screen().contains("efforts: low, high")
     });
-    // A model whose display name is its id is shown once.
     assert!(s.screen().lines().any(|line| line.contains("fixture-model")
         && line.contains("efforts: low, high")
         && !line.contains("fixture-model · fixture-model")));
@@ -2844,7 +2824,6 @@ fn x3_usage_model_and_limit_bucket_screen_evidence() {
     s.submit("/usage");
     s.until("wide usage cards", |s| {
         let screen = s.screen();
-        // Wide windows place two account cards side by side.
         screen.contains("bucket-0")
             && screen
                 .lines()
@@ -2882,7 +2861,6 @@ fn every_argument_command_opens_a_guided_panel_and_saves_screen_text() {
     let mut s = Session::launch(dir.path());
     s.request(serde_json::json!({"op":"resize","columns":180,"rows":34}));
 
-    // /delegate was removed from Concordia's slash surface (worker delivery lives in /config).
     for (name, command, marker) in [
         ("terminal", "/terminal", "/terminal · This panel"),
         ("native", "/native", "/native · This panel"),
@@ -2978,7 +2956,6 @@ fn mcp_panel_and_doctor_show_provider_delivery_status_without_secret_values() {
     std::fs::write(out.join("check-3.txt"), s.screen()).unwrap();
     s.send("\x1b");
     s.submit("/doctor");
-    // Codex does not register /doctor, so Concordia's diagnostics open directly (no shared chooser).
     if s.screen().contains("choose who runs it") {
         s.enter();
     }
@@ -3001,13 +2978,10 @@ fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending()
     s.submit("/usage");
     s.until("paused message box and exit cue", |s| {
         let screen = s.screen();
-        // Key names live in the footer; the paused composer only owns the input.
         screen.contains("Chat input is paused.")
             && screen.contains("Esc")
             && screen.lines().any(|line| line.contains('X'))
     });
-    // /usage is not a typed filter surface (footer has no filter cue; modal says paused).
-    // Paste must stay out of the chat draft and must not dispatch a prompt.
     s.paste("fixture filter");
     s.until("paste does not escape paused usage", |s| {
         s.screen().contains("Chat input is paused.")
@@ -3017,7 +2991,6 @@ fn usage_screen_shows_paused_input_and_mouse_x_returns_to_chat_without_sending()
     assert!(s.draft().is_empty());
     assert!(s.prompts().is_empty());
     let screen = s.screen();
-    // /usage has no outer frame; the close control sits on the last card's top-right edge.
     let (y, line) = screen
         .lines()
         .enumerate()
@@ -3383,8 +3356,6 @@ fn pasted_spacing_blank_lines_and_line_endings_reach_the_provider_unchanged() {
     s.exit();
 }
 
-/// Frame timing through the native test-control channel. Each measured input starts a
-/// window-side clock; the result is the first paint of a frame committed after that input.
 struct Timing {
     ms: f64,
     blank_paints: usize,
@@ -3393,7 +3364,7 @@ struct Timing {
 
 impl Session {
     fn measured(&self, label: &str, mut request: Value) -> Timing {
-        self.request(serde_json::json!({"op":"timing"})); // discard earlier draw costs
+        self.request(serde_json::json!({"op":"timing"}));
         request["measure"] = Value::String(label.into());
         self.request(request);
         let started = Instant::now();
@@ -3430,7 +3401,6 @@ impl Session {
         }
     }
 
-    /// Activation repaints the last frame; it must not wait for a new one or show a blank one.
     fn measured_activation(&self) -> Timing {
         self.request(serde_json::json!({"op":"deactivate"}));
         std::thread::sleep(Duration::from_millis(150));
@@ -3438,7 +3408,6 @@ impl Session {
         self.request(serde_json::json!({"op":"activate","measure":"activate"}));
         let started = Instant::now();
         let mut first = None;
-        // Watch long enough to see any later blank or replacement frame.
         loop {
             let timing = self.request(serde_json::json!({"op":"timing"}));
             let paints = timing["paints"].as_array().unwrap().clone();
@@ -3491,7 +3460,7 @@ fn render_timing_with_a_long_transcript_in_two_tabs() {
     s.until_with_timeout("first long transcript", Duration::from_secs(90), |s| {
         s.screen().contains("BULK_DONE_500")
     });
-    s.send("\x14"); // Ctrl+T: a second tab
+    s.send("\x14");
     std::thread::sleep(Duration::from_millis(300));
     s.submit("[bulk 500]");
     s.until_with_timeout("second long transcript", Duration::from_secs(90), |s| {
@@ -3638,8 +3607,6 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
     std::fs::write(evidence.join("check-3-renamed.txt"), s.screen()).unwrap();
 
     s.submit("[wait]");
-    // A running command shows a timer only when it reports a timeout; this fixture's
-    // command reports none, so the card is visible without an elapsed clock.
     s.until("running tool card", |s| s.screen().contains("Run command"));
     assert!(
         !s.screen()
@@ -3691,7 +3658,6 @@ fn x4_tabs_icons_expansion_timers_and_shortcuts_are_visible_in_the_window() {
 }
 
 impl Session {
-    /// Pixel snapshot of the window as Windows composited it, compared with a fresh paint.
     fn pixels(&self, label: &str, color: &str) -> Value {
         std::thread::sleep(Duration::from_millis(400));
         let check = self.request(serde_json::json!({"op":"pixels","color":color}));
@@ -3726,7 +3692,6 @@ fn assert_clean(check: &Value, label: &str) {
     assert_no_stale_images(check, label);
 }
 
-/// No stale pixels inside an image area and none of the image drawn outside its thumbnail.
 fn assert_no_stale_images(check: &Value, label: &str) {
     for image in check["images"].as_array().unwrap() {
         assert_eq!(
@@ -3747,7 +3712,6 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     let dir = tempfile::tempdir().unwrap();
     setup(dir.path(), ProviderKind::Codex);
     let image = dir.path().join("workspace").join("wide.png");
-    // A wide, solid magenta image: its exact colour never occurs in the interface.
     image::RgbaImage::from_pixel(320, 120, image::Rgba([255, 0, 255, 255]))
         .save(&image)
         .unwrap();
@@ -3785,7 +3749,6 @@ fn image_moves_resizes_and_closes_leave_no_stale_pixels() {
     s.request(serde_json::json!({"op":"resize","columns":96,"rows":32}));
     assert_clean(&s.pixels("banner resize", magenta), "banner resize");
 
-    // Growing the composer moves the banner.
     s.paste("first line\nsecond line\nthird line\nfourth line");
     assert_clean(&s.pixels("banner move", magenta), "banner move");
 

@@ -1,25 +1,15 @@
-//! Cursor limits without spending tokens.
-//!
-//! Cursor's CLI has no non-interactive usage command (`agent -p "/usage"` would go to the model),
-//! but its interactive screen answers `/usage` locally. This runs that screen in a pseudo-console,
-//! types only `/usage`, reads the table and kills the process tree. No prompt is ever sent.
-
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// CSI-u Return reaches Ink's submit handler; Win32 input records no longer do on Cursor 2026.11.17.
 const ENTER_KEY: &[u8] = b"\x1b[13u";
 
-/// Whole fetch budget: start, ready, `/usage`, table.
 pub const PTY_TIMEOUT: Duration = Duration::from_secs(15);
-/// Output quiet this long (or this long after first output) means the prompt is waiting for input.
 const QUIET_READY: Duration = Duration::from_millis(700);
 const READY_CAP: Duration = Duration::from_secs(6);
 
-/// What to run in the pseudo-console.
 #[derive(Debug, Clone)]
 pub struct PtySpec {
     pub program: String,
@@ -28,14 +18,10 @@ pub struct PtySpec {
     pub cwd: PathBuf,
 }
 
-/// A fixed empty folder, so Cursor records its workspace trust once rather than per fetch. The
-/// sessions Cursor records there are Concordia's, not the person's.
 pub fn probe_dir() -> PathBuf {
     std::env::temp_dir().join("concordia-usage-probe")
 }
 
-/// Program, args and env for the interactive agent behind `bin`. A `.cmd` shim is bypassed through
-/// the PowerShell script it would run (as in `provider::launch`), else run through `cmd.exe /c`.
 pub fn interactive_launch(bin: &str) -> (String, Vec<String>, Vec<(String, String)>) {
     use crate::provider::launch::{cursor_ps1_beside, is_batch_shim};
     if !is_batch_shim(bin) {
@@ -68,11 +54,8 @@ pub fn interactive_launch(bin: &str) -> (String, Vec<String>, Vec<(String, Strin
     }
 }
 
-/// The real fetch for one Cursor account home: the installed agent, the account's API key if it
-/// has one, an empty temp working directory.
 pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     if crate::provider::bin_override("CONCORDIA_AGENT_BIN").is_some() {
-        // A test or fake provider stands in for the agent: never drive it interactively.
         return Err("agent binary is overridden".into());
     }
     let bin = crate::provider::cursor::find_agent_bin()?;
@@ -98,9 +81,6 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     text
 }
 
-/// Cursor records every interactive start as a chat, so each usage check would leave an empty
-/// chat behind. Remove only the ones this check made: started in the probe folder, holding no
-/// conversation, and created since the check began.
 fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) {
     let since_ms = since
         .duration_since(std::time::UNIX_EPOCH)
@@ -149,8 +129,6 @@ struct Shared {
     last: Instant,
 }
 
-/// Start `spec` in a pseudo-console, wait for it to settle, type `/usage` + Enter, return the
-/// screen text once the table is on it. Always kills the process tree.
 pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -163,8 +141,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let mut cmd = CommandBuilder::new(&spec.program);
     cmd.args(&spec.args);
     cmd.cwd(&spec.cwd);
-    // Account-specific credentials, when supplied, are added below. Never let
-    // an unrelated inherited API key select the account for this observation.
     cmd.env_remove("CURSOR_API_KEY");
     for (k, v) in &spec.env {
         cmd.env(k, v);
@@ -222,7 +198,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
-    // Closing a pseudo-console can block until its output is drained; never let that stall us.
     std::thread::spawn(move || drop(master));
     result
 }
@@ -239,7 +214,6 @@ fn drive(
     let mut sent_at = Instant::now();
     let mut trusted = false;
     let mut dsr_answered = 0usize;
-    // Only output after this offset/instant counts (everything before it was a dialog we answered).
     let mut base = 0usize;
     let mut epoch: Option<Instant> = None;
     loop {
@@ -253,7 +227,6 @@ fn drive(
             }
             (s.buf.clone(), s.first, s.last)
         };
-        // ConPTY may ask where the cursor is and wait for the answer.
         let asked = count_sub(&bytes, b"\x1b[6n");
         while dsr_answered < asked {
             let _ = writer.write_all(b"\x1b[1;1R");
@@ -269,11 +242,7 @@ fn drive(
         if let Ok(Some(_)) = child.try_wait() {
             return Err("the Cursor agent exited before showing usage".into());
         }
-        // Once answered, the old dialog text lingers in the stream (clears are not tracked), so
-        // a stuck dialog shows up as the overall timeout instead.
         if !trusted && is_trust_prompt(&text) {
-            // The working directory is an empty folder Concordia made for this; the prompt shows
-            // `[a] Trust this workspace`, which is the only key sent for it.
             let _ = writer.write_all(b"a");
             let _ = writer.flush();
             trusted = true;
@@ -295,8 +264,6 @@ fn drive(
                 enters = 1;
                 sent_at = Instant::now();
             } else if sent && enters < 3 && sent_at.elapsed() >= Duration::from_secs(4) {
-                // Enter was lost (the screen loads usage over the network first, so give it time).
-                // With the command already run, Enter on an empty prompt does nothing.
                 let _ = writer.write_all(ENTER_KEY);
                 let _ = writer.flush();
                 enters += 1;
@@ -320,8 +287,6 @@ fn table_complete(text: &str) -> bool {
     text.contains("Included") && text.contains("% used") && text.contains("On-Demand")
 }
 
-/// Terminal bytes to plain lines: cursor moves become newlines or spaces, everything else
-/// (colours, modes, titles) is dropped.
 pub fn screen_text(bytes: &[u8]) -> String {
     let s = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(s.len());
@@ -380,7 +345,6 @@ mod tests {
 
     const TABLE: &str = "Usage \u{2022} Pro                 Resets Nov 6\n Category  Current  Usage\n Included  27% used  ###\n On-Demand  Disabled\n";
 
-    /// A fake raw-input agent: accepts the same local command and Return sequence as Cursor.
     fn fake_agent(dir: &Path, table: bool, hang_after: bool) -> PtySpec {
         let sample = dir.join("sample.txt");
         std::fs::write(&sample, if table { TABLE } else { "nothing useful\n" }).unwrap();

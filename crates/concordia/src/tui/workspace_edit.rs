@@ -1,4 +1,3 @@
-//! Raw file editing, explicit asynchronous saves and pane-lease-owned file recovery.
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -756,8 +755,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if p.searching || !p.raw() || p.loading {
         return false;
     }
-    // Untouched panes stay pager-like: bare `q` closes (handled by workspace). After an edit,
-    // `q` is a character.
     if key.modifiers.is_empty()
         && matches!(key.code, KeyCode::Char('q'))
         && !p.document.as_ref().is_some_and(|document| document.dirty())

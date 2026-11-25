@@ -1,4 +1,3 @@
-//! Pane-owned draft and queue recovery. Sent history remains in the shared state root.
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
@@ -50,7 +49,6 @@ pub struct RecoveryData {
     pub draft: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternate_draft: Option<String>,
-    /// The draft is a fresh prompt and `alternate_draft` is the parked draft Up returns to.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh_prompt: bool,
     pub queue: Vec<String>,
@@ -203,8 +201,6 @@ impl RecoveryLease {
     pub fn data(&self) -> io::Result<RecoveryData> {
         read_data(&self.directory.join(RECORD_FILE))
     }
-    /// Dismiss the version saved right now: the record stays on disk and startup stops
-    /// reopening it. Used when the user closes the tab that owns it.
     pub fn dismiss_current(&self) -> io::Result<()> {
         let saved = self.data()?.updated_unix_ms;
         crate::state_io::write_atomic(
@@ -214,7 +210,6 @@ impl RecoveryLease {
     }
 }
 
-/// Stable recovery root per canonical workspace, separate from global sent history.
 pub fn recovery_root(state_root: &Path, workspace: &Path) -> io::Result<PathBuf> {
     let canonical = fs::canonicalize(workspace)?;
     let mut h = DefaultHasher::new();
@@ -226,7 +221,6 @@ pub fn recovery_root(state_root: &Path, workspace: &Path) -> io::Result<PathBuf>
     Ok(root)
 }
 
-/// Create a fresh record, auto-claiming one abandoned record and returning several as choices.
 pub fn startup_with_restore(
     root: &Path,
 ) -> io::Result<(RecoveryLease, Option<RecoveryData>, Vec<RecoveryChoice>)> {
@@ -253,7 +247,6 @@ fn startup_choices(root: &Path) -> io::Result<Vec<RecoveryChoice>> {
         .collect())
 }
 
-/// Whether the user dismissed this exact saved version. A later save makes it offerable again.
 pub fn is_dismissed(root: &Path, choice: &RecoveryChoice) -> bool {
     File::open(root.join(&choice.id).join("dismissed"))
         .ok()
@@ -266,8 +259,6 @@ pub fn is_dismissed(root: &Path, choice: &RecoveryChoice) -> bool {
         == Some(choice.updated_unix_ms)
 }
 
-/// A dismissal suppresses startup offers for this exact saved version only.
-/// Automatic restoration lists it without removing the original recovery data.
 pub fn dismiss(root: &Path, choices: &[RecoveryChoice]) -> io::Result<()> {
     for choice in choices {
         let lease = claim(root, &choice.id)?;

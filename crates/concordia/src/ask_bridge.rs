@@ -1,7 +1,3 @@
-//! Per-turn MCP question bridge used by providers that do not expose a native question tool.
-//!
-//! The server is intentionally small and stateless.  The parent turn owns the loopback endpoint;
-//! this process only validates MCP input and forwards one bounded request at a time.
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -15,18 +11,12 @@ const MAX_OPTIONS: usize = 8;
 const MAX_TEXT: usize = 2_000;
 const ENDPOINT_ENV: &str = "CONCORDIA_ASK_ENDPOINT";
 const TOKEN_ENV: &str = "CONCORDIA_ASK_TOKEN";
-/// How long one open question waits for the user in total; the turn's own cancellation ends the
-/// wait earlier.
 const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-/// How long one `ask_user` call waits before it reports that the question is still open. MCP
-/// clients abandon a tool call after 60 seconds (`-32001 Request timed out`), so each call returns
-/// before that and the agent calls again; the popup stays up and a repeat call reattaches to it.
 const CALL_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 pub const DISMISSED: &str = "The user dismissed the question without answering.";
 pub const DEFERRED_SAVED: &str = "Clarification saved in Concordia; the user has not answered yet. The answer will arrive as a later user message and follows the task if the user chooses another agent. Continue only independent read-only investigation; wait before edits or dependent actions. Do not answer for the user or repeat this question.";
 pub const STILL_OPEN: &str = "The question is still open in Concordia and the user has not answered yet. Call ask_user again with exactly the same questions to keep waiting for the answer. Do not answer for the user.";
 
-/// Turns a native question answer (selected option ids) back into the labels the agent offered.
 pub fn answer_text(questions: &[Value], answer: &Value) -> String {
     let outcome = &answer["outcome"];
     if outcome["outcome"] != "answered" {
@@ -145,7 +135,6 @@ impl Drop for SessionPlugin {
     }
 }
 
-/// A question shown to the user whose answer no call is waiting for right now.
 struct OpenQuestion {
     answer: oneshot::Receiver<Value>,
     since: std::time::Instant,
@@ -157,7 +146,6 @@ pub async fn spawn_listener(
 ) -> std::io::Result<(String, tokio::task::JoinHandle<()>)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = listener.local_addr()?.to_string();
-    // Keyed by the questions' JSON so a repeat call for the same questions reattaches.
     let open: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, OpenQuestion>>> =
         Default::default();
     let task = tokio::spawn(async move {
@@ -333,7 +321,6 @@ pub fn handle_line(line: &str) -> Option<String> {
         return Some(error(Value::Null, -32700, "parse error"));
     };
     let method = value.get("method").and_then(Value::as_str)?;
-    // Notifications (such as notifications/cancelled) carry no id and get no response.
     let id = value.get("id").cloned()?;
     Some(match method {
         "initialize" => reply(
@@ -349,8 +336,6 @@ pub fn handle_line(line: &str) -> Option<String> {
             } else {
                 match forward(params.get("arguments").unwrap_or(&Value::Null)) {
                     Ok(text) => {
-                        // Hooks such as Habena's read this marker to pause edits while the
-                        // user has not answered; it is not shown to the user.
                         let state = if text == STILL_OPEN || text == DEFERRED_SAVED {
                             "pending"
                         } else {

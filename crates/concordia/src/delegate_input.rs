@@ -1,9 +1,7 @@
-//! Live worker requests keep their exact launch authority; recovery never stores grants/channels.
 use super::*;
 use crate::provider::interaction::{InteractionOwner, NativeEnvelope, NativeRequest};
 
 const PER_RUN: usize = 8;
-// Reserve the remaining eight app slots for the foreground connection.
 const ALL_WORKERS: usize = 24;
 const BYTES_PER_RUN: usize = 256 * 1024;
 
@@ -94,7 +92,6 @@ impl Job {
     pub(super) fn bind_native_input(&mut self) -> Result<Option<InteractionOwner>, String> {
         self.input.clear();
         self.input = State::default();
-        // Native-default low-level callers have no registered account owner for UI requests.
         if self.spec.home.is_none() {
             return Ok(None);
         }

@@ -1,4 +1,3 @@
-//! User-facing appearance controls. Never rewrites the hand-edited config.toml.
 use super::*;
 use crate::config::{Rgb, Theme, Ui};
 use serde::{Deserialize, Serialize};
@@ -121,7 +120,6 @@ impl State {
             Ok(saved) => {
                 if let Some(theme) = saved.theme.as_deref().and_then(parse_theme) {
                     ui.theme = theme;
-                    // An explicitly chosen preset replaces config palette overrides.
                     ui.background = None;
                     ui.foreground = None;
                     ui.accent = None;

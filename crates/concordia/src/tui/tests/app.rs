@@ -65,7 +65,6 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     assert!(s.contains("| x model save failed"), "{s}");
     assert!(s.contains("| + now using Codex 3"), "{s}");
 
-    // Visually distinct: a command block's text is dim, the reply's is default; errors are red.
     let buf = h.term.backend().buffer().clone();
     let find = |needle: &str| -> (u16, u16) {
         for y in 0..buf.area.height {
@@ -87,7 +86,6 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     let (x, y) = find("Codex 3 \u{b7} gpt-5.1");
     assert_eq!(buf[(x, y)].fg, provider_color(ProviderKind::Codex));
 
-    // NO_COLOR keeps the structure (bars, labels) with emphasis only.
     h.app.no_color = true;
     h.draw();
     let s = h.screen();
@@ -206,7 +204,6 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         .threads_command("delete tid")
         .join(" ")
         .contains("current"));
-    // The bounded map remains available even when the card is not transferred as transcript text.
     let pack = crate::context::build_context_pack(
         &h.app.pack_messages(),
         ProviderKind::Codex,

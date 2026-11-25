@@ -1,4 +1,3 @@
-//! Explicit account/home transport preference. Runtime capability evidence stays on its connection.
 use crate::{native_memory::Binding, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,9 +50,6 @@ fn regular(path: &Path) -> Result<bool, String> {
     }
 }
 
-/// Cursor's interactive native terminal resumes print-mode `create-chat` sessions. Keep the
-/// default on that same explicit-session path so `/terminal native` can reopen the chat's session;
-/// ACP remains available as an explicit native-input mode where its capabilities are required.
 fn default_for(provider: ProviderKind) -> Mode {
     match provider {
         ProviderKind::Cursor => Mode::Standard,

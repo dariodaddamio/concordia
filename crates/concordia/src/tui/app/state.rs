@@ -8,14 +8,12 @@ pub(in crate::tui) enum Drag {
     Input,
 }
 
-/// Screen rectangles from the last draw, for mouse hit-testing.
 #[derive(Default, Clone, Copy)]
 pub(in crate::tui) struct Areas {
     pub(in crate::tui) header_home: Option<Rect>,
     pub(in crate::tui) header_provider: Option<Rect>,
     pub(in crate::tui) header_model: Option<Rect>,
     pub(in crate::tui) header_effort: Option<Rect>,
-    /// Drawn rectangle of the header dropdown, set each frame it is shown.
     pub(in crate::tui) header_dropdown: Option<Rect>,
     pub(in crate::tui) header_credits: Option<Rect>,
     pub(in crate::tui) header_email: Option<Rect>,
@@ -29,6 +27,7 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) run_cancel: Rect,
     pub(in crate::tui) permissions: Rect,
     pub(in crate::tui) permissions_popup: Rect,
+    pub(in crate::tui) trust_anchor: Option<Rect>,
     pub(in crate::tui) pinned_card: Option<(Rect, usize)>,
     pub(in crate::tui) modal_close: Option<(Rect, modal::Target)>,
     pub(in crate::tui) input_text_w: usize,
@@ -213,7 +212,6 @@ pub(in crate::tui) struct Picker {
     pub(in crate::tui) filterable: bool,
     pub(in crate::tui) state: ListState,
     pub(in crate::tui) usage_scroll: usize,
-    /// Cards per row on the usage page, recorded by the last draw for arrow-key movement.
     pub(in crate::tui) usage_cols: usize,
 }
 
@@ -232,14 +230,10 @@ pub(in crate::tui) struct SettingsTab {
 pub(in crate::tui) struct SettingsView {
     pub(in crate::tui) tabs: Vec<SettingsTab>,
     pub(in crate::tui) active: usize,
-    /// Selected row of each tab.
     pub(in crate::tui) selected: Vec<usize>,
     pub(in crate::tui) filter: String,
-    /// Selected match while a filter is typed.
     pub(in crate::tui) filter_selected: usize,
-    /// A popup opened from a row may have changed a value; rebuild once it closes.
     pub(in crate::tui) stale: bool,
-    /// Click targets recorded by the last draw: tabs, then visible rows by their position.
     pub(in crate::tui) tab_areas: Vec<(Rect, usize)>,
     pub(in crate::tui) row_areas: Vec<(Rect, usize)>,
 }
@@ -256,7 +250,6 @@ pub(in crate::tui) struct ModelRefresh {
     pub(in crate::tui) rx: std_mpsc::Receiver<Result<crate::models::RefreshedModels, String>>,
 }
 
-/// Background picker payload so `/resume` and `/doctor` keep the UI thread responsive.
 pub(in crate::tui) enum PickerLoadPayload {
     Resume {
         title: String,
@@ -268,7 +261,6 @@ pub(in crate::tui) enum PickerLoadPayload {
     },
 }
 
-/// In-flight background build for a picker that opened with a muted loading row.
 pub(in crate::tui) struct PickerLoad {
     pub(in crate::tui) generation: u64,
     pub(in crate::tui) kind: PickerKind,
@@ -321,7 +313,6 @@ pub(in crate::tui) struct PendingSteer {
     pub response: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
-/// One tab as the strip draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::tui) struct TabChip {
     pub(in crate::tui) title: String,
@@ -355,7 +346,6 @@ pub(crate) struct App {
     pub(in crate::tui) header_provider_pressed: bool,
     pub(in crate::tui) header_model_pressed: bool,
     pub(in crate::tui) header_effort_pressed: bool,
-    /// Kind and header chip of the picker opened as a dropdown under that chip.
     pub(in crate::tui) header_dropdown: Option<(PickerKind, Rect)>,
     pub(in crate::tui) header_attention_pressed: bool,
     pub(in crate::tui) home_documentation_pressed: bool,
@@ -408,9 +398,6 @@ pub(crate) struct App {
     pub(in crate::tui) pulse_on: bool,
     pub(in crate::tui) cancel_requested: bool,
     pub(in crate::tui) tick_count: u64,
-    /// The header label for the current model. Resolving it reads the model catalog from
-    /// disk, so the result is kept per (provider, account, model) and re-read at most once a
-    /// second instead of on every frame.
     model_label_cache: std::sync::Mutex<Option<(ProviderKind, String, String, Instant, String)>>,
     pub(in crate::tui) should_quit: bool,
     pub(in crate::tui) provider: ProviderKind,
@@ -418,7 +405,6 @@ pub(crate) struct App {
     pub(in crate::tui) home_path: Option<PathBuf>,
     pub(in crate::tui) model: String,
     pub(in crate::tui) effort: Option<String>,
-    /// `(model, preferred effort)` already announced when a saved effort was coerced.
     effort_fallback_notice: Option<(String, String)>,
     pub(in crate::tui) trust: TrustMode,
     pub(in crate::tui) native_session_id: Option<String>,
@@ -491,15 +477,10 @@ pub(crate) struct App {
     pub(in crate::tui) deleg: workers::Panel,
     pub(in crate::tui) worker_panel_open: bool,
     pub(in crate::tui) worker_panel_explicit: Option<bool>,
-    /// Labels of every open tab and the index of this one; empty with a single tab. The runner
-    /// fills it before each frame, and the drawn label rects come back for mouse hits.
     pub(in crate::tui) tab_strip: Vec<TabChip>,
     pub(in crate::tui) tab_index: usize,
-    /// Set by the runner while a tab is dragged: the dragged tab and the insertion slot.
     pub(in crate::tui) tab_drag: Option<(usize, usize)>,
-    /// How the last turn ended, shown on the tab until the user looks at it.
     pub(in crate::tui) tab_outcome: Option<bool>,
-    /// When each running tool card was first seen, for its elapsed-time display.
     pub(in crate::tui) tool_started: HashMap<String, Instant>,
     pub(in crate::tui) tab_hits: Vec<Rect>,
     pub(in crate::tui) tab_close_hits: Vec<Rect>,
@@ -573,9 +554,6 @@ impl App {
                 .as_ref()
                 .and_then(|h| inspect_provider(self.provider, h).model)
                 .filter(|m| !m.trim().is_empty());
-            // With a known catalog, keep only a model this provider account offers. Without
-            // one (offline, not yet fetched) the stored choice stands untouched; it is never
-            // rewritten on a guess.
             let catalog =
                 crate::models::available_at(&self.state_root, self.provider, &self.account);
             if catalog.is_empty() {
@@ -605,8 +583,6 @@ impl App {
                     }
                     _ => None,
                 };
-                // Keep the saved effort preference even when this model cannot use it, so a
-                // later model that supports it restores it. Only rewrite a foreign model id.
                 let want_model = (self.model != "?").then(|| self.model.clone());
                 if sel.model != want_model {
                     let mut fixed = sel.clone();
@@ -659,8 +635,6 @@ impl App {
         let label =
             crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
                 .map(|entry| crate::models::format_model_heading(&entry.display_name, &self.model))
-                // refresh_binding already dropped ids a known catalog does not offer, so an id
-                // missing here means no catalog is available yet; show it as stored.
                 .unwrap_or_else(|| self.model.clone());
         *cache = Some((
             self.provider,
@@ -686,8 +660,6 @@ impl App {
         self.account_email = email;
     }
 
-    /// Title for the tab strip on one line; the strip fits it to the chip width with an ellipsis,
-    /// and the status and provider are drawn as icons beside it.
     pub(in crate::tui) fn tab_label(&self) -> String {
         let title = self
             .session_ui
@@ -825,12 +797,10 @@ impl App {
         }
     }
 
-    /// Suggestions for the prompt as typed (empty when closed, dismissed, or not a slash prompt).
     pub(in crate::tui) fn palette_entries(&self) -> Vec<palette::Entry> {
         if self.editor.text().starts_with("/open ") {
             return Vec::new();
         }
-        // Not while a recalled prompt is on screen: up/down must keep walking history.
         if self.palette.dismissed || self.picker.is_some() || self.hist_pos.is_some() {
             return Vec::new();
         }
@@ -893,7 +863,6 @@ impl App {
         crate::user_commands::expand(&self.user_cmds, line)
     }
 
-    /// Put the chosen command in the prompt.
     pub(in crate::tui) fn complete_palette(&mut self, entry: palette::Entry) {
         if entry.disabled {
             self.flash("provider command unavailable: Concordia uses the provider's print/exec mode; type it to send it as a provider prompt");
@@ -909,7 +878,6 @@ impl App {
         self.palette.reset();
     }
 
-    /// Tab: complete the highlighted suggestion.
     pub(in crate::tui) fn tab_complete_slash(&mut self) {
         let entries = self.palette_entries();
         if let Some(e) = entries.get(self.palette.selected.min(entries.len().saturating_sub(1))) {
@@ -993,8 +961,6 @@ impl App {
         }
     }
 
-    /// Copy the current selection. With `fall_back_to_reply`, copy the last assistant reply
-    /// when nothing is selected. Returns whether anything was copied.
     pub(in crate::tui) fn copy(&mut self, fall_back_to_reply: bool) -> bool {
         let text = self.selected_text().or_else(|| {
             fall_back_to_reply
@@ -1016,8 +982,6 @@ impl App {
             let full = std::mem::take(&mut text);
             crate::provider::turn::append_visible_text(&mut text, &full);
         }
-        // A provider often reports one failure several ways (an event, a result, stderr).
-        // Say it once.
         if self
             .messages
             .last()
@@ -1040,8 +1004,6 @@ impl App {
                     .as_ref()
                     .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
             }) {
-                // Live artifact/history jobs hold message indexes. Retire this presentation
-                // row in place so a resumed stream cannot retarget their results.
                 self.messages[index] = ChatLine {
                     role: MsgRole::System,
                     text: String::new(),
@@ -1118,9 +1080,6 @@ impl App {
         use sha2::{Digest, Sha256};
         self.questions.refresh_native();
         self.deleg.d.refresh_native_inputs();
-        // A resolved native request may remove the native session binding from the
-        // question panel. Withdraw this App's old projection before rebuilding it,
-        // including items whose session differs from the current binding.
         let previous: Vec<_> = self
             .needs_you
             .items()
@@ -1211,9 +1170,6 @@ impl App {
             self.needs_you.remove(&legacy_id);
             crate::needs_you::withdraw(&legacy_id);
             let identity = match suffix {
-                // The continuation checkpoint is the durable identity of the turn.  The
-                // provider request identity is not available after a restart, when the same
-                // outstanding question is represented as an interrupted request.
                 "question" => format!("{turn_identity}:question"),
                 "approval" => format!("{turn_identity}:approval"),
                 "paused-queue" => format!(
@@ -1542,7 +1498,6 @@ impl App {
         self.start_job(JobKind::Check);
     }
 
-    /// Deliver a finished background job (called on every tick).
     pub(in crate::tui) fn poll_job(&mut self) -> bool {
         let Some(result) = self.job.as_ref().and_then(Job::poll) else {
             return false;
@@ -1589,7 +1544,6 @@ impl App {
                         String::new()
                     }
                 ));
-                // The user asked for this update, so it loads at once unless work began meanwhile.
                 if self.restart_blocked_by_work() {
                     self.queue_update_restart(result.install_path);
                 } else {
@@ -1633,8 +1587,6 @@ impl App {
                         self.start_background_update();
                     }
                 }
-                // Startup checks store the preview without opening the update picker; keep the
-                // normal idle footer unless the picker is actually showing.
                 if showing_update {
                     self.footer_left = if preview.install_available {
                         "Enter installs \u{b7} \u{2191}\u{2193} scroll \u{b7} Esc close"
@@ -1678,7 +1630,6 @@ impl App {
         }
         let original_prompt = self.composer_value();
         let mut line = self.editor.text();
-        // Commands retain their forgiving whitespace handling; prompts retain formatting.
         if line.trim_start().starts_with('/') && !line.contains('\n') {
             line = line.trim().to_owned();
         }
@@ -1766,9 +1717,6 @@ impl App {
                 self.flash("Enter again to interrupt and send this message; Tab queues it.");
                 return;
             }
-            // A slash command typed while a turn is busy is only an interrupt
-            // confirmation, not a submitted prompt. Do not leave that command
-            // in the composer when Esc cancels the running turn.
             if line.starts_with('/') {
                 self.editor.clear();
                 self.clear_selections();
@@ -1830,17 +1778,12 @@ impl App {
             landing::close(self);
         }
         self.run_line(dispatch, turn_tx);
-        // Keep the durable composer until run_line has either saved its request
-        // checkpoint or restored a rejected submission. A restart must not see
-        // an empty draft before the accepted request exists on disk.
         self.persist_draft_now();
         if !was_busy && self.busy && self.submitted_prompt.is_some() {
             self.submitted_prompt = Some(original_prompt);
         }
     }
 
-    /// Run a prompt that has left the box: a slash command, or a turn. Typed prompts and queued
-    /// ones both come through here, so trust mode, account and provider apply at send time.
     pub(in crate::tui) fn run_line(
         &mut self,
         line: String,
@@ -1882,7 +1825,6 @@ impl App {
             return;
         }
         self.view.follow_tail();
-        // A user command shows as typed and sends its rendered template as an ordinary turn.
         let mut send = line.clone();
         match self.expand_user_command(&line) {
             Ok(Some(prompt)) => send = prompt,
@@ -2010,7 +1952,6 @@ impl App {
             h.cancel();
             self.push_system("cancelling...");
         } else if self.cancel_requested {
-            // Keep the active turn busy until dispatch observes this flag or a handle arrives.
             self.push_system("cancelling...");
         } else {
             self.busy = false;
@@ -2018,7 +1959,6 @@ impl App {
         }
     }
 
-    /// Record the process handle and stop it immediately if cancellation raced with startup.
     pub(in crate::tui) fn accept_cancel_handle(&mut self, handle: Arc<RunningTurn>) {
         if self.cancel_requested {
             handle.cancel();
@@ -2026,7 +1966,6 @@ impl App {
         self.cancel_handle = Some(handle);
     }
 
-    /// Consume a queued turn without starting a provider after an early cancellation request.
     pub(in crate::tui) fn discard_cancelled_pending_turn(&mut self) -> bool {
         if !self.cancel_requested {
             return false;
@@ -2257,7 +2196,6 @@ pub(in crate::tui) fn select_account(state_root: &Path, account_id: &str) -> any
                 .as_ref()
                 .map(|p| p.to_string_lossy().into_owned()),
             model: prior.as_ref().and_then(|selection| selection.model.clone()),
-            // Effort belongs to the same account's model selection; never carry it across accounts.
             effort: prior.and_then(|selection| selection.effort),
             updated_at: now_stamp(),
         },
@@ -2300,7 +2238,6 @@ pub(in crate::tui) fn model_picker_rows(
         .collect()
 }
 
-/// Typed model ids become one `--model` argv entry; keep them to model-id characters.
 pub(in crate::tui) fn valid_model_id(model: &str) -> bool {
     !model.is_empty()
         && model.len() <= 100

@@ -1,4 +1,3 @@
-//! Shared exit affordances and input ownership for command screens.
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -73,7 +72,6 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
     {
         return false;
     }
-    // Key names live in the footer only; the paused composer explains input ownership.
     let hint = if let Some(picker) = &app.picker {
         if picker.kind == PickerKind::Update
             && app.job.as_ref().is_some_and(|j| j.kind == JobKind::Update)
@@ -94,10 +92,17 @@ pub(super) fn draw_input(f: &mut Frame, area: Rect, app: &mut App) -> bool {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(" message · paused ")
+        .title(Span::styled(
+            " message · paused ",
+            Style::default().fg(Color::Yellow),
+        ))
         .padding(ratatui::widgets::Padding::new(2, 1, 0, 0))
         .border_style(Style::default().fg(Color::DarkGray));
-    let width = block.inner(area).width as usize;
+    let inner = block.inner(area);
+    if inner.width > 0 && inner.height > 0 {
+        f.set_cursor_position((inner.x, inner.y));
+    }
+    let width = inner.width as usize;
     let hint = if width < 46 {
         "Chat input is paused."
     } else {

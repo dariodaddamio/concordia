@@ -1,4 +1,3 @@
-//! New completed-history records contain native references; drafts and recovery stay separate.
 use super::*;
 use crate::native_memory::{references as native, Binding};
 use serde::{Deserialize, Serialize};
@@ -7,7 +6,7 @@ use std::sync::mpsc as channel;
 
 const OWNER: &str = "concordia-native-history-v1";
 const FILE_BYTES: u64 = 4 * 1024 * 1024;
-const EVENT_COUNT: usize = 255; // Reserve one of the 256 slots for an explicit gap.
+const EVENT_COUNT: usize = 255;
 const EVENT_BYTES: usize = 4 * 1024 * 1024 - 4096;
 const HISTORY_TEXT_BYTES: usize = 16 * 1024 * 1024;
 type Work = Box<dyn FnOnce() + Send + 'static>;
@@ -15,7 +14,6 @@ type Work = Box<dyn FnOnce() + Send + 'static>;
 struct Completion {
     saved: bool,
     durable: bool,
-    /// The provider or session gives no native record to point at (not a failure).
     no_source: bool,
     verified: Option<native::Reference>,
     generation: u64,
@@ -41,8 +39,6 @@ struct HistoryEntry {
     unavailable: bool,
     #[serde(default)]
     created: u64,
-    /// Locally retained prompt text is used only when the provider produced no native record.
-    /// It is not a native source and is never used to mask a stale native reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     local_text: Option<String>,
 }
@@ -196,8 +192,6 @@ impl State {
         let mut bytes = self.events.iter().map(Pending::bytes).sum::<usize>();
         while self.events.len() > EVENT_COUNT || bytes > EVENT_BYTES {
             if self.events.len() == 1 && self.events[0].event.k == "user" {
-                // The full submitted request is separately owned by Active.original.
-                // Retain its journal position without duplicating an oversized body.
                 let t = self.events[0].event.t;
                 self.events[0].event = crate::threads::ThreadEvent::new("user");
                 self.events[0].event.t = t;
@@ -220,8 +214,6 @@ impl State {
         }
     }
 
-    /// Pruning requires a verified capture of this exact latest native owner.
-    /// Restored-only or failed-capture views stay protected until a verified turn.
     pub fn projection_verified(&self, root: &Path, binding: &Binding) -> bool {
         self.verified.as_ref().is_some_and(|reference| {
             reference.binding() == binding && native::hydrate_text(root, reference).is_ok()
@@ -264,7 +256,6 @@ impl State {
         }) {
             self.load = None;
             let mut merged = result.messages;
-            // New messages typed while the background read ran stay newest.
             for message in history
                 .iter()
                 .skip(history.len().saturating_sub(self.added))
@@ -285,8 +276,6 @@ impl State {
         }
         self.writes.retain(|(run, rx)| match rx.try_recv() {
             Ok(result) => {
-                // A saved turn with no native record to point at has nothing left to wait for,
-                // so its request recovery can close; otherwise it would survive every restart.
                 self.durable.insert(
                     run.clone(),
                     result.saved && (result.durable || result.no_source),
@@ -294,8 +283,6 @@ impl State {
                 if self.latest_run.as_deref() == Some(run.as_str()) && result.generation == self.generation {
                     self.verified = result.verified.filter(|_| result.saved && result.durable);
                 }
-                // A turn whose provider keeps no native record to point at is normal; only a failed
-                // save or a failed capture of an existing record is worth a notice.
                 if !result.saved || (!result.durable && !result.no_source) { notice = Some("Some history references are unavailable; native originals and recovery were kept."); }
                 false
             }
@@ -395,7 +382,6 @@ impl State {
                 let binding = Binding::new(active.provider, &active.account, home, session)?;
                 let scope = match &started.scope {
                     Ok(Some(scope)) if scope.binding() == &binding => Ok(scope.clone()),
-                    // None is emitted only for an explicitly fresh request before dispatch.
                     Ok(None) => native::fresh_scope(&root, &binding),
                     _ => Err("unbound".into()),
                 }?;
@@ -600,8 +586,6 @@ fn load_references(root: &Path) -> Loaded {
     let mut result = Loaded::default();
     let mut bytes = 0usize;
     for entry in entries.into_iter().rev().take(super::persist::HISTORY_CAP) {
-        // No native source: recall local prompt text when present. Older no-source rows
-        // without local text were never recallable; skip them without a false unavailable notice.
         let text = if entry.source.is_none() {
             match entry.local_text {
                 Some(text) => Ok(text),
@@ -643,7 +627,6 @@ fn load_references(root: &Path) -> Loaded {
     result
 }
 
-/// Derive a composer projection from known dispatch construction, never from a guessed native match.
 pub(super) fn original_range(
     full: &str,
     raw: &str,

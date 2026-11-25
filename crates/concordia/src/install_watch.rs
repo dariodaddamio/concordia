@@ -1,5 +1,3 @@
-//! Windows notification for replacement of the executable currently running the window.
-
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
@@ -30,7 +28,6 @@ pub fn start(path: PathBuf, wake: impl Fn() + Send + 'static) -> Option<InstallW
     std::thread::Builder::new()
         .name("concordia-install-watch".into())
         .spawn(move || {
-            // Hashing the executable takes real time; never do it on the UI thread at startup.
             if let Some(initial) = signature(&install) {
                 watch(directory, install, initial, tx, wake);
             }
@@ -86,11 +83,7 @@ fn watch(
         if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
             break;
         }
-        // Rename/copy installs produce several notifications. The short quiet period also lets
-        // the final rename finish before the executable is inspected.
         std::thread::sleep(Duration::from_millis(50));
-        // Unrelated files change in this folder too. Hash only when the executable's size or
-        // modified time moved, and only once it has stopped changing.
         let Some(meta) = stable_meta(&install) else {
             let _ = unsafe { FindNextChangeNotification(handle) };
             continue;

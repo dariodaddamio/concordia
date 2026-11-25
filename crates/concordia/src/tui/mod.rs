@@ -125,16 +125,12 @@ use input_dispatch::{dispatch_key_burst, dispatch_key_event, handle_key, handle_
 use palette::Palette;
 use transcript::{Block as TBlock, TranscriptView};
 
-/// Prompt box grows with its content up to this many text rows, then scrolls.
 const MAX_INPUT_ROWS: usize = 6;
-/// Columns taken by the `> ` prompt (and the matching indent on continuation rows).
 const PROMPT_W: usize = 2;
 const MULTI_CLICK: Duration = Duration::from_millis(500);
 const FLASH_FOR: Duration = Duration::from_secs(3);
 const FOOTER_HINT: &str = "Enter send \u{b7} F9 attach \u{b7} / commands \u{b7} Shift+Tab permissions \u{b7} drag to select \u{b7} Ctrl+C copy or cancel";
 const START_HINT: &str = "Type a message and press Enter. Start with / for commands. Drag to select; Ctrl+C copies; Esc interrupts.";
-/// How often (in 200 ms ticks) to look for a finished login, and when to stop looking.
-/// A second idle Ctrl+C within this window exits.
 const QUIT_WINDOW: Duration = Duration::from_secs(2);
 const HISTORY_MAX: usize = persist::HISTORY_CAP;
 const LOGIN_POLL_TICKS: u32 = 10;
@@ -194,7 +190,6 @@ fn reply_header(p: ProviderKind, label: &str) -> TBlock<'_> {
     }
 }
 
-/// Next permission mode for Shift+Tab: plan -> ask -> edit -> plan.
 fn next_mode(m: TrustMode) -> TrustMode {
     match m {
         TrustMode::Plan => TrustMode::Ask,
@@ -248,7 +243,6 @@ enum Level {
     Error,
 }
 
-/// Best-effort severity of a system line, from how Concordia words its own messages.
 fn level_of(text: &str) -> Level {
     let t = text.trim().to_lowercase();
     if t.contains("failed")
@@ -282,8 +276,6 @@ fn level_of(text: &str) -> Level {
     }
 }
 
-/// Fit `text` (segments joined by " \u{b7} ") into `width` columns, dropping whole trailing
-/// segments rather than cutting one mid-word.
 fn fit_segments(text: &str, width: usize) -> String {
     let segs: Vec<&str> = text.split(" \u{b7} ").collect();
     for keep in (1..=segs.len()).rev() {
@@ -292,7 +284,6 @@ fn fit_segments(text: &str, width: usize) -> String {
             return s;
         }
     }
-    // One segment alone is too long: cut at a word boundary and mark it.
     if width < 2 {
         return String::new();
     }
@@ -303,7 +294,6 @@ fn fit_segments(text: &str, width: usize) -> String {
     format!("{cut}\u{2026}")
 }
 
-/// Footer hints as (full label, short label), listed in display order.
 const HINTS: [(&str, &str); 6] = [
     ("Enter send", "Enter send"),
     ("F9 attach", "F9 attach"),
@@ -312,11 +302,8 @@ const HINTS: [(&str, &str); 6] = [
     ("drag to select", "drag select"),
     ("Ctrl+C copy or cancel", "Ctrl+C copy/stop"),
 ];
-/// Priority per hint (0 is kept longest); indexes follow `HINTS`.
 const HINT_RANK: [usize; 6] = [0, 1, 3, 4, 5, 2];
 
-/// The default hint line for `width` columns: whole hints only, full labels first, then short
-/// ones; lowest-priority hints are dropped first.
 fn fit_hints(width: usize) -> String {
     for keep in (1..=HINTS.len()).rev() {
         for short in [false, true] {
@@ -335,14 +322,12 @@ fn fit_hints(width: usize) -> String {
     String::new()
 }
 
-/// Render markup before shortening so a preview never exposes half a Markdown delimiter.
 fn condense_thinking(raw: &str) -> String {
     markdown::thinking_preview(raw, THINKING_PREVIEW_CHARS)
 }
 
 const THINKING_PREVIEW_CHARS: usize = 600;
 
-/// Whether the collapsed preview hides anything: it keeps only the tail and drops code fences.
 fn thinking_expandable(raw: &str) -> bool {
     raw.trim().chars().count() > THINKING_PREVIEW_CHARS || raw.contains("```")
 }
@@ -352,19 +337,13 @@ fn tail_lines(text: &str, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// Provider chatter on stderr that tells the user nothing.
 fn is_cli_noise(line: &str) -> bool {
     let l = line.to_ascii_lowercase();
     l.starts_with("reading additional input from stdin")
         || l.starts_with("reading prompt from stdin")
-        // Codex emits these capability notices when enterprise policy advertises
-        // features this installed client does not know. They are informational,
-        // not turn failures, and should not become transcript error cards.
         || l.starts_with("ignoring unknown features requirement")
 }
 
-/// A provider may coalesce several informational stderr lines into one progress error.
-/// Treat the block as noise only when every non-empty line is known chatter.
 pub(super) fn is_cli_noise_block(text: &str) -> bool {
     let mut any = false;
     for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {

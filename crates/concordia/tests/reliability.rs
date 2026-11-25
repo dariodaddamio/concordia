@@ -1,4 +1,3 @@
-//! Bounded transport and command stress checks. No provider or network calls.
 use concordia::mcp;
 use serde_json::{json, Value};
 use std::io::{BufReader, Cursor};

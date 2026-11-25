@@ -27,7 +27,6 @@ pub fn plan_grok_turn(req: &GrokTurnRequest<'_>) -> Result<super::cursor::Cursor
     if req.trust == TrustMode::Full {
         argv.push("--always-approve".into());
     }
-    // ACP owns the exact resume request; the native session id is never put in a prompt.
     argv.push(req.prompt.to_owned());
     let mut env = Vec::new();
     if let Some(home) = req.home_path {

@@ -1,5 +1,3 @@
-//! Deterministic model discovery with explicit, bounded provider refreshes.
-
 use crate::accounts::get_account;
 use crate::catalog;
 use crate::store::{default_store_root, ProviderKind};
@@ -21,10 +19,8 @@ pub struct ModelEntry {
     #[serde(default)]
     pub tier: ModelTier,
     pub source: ModelSource,
-    /// Reasoning efforts the provider lists for this model, in effort order.
     #[serde(default)]
     pub efforts: Vec<ModelEffort>,
-    /// The effort the provider applies when none is chosen, when it reports one.
     #[serde(default)]
     pub default_effort: Option<String>,
 }
@@ -32,9 +28,6 @@ pub struct ModelEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEffort {
     pub name: String,
-    /// The provider's own model id for this effort, when it encodes effort in the model id
-    /// (Cursor's `agent models` lists `model-high`, `model-low`, ...). `None` means the effort is
-    /// passed separately from the model.
     #[serde(default)]
     pub model_id: Option<String>,
 }
@@ -44,7 +37,6 @@ impl ModelEntry {
         self.efforts.iter().map(|e| e.name.as_str()).collect()
     }
 
-    /// The model id a turn runs with for `effort`: the provider's own variant id when it has one.
     pub fn id_for_effort(&self, effort: Option<&str>) -> &str {
         effort
             .and_then(|effort| self.efforts.iter().find(|e| e.name == effort))
@@ -52,8 +44,6 @@ impl ModelEntry {
             .unwrap_or(&self.id)
     }
 
-    /// Effort to show and send for a preference: the preference when supported, otherwise the
-    /// nearest listed level (preferring the next lower), otherwise the provider default.
     pub fn effort_for_preference(&self, preferred: Option<&str>) -> Option<String> {
         if self.efforts.is_empty() {
             return None;
@@ -71,14 +61,11 @@ impl ModelEntry {
             .or_else(|| self.efforts.first().map(|effort| effort.name.clone()))
     }
 
-    /// Display name, with the raw id only when it adds information (not a case echo of the label).
     pub fn heading(&self) -> String {
         format_model_heading(&self.display_name, &self.id)
     }
 }
 
-/// Nearest effort this model lists for `wanted`, preferring the next lower level when both sides
-/// exist. Unknown effort words sort above every listed level, so the highest supported wins.
 pub(crate) fn nearest_supported_effort<'a>(
     wanted: &str,
     efforts: &'a [ModelEffort],
@@ -102,8 +89,6 @@ pub(crate) fn nearest_supported_effort<'a>(
     best_lower.or(best_higher).map(|(_, name)| name)
 }
 
-/// Effort a turn may send: coerce against the catalog when the model lists efforts; leave the
-/// preference alone when the catalog is unknown.
 pub(crate) fn effort_for_turn(
     root: &Path,
     provider: ProviderKind,
@@ -121,8 +106,6 @@ pub(crate) fn effort_for_turn(
     model.effort_for_preference(preferred)
 }
 
-/// `<label> · <second>` for headers and pickers. Drops the second part when it equals the label
-/// ignoring case, or when it is only the raw id of that same label (Auto · auto → Auto).
 pub(crate) fn format_model_heading(label: &str, second: &str) -> String {
     if second.is_empty() || label.eq_ignore_ascii_case(second) {
         label.to_owned()
@@ -131,8 +114,6 @@ pub(crate) fn format_model_heading(label: &str, second: &str) -> String {
     }
 }
 
-/// Effort words the providers use, lowest first. Used only to order efforts and to recognise an
-/// effort word in a Cursor model id; which efforts a model supports always comes from the provider.
 const EFFORT_ORDER: [&str; 8] = [
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 ];
@@ -192,10 +173,7 @@ pub(crate) fn available_at(root: &Path, provider: ProviderKind, account: &str) -
     let Some(identity) = selected_identity(root, provider, account) else {
         return Vec::new();
     };
-    // opencode has no supported read-only model-list operation. Do not reuse a cache that may
-    // have been created from its configured default, because configuration is not an account list.
     if provider != ProviderKind::Opencode {
-        // The provider's own list for this account wins; without one, the provider's local metadata.
         if let Some(cache) = read_refresh_cache(root, &identity) {
             return cache.models;
         }
@@ -242,13 +220,11 @@ fn native_entry(model: catalog::NativeModel) -> ModelEntry {
     entry
 }
 
-/// Current native metadata captured for one physical account home.
 pub struct RefreshedModels {
     pub home: PathBuf,
     pub models: Vec<ModelEntry>,
 }
 
-/// Read current native metadata without a model request. Failure never masquerades as refresh.
 pub fn refresh(provider: ProviderKind, account: &str) -> Result<RefreshedModels, String> {
     let root = default_store_root();
     refresh_at(&root, provider, account)
@@ -312,7 +288,6 @@ pub(crate) fn refresh_at(
     })
 }
 
-/// The one account/home-bound read path for routing, dependencies and model controls.
 pub(crate) fn ids_at(
     root: &Path,
     provider: ProviderKind,
@@ -343,12 +318,9 @@ fn native_entries(provider: ProviderKind, models: Vec<catalog::NativeModel>) -> 
     if provider != ProviderKind::Codex {
         return entries;
     }
-    // Codex reports effort variants as separate slugs. Normalize only that provider shape so the
-    // picker can show one model row while selection still resolves to an exact reported slug.
     group_effort_variants(entries)
 }
 
-/// Refresh only when the account has no listed catalog yet or it is older than a day.
 pub fn needs_refresh(provider: ProviderKind, account: &str) -> bool {
     needs_refresh_at(&default_store_root(), provider, account)
 }
@@ -364,7 +336,6 @@ pub(crate) fn needs_refresh_at(root: &Path, provider: ProviderKind, account: &st
         .is_none_or(|cache| unix_now().saturating_sub(cache.fetched_at) > 24 * 3600)
 }
 
-/// `agent models` lists every model the signed-in plan allows; it makes no model call.
 fn list_cursor(home: &Path) -> Result<Vec<ModelEntry>, String> {
     let auth =
         crate::provider::cursor::account_auth(Some(home)).map_err(|error| error.to_string())?;
@@ -405,7 +376,6 @@ fn list_cursor(home: &Path) -> Result<Vec<ModelEntry>, String> {
     Ok(models)
 }
 
-/// The current SDK exposes supportedModels through initialize. No user frame is ever sent.
 fn list_claude(home: &Path) -> Result<Vec<ModelEntry>, String> {
     let program = crate::provider::claude::find_claude_bin()?;
     if crate::provider::launch::is_batch_shim(&program) {
@@ -525,8 +495,6 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
                 })
                 .ok_or("Claude returned an invalid model display name")?;
             let mut entry = entry_named(id.into(), name.into(), ModelSource::ListedByCli);
-            // `supportedEffortLevels` lists the efforts this model accepts; `supportsEffort:
-            // false` means it takes none.
             if model["supportsEffort"].as_bool() != Some(false) {
                 entry.efforts = model["supportedEffortLevels"]
                     .as_array()
@@ -548,9 +516,6 @@ fn parse_claude_models(bytes: &[u8], request: &str) -> Result<Vec<ModelEntry>, S
     observed.ok_or_else(|| "Claude did not answer the exact metadata initialization request".into())
 }
 
-/// Lines look like `claude-opus-5-5-high - Claude Opus 5.5 1M High`; headers and notes have no
-/// ` - ` separator or contain spaces in the id part. Variants that differ only by an effort word
-/// in the id become one model whose efforts point at those variant ids.
 fn parse_list_output(raw: &str) -> Vec<ModelEntry> {
     group_effort_variants(parse_list_lines(raw))
 }
@@ -560,8 +525,6 @@ fn parse_list_lines(raw: &str) -> Vec<ModelEntry> {
         .filter_map(|line| {
             let (id, name) = line.trim().split_once(" - ")?;
             let id = id.trim();
-            // `agent models` marks rows with "(default)", "(current)" or "(current, default)";
-            // those describe the listing, not the model, so they never reach a label.
             let mut name = name.trim();
             if let Some(stripped) = name.strip_suffix(')') {
                 if let Some((base, marks)) = stripped.rsplit_once(" (") {
@@ -584,7 +547,6 @@ fn parse_list_lines(raw: &str) -> Vec<ModelEntry> {
         .collect()
 }
 
-/// `(id without its effort word, effort)` when exactly one `-`-separated id token is an effort.
 fn split_effort(id: &str) -> Option<(String, &'static str)> {
     let tokens: Vec<&str> = id.split('-').collect();
     let mut found = tokens
@@ -606,7 +568,6 @@ fn split_effort(id: &str) -> Option<(String, &'static str)> {
     Some((base, effort))
 }
 
-/// The display name without the effort word the provider appended (`... 1M High`).
 fn name_without_effort(name: &str, effort: &str) -> String {
     let words: Vec<&str> = name.split_whitespace().collect();
     match words.iter().rposition(|w| w.eq_ignore_ascii_case(effort)) {
@@ -633,7 +594,6 @@ fn group_effort_variants(entries: Vec<ModelEntry>) -> Vec<ModelEntry> {
     for entry in entries {
         let Some((base, effort)) = split_effort(&entry.id) else {
             match out.iter_mut().find(|m| m.id == entry.id) {
-                // The plain id arrived after its variants: keep its own name.
                 Some(existing) => existing.display_name = entry.display_name,
                 None => out.push(entry),
             }
@@ -899,7 +859,6 @@ mod tests {
         );
         assert!(!models.iter().any(|model| model.id == "other-account-only"));
         assert!(available_at(root.path(), ProviderKind::Codex, "claude-fixture").is_empty());
-        // Rebinding this registration must not reuse its former home's listed choices.
         crate::store::upsert_stored_account(
             root.path(),
             crate::store::StoredAccount {
@@ -911,7 +870,6 @@ mod tests {
             },
         )
         .unwrap();
-        // Neither the old home's list nor another account's list authorizes this binding.
         assert!(available_at(root.path(), ProviderKind::Claude, "claude-fixture").is_empty());
         let rebound_identity =
             selected_identity(root.path(), ProviderKind::Claude, "claude-fixture").unwrap();

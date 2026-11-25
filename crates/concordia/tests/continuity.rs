@@ -1,5 +1,3 @@
-//! Continuity fixture gates — foreign session leak, pack budget, omit-on-native.
-
 use concordia::context::{
     assert_pack_within_budget, plan_continuity, ContinuityRequest, PackMessage, PackRole,
     MAX_CONTEXT_CHARS,

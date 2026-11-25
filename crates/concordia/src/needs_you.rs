@@ -1,8 +1,3 @@
-//! Deterministic, local registry of sessions that need a user's attention.
-//!
-//! The registry deliberately contains no provider data or polling.  TUI and worker code publish
-//! explicit transitions; consumers can render one queue regardless of which provider owns a run.
-
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -60,7 +55,6 @@ pub struct Item {
 }
 
 impl Item {
-    /// Whether this item represents an outstanding user action rather than a passive notice.
     pub fn is_actionable(&self) -> bool {
         !matches!(self.kind, ItemKind::IdleNotice)
     }
@@ -76,7 +70,6 @@ fn global() -> &'static Mutex<Queue> {
     GLOBAL.get_or_init(|| Mutex::new(Queue::default()))
 }
 
-/// Publish a live request for panels belonging to any chat in this process.
 pub fn publish(item: Item) {
     global().lock().unwrap_or_else(|e| e.into_inner()).add(item);
 }

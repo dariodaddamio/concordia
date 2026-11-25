@@ -1,5 +1,3 @@
-//! Separate native file windows share the root App and its document/save state.
-//! Only input crosses threads; document mutation and drawing stay on the root UI thread.
 use super::{input_stream::WakeHandle, native_window, workspace, App};
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::Terminal;
@@ -34,7 +32,6 @@ impl Drop for FileWindow {
         if let Some(input) = self.input.take() {
             let _ = input.join();
         }
-        // The backend then cancels its native sender before destroying the HWND.
     }
 }
 
@@ -92,7 +89,6 @@ impl DetachedWindows {
         Ok(())
     }
 
-    /// Reconcile HWND ownership after detach/dock/close. Opening failures restore the pane.
     pub(super) fn sync(&mut self, owner: uuid::Uuid, app: &mut App) {
         let ids = app.workspace.detached_ids();
         self.windows
@@ -112,7 +108,6 @@ impl DetachedWindows {
         self.windows.retain(|(owner, _), _| owners.contains(owner));
     }
 
-    /// Drain child input before root drawing. Closing a file HWND docks its existing document.
     pub(super) fn drain(
         &mut self,
         mut dispatch: impl FnMut(uuid::Uuid, u32, Option<Event>),
@@ -145,7 +140,6 @@ impl DetachedWindows {
                     continue;
                 }
             };
-            // Messages already queued when a child was docked cannot affect another view.
             if !self.windows.contains_key(&key) {
                 continue;
             }
@@ -155,7 +149,6 @@ impl DetachedWindows {
         changed
     }
 
-    /// Render the same documents after the root view; workspace helpers preserve root hit areas.
     pub(super) fn draw(&mut self, owner: uuid::Uuid, app: &mut App) {
         let mut failed = Vec::new();
         for (&key, window) in &mut self.windows {

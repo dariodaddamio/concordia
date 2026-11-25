@@ -1,9 +1,3 @@
-//! Time on prompts: one leading line with the local date and time, then one line for each
-//! relative time the prompt mentions ("yesterday" = Thu Oct 30 2026). No model is involved.
-//!
-//! The header goes to the provider only. Anything that reads a provider's session file back
-//! for display removes it with [`strip_header`].
-
 const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const WEEKDAYS: [&str; 7] = [
     "sunday",
@@ -17,13 +11,10 @@ const WEEKDAYS: [&str; 7] = [
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
-/// Bounds the scan of an enormous paste and the lines a prompt can add.
 const SCAN_CHARS: usize = 64 * 1024;
 const MAX_RESOLVED: usize = 6;
-/// "N days ago" further back than this is left to the model.
 const MAX_DAYS_AGO: i64 = 366;
 
-/// A wall-clock reading. `zone` is `local`, or `UTC` where the local zone is not read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalTime {
     pub year: i32,
@@ -34,7 +25,6 @@ pub struct LocalTime {
     pub zone: &'static str,
 }
 
-/// The clock the prompt is stamped with.
 #[cfg(windows)]
 pub fn now() -> LocalTime {
     #[repr(C)]
@@ -54,7 +44,6 @@ pub fn now() -> LocalTime {
         fn GetLocalTime(time: *mut SystemTime);
     }
     let mut t = SystemTime::default();
-    // Fills the documented Win32 SYSTEMTIME layout; it cannot fail.
     unsafe { GetLocalTime(&mut t) };
     LocalTime {
         year: t.year.into(),
@@ -66,8 +55,6 @@ pub fn now() -> LocalTime {
     }
 }
 
-/// The clock the prompt is stamped with. The MVP is Windows only, so elsewhere it is UTC and
-/// says so.
 #[cfg(not(windows))]
 pub fn now() -> LocalTime {
     let secs = std::time::SystemTime::now()
@@ -85,14 +72,12 @@ pub fn now() -> LocalTime {
     }
 }
 
-/// The lines put before a prompt: the stamp, then any resolved relative times.
 pub fn header(prompt: &str, now: &LocalTime) -> String {
     let mut lines = vec![stamp_line(now)];
     lines.extend(resolve_relative(prompt, now));
     lines.join("\n")
 }
 
-/// `[Fri Oct 31 2026, 2:05pm local]`
 pub fn stamp_line(now: &LocalTime) -> String {
     let (hour, suffix) = match now.hour {
         0 => (12, "am"),
@@ -108,7 +93,6 @@ pub fn stamp_line(now: &LocalTime) -> String {
     )
 }
 
-/// One line per relative time the prompt mentions, in the order they first appear.
 pub fn resolve_relative(prompt: &str, now: &LocalTime) -> Vec<String> {
     let words = words(prompt);
     let today = today(now);
@@ -131,7 +115,6 @@ pub fn resolve_relative(prompt: &str, now: &LocalTime) -> Vec<String> {
                 format!("the night of {}", date(today - 1)),
             )),
             (Some("last"), Some("week"), _) => {
-                // Weeks run Monday to Sunday.
                 let monday = today - (weekday(today) + 6) % 7 - 7;
                 Some((
                     2,
@@ -157,7 +140,6 @@ pub fn resolve_relative(prompt: &str, now: &LocalTime) -> Vec<String> {
                     let resolved = if lead == "last" {
                         date(today - back)
                     } else {
-                        // "On Monday" can point either way; give both and let the prompt decide.
                         format!(
                             "{} if past, {} if coming",
                             date(today - back),
@@ -183,7 +165,6 @@ pub fn resolve_relative(prompt: &str, now: &LocalTime) -> Vec<String> {
     lines
 }
 
-/// The text without a leading header written by [`header`]. Text without one is returned whole.
 pub fn strip_header(text: &str) -> &str {
     let mut rest = text.trim_start();
     let Some((first, after)) = split_line(rest) else {
@@ -222,12 +203,10 @@ fn is_resolution_line(line: &str) -> bool {
     line.starts_with('"') && line.contains("\" = ")
 }
 
-/// Days since 1970-01-01 for the reading's calendar date.
 fn today(now: &LocalTime) -> i64 {
     days_from_civil(now.year, now.month, now.day)
 }
 
-/// `Thu Oct 30 2026`
 fn date(days: i64) -> String {
     let (year, month, day) = civil_from_days(days);
     format!(
@@ -237,12 +216,10 @@ fn date(days: i64) -> String {
     )
 }
 
-/// 0 is Sunday. 1970-01-01 was a Thursday.
 fn weekday(days: i64) -> i64 {
     (days + 4).rem_euclid(7)
 }
 
-/// Days since 1970-01-01 in the proleptic Gregorian calendar (Howard Hinnant's algorithm).
 pub(crate) fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
     let month = i64::from(month.clamp(1, 12));
     let y = i64::from(year) - i64::from(month <= 2);
@@ -267,7 +244,6 @@ pub(crate) fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (year, month, day)
 }
 
-/// Lowercase ASCII words and numbers, bounded for huge pastes.
 fn words(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
@@ -414,17 +390,14 @@ mod tests {
 
     #[test]
     fn last_week_is_the_previous_monday_to_sunday() {
-        // Friday Oct 30 2026: this week starts Mon Oct 26.
         assert_eq!(
             resolve_relative("as we agreed last week", &at(2026, 10, 30, 9, 0)),
             vec!["\"last week\" = Mon Oct 19 2026 to Sun Oct 25 2026"]
         );
-        // On a Monday, last week is the seven days just ended.
         assert_eq!(
             resolve_relative("last week", &at(2026, 10, 26, 9, 0)),
             vec!["\"last week\" = Mon Oct 19 2026 to Sun Oct 25 2026"]
         );
-        // On a Sunday, the current week began six days earlier.
         assert_eq!(
             resolve_relative("last week", &at(2026, 11, 1, 9, 0)),
             vec!["\"last week\" = Mon Oct 19 2026 to Sun Oct 25 2026"]
@@ -453,7 +426,6 @@ mod tests {
 
     #[test]
     fn a_named_weekday_resolves_past_and_coming() {
-        // Friday Oct 30 2026.
         let now = at(2026, 10, 30, 9, 0);
         assert_eq!(
             resolve_relative("we merged it on Monday", &now),
@@ -463,7 +435,6 @@ mod tests {
             resolve_relative("since last Thursday", &now),
             vec!["\"last Thursday\" = Thu Oct 29 2026"]
         );
-        // The same weekday as today means a week away, not today.
         assert_eq!(
             resolve_relative("on friday", &now),
             vec!["\"on Friday\" = Fri Oct 23 2026 if past, Fri Nov 6 2026 if coming"]
@@ -512,7 +483,6 @@ mod tests {
         ] {
             assert_eq!(strip_header(text), text);
         }
-        // Only lines straight after the stamp are header lines.
         let sent = "[Fri Oct 30 2026, 2:05pm local]\nask\n\"quoted\" = later";
         assert_eq!(strip_header(sent), "ask\n\"quoted\" = later");
     }

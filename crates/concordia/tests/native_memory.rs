@@ -1,4 +1,3 @@
-//! CLI/MCP native-pointer readback with synthetic provider sources; no provider processes.
 use concordia::{
     native_memory,
     store::{ProviderKind, StoredAccount},

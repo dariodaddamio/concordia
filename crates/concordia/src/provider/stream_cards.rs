@@ -1,4 +1,3 @@
-//! Clean-room Codex JSONL -> text / tool cards.
 use crate::tool_literals::literal_wrapper_calls;
 use serde_json::Value;
 
@@ -61,8 +60,6 @@ fn bound_card_history(cards: &mut Vec<StreamCard>) {
     });
 }
 
-/// Token counts and cost a provider reported for one turn. Every field is optional: a provider
-/// reports what it reports (Cursor reports none) and nothing here is ever guessed.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TurnUsage {
     pub input: Option<u64>,
@@ -72,7 +69,6 @@ pub struct TurnUsage {
 }
 
 impl TurnUsage {
-    /// Adapters emit terminal turn/result snapshots. Repeated notifications are not deltas.
     pub fn update_snapshot(&mut self, update: &Self) {
         if update.input.is_some() {
             self.input = update.input;
@@ -97,8 +93,6 @@ impl TurnUsage {
             && self.cost_usd.is_none()
     }
 
-    /// Read a usage object tolerantly: missing or mistyped fields are simply absent.
-    /// `cached_key` is the provider's name for cache-read tokens.
     pub fn from_json(usage: Option<&serde_json::Value>, cached_key: &str) -> TurnUsage {
         let num = |k: &str| usage.and_then(|u| u.get(k)).and_then(|v| v.as_u64());
         TurnUsage {
@@ -113,16 +107,12 @@ impl TurnUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamPart {
     Text(String),
-    /// A fragment of reply text that continues the previous one, with no break in between.
     TextDelta(String),
     Card(StreamCard),
     Error(String),
     Session(String),
-    /// The model's reasoning, shown dimmed and never added to the reply or the context pack.
     Thinking(String),
-    /// A fragment of reasoning that continues the previous one; a lone newline ends the block.
     ThinkingDelta(String),
-    /// Token counts for the turn; shown on the token line, never reply text.
     Usage(TurnUsage),
 }
 
@@ -174,9 +164,6 @@ pub fn usage_exhausted(text: &str) -> bool {
         .any(|code| lower.replace(['_', '-'], "").contains(code))
 }
 
-/// The provider rejected the selected model because its servers are busy (Codex
-/// `server_overloaded` / "Selected model is at capacity", Claude `overloaded_error`). Quota is
-/// not the cause, so another model or account can take the request.
 pub fn model_overloaded(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("model is at capacity")
@@ -454,8 +441,6 @@ fn classify_item_event(typ: &str, ev: &serde_json::Value) -> Vec<StreamPart> {
     Vec::new()
 }
 
-/// Codex exec's documented CollabToolCall reports tool and child lifetimes separately.
-/// Completing spawn_agent/wait does not by itself mean that a child has completed.
 pub(super) fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamPart> {
     let states = item.get("agents_states").and_then(|v| v.as_object());
     let mut ids: Vec<&str> = item
@@ -486,8 +471,6 @@ pub(super) fn classify_collab_tool_call(item: &serde_json::Value) -> Vec<StreamP
             let mut detail = Vec::new();
             if let Some(prompt) = item.get("prompt").and_then(|v| v.as_str()) {
                 if !prompt.is_empty() {
-                    // JSON quoting keeps a multiline task on one logical detail line, so
-                    // later state-only updates can preserve the complete original task.
                     detail.push(format!(
                         "Task: {}",
                         serde_json::to_string(prompt).unwrap_or_default()
@@ -638,8 +621,6 @@ fn classify_payload(p: &serde_json::Value) -> Vec<StreamPart> {
     Vec::new()
 }
 
-/// Describe statically named nested calls without evaluating JavaScript or inventing child IDs.
-/// Quoted strings and comments are skipped so command output cannot masquerade as a tool call.
 fn wrapper_tool_title(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     let mut i = 0;
@@ -720,7 +701,6 @@ fn web_search_card(typ: &str, item: &Value, event: &Value) -> Option<StreamCard>
     {
         return None;
     }
-    // A search without a native id cannot be safely merged with another search.
     let id = item
         .get("id")
         .or_else(|| item.get("call_id"))
@@ -780,8 +760,6 @@ fn web_search_card(typ: &str, item: &Value, event: &Value) -> Option<StreamCard>
             }
         }
     }
-    // Keep structured source details available even when a provider adds fields
-    // beyond the compact display contract. No text is promoted into the reply.
     if !typ.starts_with("response.web_search_call.") {
         lines.push(format!(
             "Native search details:\n{}",
@@ -994,8 +972,6 @@ pub fn upsert_card(cards: &mut Vec<StreamCard>, mut next: StreamCard) {
             }
         }
         prev.status = next.status;
-        // A native result supplies the successful output only after its input was merged.
-        // This also runs during exact-session history hydration.
         super::edit_display::normalize(prev);
         bound_card(prev);
     } else {
@@ -1008,8 +984,6 @@ pub fn format_card_line(card: &StreamCard) -> String {
     compact_card_summary(card).text
 }
 
-/// Presentation only. File ranges are Unicode characters in this complete header,
-/// mapped to the exact provider-reported path rather than its shortened label.
 pub struct CardSummary {
     pub text: String,
     pub files: Vec<(std::ops::Range<usize>, String)>,
@@ -1151,7 +1125,6 @@ pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     {
         summary.text.push_str(&format!("{run} tools"));
     } else {
-        // Keep the complete compact row within the picker width even for an unknown long title.
         summary.text.push_str(&compact_detail(&label, 60));
         if !detail.is_empty() && !matches!(label.as_str(), "Run tool" | "apply_patch") {
             let preview = card_preview(input);
@@ -1359,7 +1332,6 @@ pub fn tool_label(name: &str) -> String {
     }
 }
 
-/// What a tool card does, for its icon. Presentation only; the card keeps the provider's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
     Shell,
@@ -1375,7 +1347,6 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    /// Every kind with its own icon, in the order the shortcuts screen and docs list them.
     pub const LEGEND: [ToolKind; 9] = [
         ToolKind::Shell,
         ToolKind::Read,
@@ -1388,7 +1359,6 @@ impl ToolKind {
         ToolKind::Image,
     ];
 
-    /// Single-cell glyphs that Consolas or Segoe UI Symbol draw in the native window.
     pub fn icon(self) -> &'static str {
         match self {
             Self::Shell => "❯",
@@ -1424,7 +1394,6 @@ impl ToolKind {
             return Self::Agent;
         }
         let detail = card.detail.as_deref().unwrap_or("");
-        // Codex exec prefixes the server; the app-server keeps its item JSON.
         if detail.starts_with("MCP server: ") || detail.contains("\"type\":\"mcpToolCall\"") {
             return Self::Mcp;
         }
@@ -1458,13 +1427,6 @@ impl ToolKind {
     }
 }
 
-/// The timeout a provider put on a tool call, read from the call's own arguments.
-///
-/// Reported today: Codex function calls (`timeout_ms` on `exec_command`, `shell` and
-/// `wait_agent`), Claude Code's `Bash` (`timeout`, milliseconds) and Cursor's shell call
-/// (`timeout`, milliseconds). Codex app-server command items carry none. A bare `timeout` is
-/// read only on shell commands, where both providers define it in milliseconds; Codex's
-/// `yield_time_ms` is a polling interval, not a limit, and is ignored.
 pub fn reported_timeout(card: &StreamCard) -> Option<std::time::Duration> {
     let detail = card.detail.as_deref()?;
     let input = detail
@@ -1498,7 +1460,6 @@ pub fn reported_timeout(card: &StreamCard) -> Option<std::time::Duration> {
     Some(std::time::Duration::from_millis(millis))
 }
 
-/// Compact presentation only: the original arguments and output remain on the card.
 fn card_preview(detail: &str) -> String {
     let reported = detail
         .split_once("\nNative tool input and output:")
@@ -1529,7 +1490,6 @@ fn card_preview(detail: &str) -> String {
         .trim();
     let raw = first.strip_prefix("command: ").unwrap_or(first);
     let mut command = raw.to_owned();
-    // Some providers deliver tool arguments as a JSON string rather than an object.
     let input = detail
         .split_once("\nOutput: ")
         .map_or(detail, |(input, _)| input);
@@ -1538,7 +1498,6 @@ fn card_preview(detail: &str) -> String {
         .or_else(|| input.strip_prefix("input: "))
         .unwrap_or(input);
     if arguments.trim_start().starts_with(['{', '"']) {
-        // Only the leading JSON value: the tool's output may follow it (Claude's cards).
         let first = serde_json::Deserializer::from_str(arguments)
             .into_iter::<serde_json::Value>()
             .next()
@@ -1548,7 +1507,6 @@ fn card_preview(detail: &str) -> String {
                 Some(s) => serde_json::from_str(s).unwrap_or(value.clone()),
                 None => value,
             };
-            // The argument that names what the tool acted on.
             if let Some(subject) = [
                 "cmd",
                 "command",
@@ -1567,7 +1525,6 @@ fn card_preview(detail: &str) -> String {
         }
     }
     let lower = command.to_ascii_lowercase();
-    // Hide a recognized launcher only; this never changes the executed command.
     if lower.contains("powershell") || lower.contains("pwsh") {
         if let Some(index) = lower.find(" -command ").or_else(|| lower.find(" -c ")) {
             let rest = &command[index..];
@@ -1858,7 +1815,6 @@ mod tests {
         assert!(compact_card_summary(&unknown).text.chars().count() <= 68);
     }
 
-    // Synthetic fixtures following codex-rs/exec/src/exec_events.rs CollabToolCall.
     fn collab_cards(item: serde_json::Value) -> Vec<StreamCard> {
         classify_codex_event(&serde_json::json!({"type":"item.completed", "item":item}))
             .into_iter()
@@ -1968,7 +1924,6 @@ mod tests {
         assert!(parts
             .iter()
             .any(|p| matches!(p, StreamPart::Error(t) if t.contains("spend"))));
-        // Codex exec and Responses/native history use distinct web-search envelopes.
         let web_events = [
             r#"{"type":"item.started","item":{"type":"web_search","id":"web-1","query":"Rust clipboard","action":{"type":"search","query":"Rust clipboard"}}}"#,
             r#"{"type":"item.completed","item":{"type":"web_search","id":"web-1","action":{"type":"search"},"results":[{"title":"Rust docs","url":"https://doc.rust-lang.org/"}]}}"#,
@@ -2009,7 +1964,6 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("search unavailable"));
-        // Observed native account codex-2 uses a custom exec wrapper containing mixed calls.
         let mixed = classify_payload(
             &serde_json::json!({"type":"custom_tool_call", "call_id":"mixed-web", "name":"exec", "input":"text(await tools.web__run({search_query:[{q:\"Rust clipboard\"}]})); text(await tools.exec_command({cmd:\"git status\"}));"}),
         );
@@ -2191,7 +2145,6 @@ mod tests {
         assert!(rendered.contains("-one\n-two\n+three"));
         assert!(rendered.contains(&input));
 
-        // Real exec file-change events provide paths/kinds, not a fictional `diff` field.
         let parts = parse_codex_stream_chunk(
             r#"{"type":"item.completed","item":{"type":"file_change","id":"path-only","changes":[{"path":"src/parser space.rs","kind":"update"},{"path":"src/new.rs","kind":"add"},{"path":"src/gone.rs","kind":"delete"}]}}"#,
         );

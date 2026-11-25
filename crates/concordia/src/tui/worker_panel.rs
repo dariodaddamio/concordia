@@ -1,8 +1,3 @@
-//! Pure projection for the optional worker side panel.
-//!
-//! Keeping this separate from the main TUI layout makes the panel testable without a terminal and
-//! ensures it only consumes the already-recorded worker ledger; it never polls or starts a model.
-
 use super::App;
 use crate::delegate::{Job, WorkerState};
 use ratatui::layout::Rect;

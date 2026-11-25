@@ -1,4 +1,3 @@
-//! Read-only Agents view projection for provider-native and untracked provider runs.
 use super::*;
 use crate::provider::stream_cards::{CardStatus, StreamCard};
 use std::collections::{HashMap, HashSet};
@@ -226,8 +225,6 @@ pub(super) const GROUP_ID: &str = "agents-group:other";
 const ROW_WIDTH: usize = 40;
 const NO_TASK: &str = "task not shown";
 
-/// A provider CLI launch recognised in a shell tool card. Only the provider, the model flag and
-/// the first line of the task are kept; prompt bodies and tool output never reach the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Run {
     provider: &'static str,
@@ -280,7 +277,6 @@ fn value_to_command(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// The shell command of a tool card: JSON tool input (string or array), or `command: ...` text.
 fn command_text(detail: &str) -> Option<String> {
     let body = detail.trim_start();
     let body = ["arguments:", "Arguments:", "input:", "Input:"]
@@ -313,7 +309,6 @@ fn command_text(detail: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Shell-style tokens. Statement separators, pipes and redirections become their own tokens.
 fn shell_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -459,7 +454,6 @@ fn is_terminator(token: &str) -> bool {
     token == ";" || token.starts_with(['<', '>']) || token.ends_with('>')
 }
 
-/// Parse the arguments after the provider (and `exec` for Codex).
 fn parse_args(provider: &'static str, args: &[String]) -> Run {
     let value_flags = value_flags(provider);
     let mut model = None;
@@ -535,8 +529,6 @@ fn find_run(tokens: &[String], depth: usize) -> Option<Run> {
     None
 }
 
-/// First non-empty line of `text`, with escape sequences and control characters removed and
-/// whitespace collapsed.
 fn first_line(text: &str) -> String {
     let mut clean = String::new();
     let mut chars = text.chars().peekable();
@@ -580,8 +572,6 @@ fn cut(text: &str, width: usize) -> String {
     }
 }
 
-/// Recognise only provider CLI launchers in structured tool-call arguments. Ordinary shell cards
-/// remain ordinary activity; no command is executed or inferred from prose.
 fn provider_run(detail: &str) -> Option<Run> {
     let lower = detail.to_ascii_lowercase();
     if !["codex", "claude", "cursor-agent", "grok", "opencode"]
@@ -818,9 +808,6 @@ impl State {
                     }
                     continue;
                 }
-                // Provider sender/thread IDs are not necessarily Agents-row IDs. Keep a
-                // reported parent only when it is represented by another visible entry;
-                // otherwise the agent is a root in this conversation's tree.
                 let parent = entry
                     .parent
                     .as_deref()
@@ -985,7 +972,6 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
     let selected_row = rows.get(selected).cloned();
-    // Size to content (or the room above the composer); no dead bordered rows.
     let list_rows = rows.len().max(1) as u16;
     let height = (list_rows + 2).min(area.height).max(3);
     let panel = Rect {
@@ -1144,7 +1130,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Agent details "),
-        ), // Clip long values at the pane edge. Wrapping would move the card's columns.
+        ),
         columns[0],
     );
 

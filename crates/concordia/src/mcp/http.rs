@@ -1,4 +1,3 @@
-//! One MCP HTTP session. Native HTTP framing and TLS remain owned by WinHTTP on Windows.
 use super::{KNOWN_PROTOCOLS, LATEST_PROTOCOL, MAX_UPSTREAM_BYTES};
 use crate::mcp_registry::SecretRef;
 use serde_json::{json, Value};
@@ -163,8 +162,6 @@ impl Endpoint {
     }
 }
 
-/// Return a matching response as soon as a complete SSE event arrives; an open SSE stream
-/// need not reach EOF. Notifications and other response IDs cannot satisfy this request.
 fn payload(
     bytes: &[u8],
     head: &str,
@@ -410,7 +407,6 @@ fn plain_request(
     if endpoint.secure {
         return Err("HTTPS MCP proxy requires Windows WinHTTP".into());
     }
-    // DNS resolution uses the OS resolver; connect/read/write waits share the session deadline.
     let address = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .map_err(|_| "MCP host could not resolve")?

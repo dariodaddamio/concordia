@@ -6,165 +6,30 @@ use std::path::Path;
 pub enum SlashCommand {
     Use,
     UseAccount(String),
-    /// `/use add [provider]`; `None` opens the provider picker.
     UseAdd(Option<String>),
-    /// `/use remove [account]`; `None` opens the account picker.
     UseRemove(Option<String>),
     Model,
     ModelSet(String),
-    /// `/effort [level]`: choose a provider-reported reasoning effort.
     Effort(Option<String>),
-    /// `/usage`: limits for the current account.
     Usage,
-    /// `/usage all`: limits for every ready account.
     UsageAll,
     UsageRefresh,
-    /// `/help` or `/help --all` shows registry-backed commands.
     Help(bool),
     Resume,
     New,
     Config,
-    /// `/mode [plan|ask|edit|full]`: show or set the permission mode.
     Mode(Option<String>),
     Update,
     Version,
     Copy,
     Doctor,
     Exit,
-    /// `/harness ...` is executed by the TUI because it needs the live account home.
     Harness(String),
     Customization(bool),
     Mcp(String),
-    /// A known command received an unsupported argument. Keeping this distinct prevents
-    /// misspelled destructive commands such as `/update typo` from running.
     Invalid(String),
     Unknown(String),
 }
-
-/*
-fn parse_delegation(cmd: &str, body: &str) -> Option<SlashCommand> {
-    let rest = body.trim_start()[cmd.len()..].trim();
-    let mut it = rest.splitn(2, char::is_whitespace);
-    let first = it.next().unwrap_or("").trim();
-    let tail = it.next().unwrap_or("").trim();
-    let second = tail.split_whitespace().next().map(str::to_lowercase);
-    let lower = first.to_lowercase();
-    if matches!(cmd, "delegate" | "delegates") && lower == "delivery" {
-        return Some(SlashCommand::DelegateDelivery(tail.into()));
-    }
-    if matches!(cmd, "delegate" | "delegates") && lower == "after" {
-        let (ids, rest) = tail.split_once(char::is_whitespace).unwrap_or((tail, ""));
-        let (target, task) = rest
-            .trim_start()
-            .split_once(char::is_whitespace)
-            .unwrap_or((rest, ""));
-        let target = target.trim().to_lowercase();
-        let task = task.trim().to_string();
-        let parsed: Result<Vec<u32>, _> = ids.split(',').map(str::parse).collect();
-        return Some(match parsed {
-            Ok(after)
-                if !after.is_empty()
-                    && after.len() <= 8
-                    && !after.contains(&0)
-                    && !target.is_empty()
-                    && !task.is_empty() =>
-            {
-                SlashCommand::DelegateAfter {
-                    after,
-                    target,
-                    task,
-                }
-            }
-            _ => SlashCommand::Invalid("delegate after ID[,ID] ACCOUNT TASK".into()),
-        });
-    }
-    if matches!(cmd, "delegate" | "delegates") && lower == "model" {
-        let args: Vec<_> = tail.split_whitespace().collect();
-        return Some(if args.len() > 2 {
-            SlashCommand::Invalid("delegate model ACCOUNT [MODEL|default]".into())
-        } else {
-            SlashCommand::DelegateModel {
-                account: args.first().copied().unwrap_or("").to_lowercase(),
-                model: args.get(1).map(|m| m.to_string()),
-            }
-        });
-    }
-    let control = matches!(
-        lower.as_str(),
-        "help"
-            | "?"
-            | "stop"
-            | "cancel"
-            | "use"
-            | "send"
-            | "protocol"
-            | "collect"
-            | "returns"
-            | "graph"
-            | "routes"
-    );
-    if ((cmd == "workers" || cmd == "worker") || control) && tail.split_whitespace().count() > 1 {
-        return Some(SlashCommand::Invalid(cmd.into()));
-    }
-    if matches!(lower.as_str(), "help" | "?" | "collect" | "graph") && !tail.is_empty() {
-        return Some(SlashCommand::Invalid(cmd.into()));
-    }
-    match cmd {
-        "workers" | "worker" => Some(match lower.as_str() {
-            "add" | "new" => SlashCommand::WorkersAdd(second),
-            "remove" | "rm" | "delete" => SlashCommand::WorkersRemove(second),
-            "" | "list" if tail.is_empty() => SlashCommand::Workers,
-            _ => SlashCommand::Invalid("workers".into()),
-        }),
-        "delegate" | "delegates" => Some(match lower.as_str() {
-            "" | "help" | "?" => SlashCommand::DelegateHelp,
-            "stop" | "cancel" => SlashCommand::DelegateStop(second),
-            "use" | "send" => SlashCommand::DelegateUse(second),
-            "collect" => SlashCommand::DelegateCollect,
-            "graph" => SlashCommand::DelegateGraph,
-            "routes" => match second {
-                None => SlashCommand::DelegateRoutes(None),
-                Some(id) => match id.parse::<u32>() {
-                    Ok(id) if id > 0 => SlashCommand::DelegateRoutes(Some(id)),
-                    _ => SlashCommand::Invalid("delegate routes [ID]".into()),
-                },
-            },
-            "policy" => SlashCommand::DelegatePolicy(tail.to_owned()),
-            "scope" => SlashCommand::DelegateScope(tail.to_owned()),
-            "scoped" => match tail.split_once(char::is_whitespace) {
-                Some((account, rest)) => match crate::workspaces::parse_declarations(rest, true) {
-                    Ok((declarations, task)) => SlashCommand::DelegateScoped {
-                        account: account.into(),
-                        declarations,
-                        task,
-                    },
-                    Err(error) => SlashCommand::Invalid(error),
-                },
-                None => SlashCommand::Invalid(
-                    "delegate scoped ACCOUNT read:PATH write:PATH -- TASK".into(),
-                ),
-            },
-            "returns" => match second.as_deref() {
-                Some("auto") => SlashCommand::DelegateReturns(Some(true)),
-                Some("manual") => SlashCommand::DelegateReturns(Some(false)),
-                None => SlashCommand::DelegateReturns(None),
-                _ => SlashCommand::Invalid("delegate returns auto|manual".into()),
-            },
-            "protocol" => match second.as_deref() {
-                Some("on" | "true" | "yes") => SlashCommand::DelegateProtocol(Some(true)),
-                Some("off" | "false" | "no") => SlashCommand::DelegateProtocol(Some(false)),
-                None => SlashCommand::DelegateProtocol(None),
-                _ => SlashCommand::Invalid("delegate protocol".into()),
-            },
-            _ => SlashCommand::Delegate {
-                target: lower,
-                task: tail.to_string(),
-            },
-        }),
-        _ => None,
-    }
-}
-*/
 
 pub fn parse_slash(line: &str) -> Option<(SlashCommand, bool)> {
     let trimmed = line.trim();
@@ -278,20 +143,14 @@ pub fn is_provider_passthrough(line: &str) -> bool {
     matches!(parse_slash(line), Some((SlashCommand::Unknown(_), _)))
 }
 
-/// Concordia commands that run the provider's own feature for the active account, so they never
-/// need the shared-command picker.
 const REUSES_PROVIDER: &[&str] = &["/model", "/effort"];
 
-/// Returns the command name when the typed slash command is registered by both Concordia and
-/// the selected provider. Arguments remain in the original line and are routed by the caller.
 pub fn shared_command_name(
     line: &str,
     provider: ProviderKind,
     advertised: Option<&[crate::provider::AvailableCommand]>,
 ) -> Option<String> {
     let name = line.split_whitespace().next()?.to_ascii_lowercase();
-    // Concordia's `/model` already lists and sets the active provider's own models, so asking
-    // who runs it would only add a step before the list the owner expects.
     if !name.starts_with('/') || REUSES_PROVIDER.contains(&name.as_str()) {
         return None;
     }
@@ -353,7 +212,6 @@ macro_rules! command {
     };
 }
 
-/// The single source for slash command presentation, documentation and contextual teaching.
 pub const COMMAND_REGISTRY: &[CommandSpec] = &[
     command!(
         "/terminal",
@@ -576,7 +434,6 @@ pub fn format_slash_help(all: bool) -> String {
         .join("\n")
 }
 
-/// Markdown table used by README generation and its synchronization test.
 pub fn markdown_command_table() -> String {
     let mut out =
         String::from("| Command | Arguments | Description | View |\n| --- | --- | --- | --- |\n");
@@ -657,17 +514,12 @@ pub enum CommandOutcome {
     OpenUse,
     OpenAddProvider,
     OpenRemovePicker,
-    /// Connect a new account for this provider.
     AddAccount(ProviderKind),
     OpenModel,
-    /// `/usage`: show the current account's limits in the transcript.
     ShowUsage,
-    /// `/doctor`: open the interactive local diagnostics screen.
     OpenDoctor,
     ShowUsageRefresh,
-    /// `/usage all`: picker with every ready account.
     OpenUsage,
-    /// Copy the last assistant reply to the clipboard.
     CopyLastReply,
 }
 
@@ -708,7 +560,6 @@ pub fn dispatch_slash(
             )],
         ),
         SlashCommand::Resume => (CommandOutcome::OpenResume, Vec::new()),
-        // Handled by the TUI (it owns the live mode); nothing to do headless.
         SlashCommand::Mode(_)
         | SlashCommand::UseAccount(_)
         | SlashCommand::ModelSet(_)
@@ -746,8 +597,6 @@ pub fn dispatch_slash(
                 ],
             )
         }
-        // The TUI routes unknown names to the active provider. Keep the headless dispatcher
-        // side-effect free because it has no provider transport to receive the line.
         SlashCommand::Unknown(_) => (CommandOutcome::Ok, Vec::new()),
         SlashCommand::Harness(_) | SlashCommand::Customization(_) => (
             CommandOutcome::Ok,
@@ -815,7 +664,6 @@ mod tests {
             cmd("/use add Codex"),
             SlashCommand::UseAdd(Some("codex".into()))
         );
-        // /use with some other word is still the plain picker.
         assert_eq!(cmd("/use list"), SlashCommand::Use);
     }
 
@@ -900,82 +748,6 @@ mod update_tests {
         assert_eq!(c("/delegate"), SlashCommand::Unknown("delegate".into()));
         assert_eq!(c("/crew list"), SlashCommand::Unknown("crew".into()));
         assert_eq!(c("/scope"), SlashCommand::Unknown("scope".into()));
-        /*
-            assert_eq!(
-                c("/workers add Codex-2"),
-                SlashCommand::WorkersAdd(Some("codex-2".into()))
-            );
-            assert_eq!(c("/workers add"), SlashCommand::WorkersAdd(None));
-            assert_eq!(
-                c("/workers rm codex-2"),
-                SlashCommand::WorkersRemove(Some("codex-2".into()))
-            );
-            assert_eq!(c("/crew list"), SlashCommand::CrewList);
-            assert_eq!(
-                c("/crew use office"),
-                SlashCommand::CrewUse("office".into())
-            );
-            assert_eq!(c("/crew clear"), SlashCommand::CrewClear);
-            assert_eq!(c("/delegate"), SlashCommand::DelegateHelp);
-            assert_eq!(c("/delegate help"), SlashCommand::DelegateHelp);
-            assert_eq!(c("/delegate graph"), SlashCommand::DelegateGraph);
-            assert_eq!(c("/delegate routes"), SlashCommand::DelegateRoutes(None));
-            assert_eq!(
-                c("/delegate routes 7"),
-                SlashCommand::DelegateRoutes(Some(7))
-            );
-            assert_eq!(
-                c("/delegate policy set primary:Native-Model backup"),
-                SlashCommand::DelegatePolicy("set primary:Native-Model backup".into())
-            );
-            assert_eq!(
-                c("/delegate after 1,2   Codex-2   Preserve  exact\nTASK"),
-                SlashCommand::DelegateAfter {
-                    after: vec![1, 2],
-                    target: "codex-2".into(),
-                    task: "Preserve  exact\nTASK".into()
-                }
-            );
-            for invalid in [
-                "/delegate after",
-                "/delegate after 0 codex task",
-                "/delegate after 1,,2 codex task",
-                "/delegate graph typo",
-                "/delegate routes 0",
-                "/delegate routes invalid",
-                "/delegate routes 1 2",
-            ] {
-                assert!(matches!(c(invalid), SlashCommand::Invalid(_)));
-            }
-            assert_eq!(
-                c("/delegate stop Claude"),
-                SlashCommand::DelegateStop(Some("claude".into()))
-            );
-            assert_eq!(c("/delegate use"), SlashCommand::DelegateUse(None));
-            assert_eq!(
-                c("/delegate protocol ON"),
-                SlashCommand::DelegateProtocol(Some(true))
-            );
-            assert_eq!(
-                c("/delegate protocol"),
-                SlashCommand::DelegateProtocol(None)
-            );
-            // The task keeps its case, spacing inside and punctuation.
-            assert_eq!(
-                c("/delegate Codex-2   Fix the BUG in  src/a.rs, please"),
-                SlashCommand::Delegate {
-                    target: "codex-2".into(),
-                    task: "Fix the BUG in  src/a.rs, please".into()
-                }
-            );
-            assert_eq!(
-                c("/delegate auto"),
-                SlashCommand::Delegate {
-                    target: "auto".into(),
-                    task: String::new()
-                }
-            );
-        */
     }
 
     #[test]

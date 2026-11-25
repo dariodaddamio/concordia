@@ -1,4 +1,3 @@
-//! Small deterministic titles, separate from optional transcript logging and provider files.
 use crate::store::{store_dir, ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
@@ -7,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 const MAX_TITLE_CHARS: usize = 80;
 const MAX_RECORD_BYTES: u64 = 32 * 1024;
-/// Provider transcripts use these XML blocks for setup/context, not user requests.
 pub const INJECTED_WRAPPER_TAGS: &[&str] = &[
     "recommended_plugins",
     "environment_context",
@@ -49,15 +47,12 @@ fn clean(raw: &str) -> String {
     title
 }
 
-/// Sanitize an explicit chat title. `None` means restore automatic titling.
 pub fn sanitize(raw: &str) -> Option<String> {
     let title = clean(raw);
     (!title.is_empty()).then_some(title)
 }
 
-/// First substantive request, without inference or a provider call.
 pub fn real_user_text(prompt: &str) -> String {
-    // Bound work even when a pasted prompt is enormous.
     let mut text: String = crate::prompt_time::strip_header(prompt)
         .chars()
         .take(64 * 1024)
@@ -73,9 +68,6 @@ pub fn real_user_text(prompt: &str) -> String {
             text.replace_range(start..start + open.len() + end + close.len(), " ");
         }
     }
-    // Codex can prepend a rendered AGENTS.md block without XML delimiters. A blank
-    // line is the boundary used by the injected message format; an all-wrapper
-    // message therefore remains empty.
     if let Some(start) = text.find("# AGENTS.md instructions") {
         let before = &text[..start];
         let after = &text[start..];
@@ -100,7 +92,6 @@ pub fn real_user_text(prompt: &str) -> String {
         .join(" ")
 }
 
-/// First substantive request, without inference or a provider call.
 pub fn title_from_prompt(prompt: &str) -> String {
     clean(real_user_text(prompt).trim_start_matches(['#', ' ', '\t']))
 }
@@ -120,7 +111,6 @@ impl Identity {
         }
         let normalized_path: PathBuf = home.components().collect();
         let mut normalized = normalized_path.to_string_lossy().replace('\\', "/");
-        // Windows homes are case insensitive; preserve case on case-sensitive hosts.
         if cfg!(windows) {
             normalized.make_ascii_lowercase();
         }
@@ -136,7 +126,6 @@ impl Identity {
     }
 
     fn path(&self, root: &Path) -> PathBuf {
-        // Stable filename hash is only an index. Reads also verify every identity field.
         let encoded = serde_json::to_vec(self).expect("string identity serializes");
         let hash = encoded.iter().fold(0xcbf29ce484222325u64, |h, b| {
             (h ^ u64::from(*b)).wrapping_mul(0x100000001b3)
@@ -179,7 +168,6 @@ pub fn get(
     (!title.is_empty()).then_some(title)
 }
 
-/// Explicit rename/reset, separate from automatic first-request titling.
 pub fn set(
     root: &Path,
     provider: ProviderKind,
@@ -225,7 +213,6 @@ pub fn set(
     .map_err(|error| error.to_string())
 }
 
-/// Atomically publish a complete record without replacing the first writer's title.
 pub fn set_if_absent(
     root: &Path,
     provider: ProviderKind,

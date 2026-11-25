@@ -68,8 +68,6 @@ fn expansion_and_detail_use_independent_message_identity() {
     a.toggle_card(0, true);
     assert!(grouped_cards(&messages, &a, true).hidden[1]);
 
-    // Action/subject weight is one intentional span, independent of provider capitalization,
-    // filename punctuation and UTF-8 byte widths. Status and disclosure stay separate.
     for (status, mark, color) in [
         (CardStatus::Running, '◉', Color::Cyan),
         (CardStatus::Done, '✓', Color::Green),
@@ -122,13 +120,13 @@ fn search_cycles_preserves_position_and_handles_unicode_case_expansion() {
     );
     a.next(false);
     assert_eq!(a.selected_match, 1);
-    a.search_parts(&[text]); // draw-frame search is cached and must not reset navigation
+    a.search_parts(&[text]);
     assert_eq!(a.selected_match, 1);
     a.next(false);
     assert_eq!(a.selected_match, 0);
     a.next(true);
     assert_eq!(a.selected_match, 1);
-    a.invalidate_search(); // a streaming card update marks cached search results stale
+    a.invalidate_search();
     a.search_parts(&["tool began\ntool resumed\ntool ended"]);
     assert_eq!(a.matches.len(), 3);
     a.query = "i\u{307}".into();
@@ -287,7 +285,6 @@ fn paste_events_and_overflow_chunks_are_routed_to_activity_query_only() {
     app.begin_queue_edit(edit);
     app.messages.push(card("one", "tool", "output"));
     app.activity.open(1);
-    // Same centralized path used by Event::Paste and Windows' buffered overflow chunks.
     app.paste_text("first\r\n");
     dispatch_key_burst(
         &mut app,

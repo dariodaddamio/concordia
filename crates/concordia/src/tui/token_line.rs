@@ -1,10 +1,6 @@
-//! The dim line under each reply: `in 12.3k - out 1.4k - cached 9.8k - 8.2s`.
-//! Only fields the provider reported appear; the wall-clock turn time is always there.
-
 use crate::provider::stream_cards::TurnUsage;
 use std::time::Duration;
 
-/// `ui.token_line` in config.toml; `CONCORDIA_TOKEN_LINE=0` turns it off regardless.
 #[cfg(test)]
 pub fn ui_token_line_enabled() -> bool {
     enabled(crate::config::ui_token_line())
@@ -14,7 +10,6 @@ pub fn enabled(preference: bool) -> bool {
     preference && std::env::var("CONCORDIA_TOKEN_LINE").map_or(true, |v| v.trim() != "0")
 }
 
-/// Compact counts through billions/trillions and scientific notation, without overflow.
 pub fn compact(n: u64) -> String {
     fn one_decimal(tenths: u64, suffix: &str) -> String {
         if tenths.is_multiple_of(10) {

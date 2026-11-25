@@ -1,11 +1,8 @@
-//! What the user has connected, kept in Concordia's state directory (never in a project).
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// One provider, isolated home and project a harness was connected for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -14,10 +11,8 @@ pub struct Entry {
     pub project: String,
     pub connect_ok: bool,
     pub connect_note: String,
-    /// `verified`, `unverified` or `not-run`.
     pub verify: String,
     pub verify_note: String,
-    /// Seconds since the epoch of the last connect or verify.
     pub at: u64,
 }
 
@@ -32,12 +27,10 @@ pub struct Connection {
     pub entries: Vec<Entry>,
     #[serde(default)]
     pub has_pinned_decisions: bool,
-    /// Projects explicitly connected across current and future accounts.
     #[serde(default)]
     pub all_account_projects: Vec<String>,
 }
 
-/// Who the entry belongs to; refreshes the stored record when the manifest changed.
 #[derive(Debug, Clone, Copy)]
 pub struct Identity<'a> {
     pub name: &'a str,
@@ -47,24 +40,20 @@ pub struct Identity<'a> {
     pub skill: Option<&'a str>,
 }
 
-/// The connected provider target whose receipt is being checked.
 pub struct ReceiptTarget<'a> {
     pub provider: &'a str,
     pub project: &'a Path,
     pub home: Option<&'a Path>,
 }
 
-/// The identity returned by a command-backed manifest refresh.
 pub struct RefreshedIdentity {
     pub name: String,
     pub version: Option<String>,
     pub manifest_sha256: String,
 }
 
-/// Native callback used to refresh a command-backed adapter manifest.
 pub type RefreshCommand<'a> = dyn Fn(&str) -> Option<RefreshedIdentity> + 'a;
 
-/// Identity recorded in a protected receipt.
 pub struct ReceiptIdentity<'a> {
     pub name: &'a str,
     pub version: Option<&'a str>,
@@ -72,9 +61,6 @@ pub struct ReceiptIdentity<'a> {
     pub manifest_sha256: &'a str,
 }
 
-/// Immutable identity captured while a catalog row is reviewed.  Mutating commands must
-/// validate this target immediately before invoking an adapter; a later catalog refresh may
-/// never silently retarget an action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionTarget {
@@ -143,10 +129,6 @@ fn transaction<T>(store: &Path, mutate: impl FnOnce() -> Result<T, String>) -> R
         .map_err(|error| error.to_string())
 }
 
-/// Whether a receipt's recorded adapter identity is still the connected identity.
-///
-/// File manifests are re-hashed at the point of use; a stored version alone is not
-/// sufficient because an adapter can change without updating its version string.
 pub fn identity_matches(
     store: &Path,
     target: &ReceiptTarget<'_>,
@@ -216,7 +198,6 @@ pub(super) fn path_key(path: &Path) -> String {
     }
 }
 
-/// Every connection. Missing file: none. A damaged file is an error, so it is never overwritten.
 pub fn load(store: &Path) -> Result<Vec<Connection>, String> {
     load_file(store).map(|file| file.connections)
 }
@@ -286,7 +267,6 @@ fn load_file(store: &Path) -> Result<File, String> {
         })
 }
 
-/// Re-read the saved connection and refuse a mutation when any reviewed identity changed.
 pub fn check_action_target(store: &Path, target: &ActionTarget) -> Result<(), String> {
     let all = load(store)?;
     let connection = all
@@ -310,8 +290,6 @@ pub fn check_action_target(store: &Path, target: &ActionTarget) -> Result<(), St
     Ok(())
 }
 
-/// Check a reviewed target and remove only that integration. This is intentionally separate
-/// from native uninstall: it withdraws Concordia receipts only.
 pub fn remove_action_target(store: &Path, target: &ActionTarget) -> Result<bool, String> {
     transaction(store, || remove_action_target_locked(store, target))
 }
@@ -415,7 +393,6 @@ fn same_target(a: &Entry, b: &Entry) -> bool {
     a.provider == b.provider && a.home == b.home && a.project == b.project
 }
 
-/// Store `entry` under `identity`, replacing an earlier entry for the same provider, home and project.
 pub fn record(store: &Path, identity: &Identity<'_>, entry: Entry) -> Result<(), String> {
     let pins = !identity.manifest_path.starts_with("command:")
         && super::pinned::manifest_at(Path::new(identity.manifest_path), identity.manifest_sha256)
@@ -506,7 +483,6 @@ pub fn share_project(store: &Path, name: &str, project: &Path) -> Result<(), Str
     })
 }
 
-/// Update the verify result of one existing entry.
 #[allow(clippy::too_many_arguments)]
 pub fn set_verify(
     store: &Path,
@@ -548,7 +524,6 @@ fn set_verify_unlocked(
     save_unlocked(store, all)
 }
 
-/// Forget a connection. Returns whether it existed.
 pub fn remove(store: &Path, name: &str) -> Result<bool, String> {
     transaction(store, || remove_unlocked(store, name))
 }

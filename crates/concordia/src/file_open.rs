@@ -1,5 +1,3 @@
-//! Argument-array planning for opening an explicitly selected file in the user's editor.
-
 use crate::file_links::ResolvedFile;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

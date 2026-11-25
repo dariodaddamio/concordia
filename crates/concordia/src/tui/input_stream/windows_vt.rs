@@ -1,6 +1,3 @@
-//! Windows ConPTY input through its VT byte stream. Crossterm's Windows backend uses
-//! `ReadConsoleInputW`, which does not receive VT input sequences when VT input mode is enabled.
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::c_void;
 use std::io;
@@ -47,8 +44,6 @@ enum RawMessage {
     Error(io::Error),
 }
 
-/// Owns the VT input mode and a blocking raw-byte reader. It must be dropped before Crossterm
-/// raw mode is disabled, so its original console mode is restored as part of input shutdown.
 pub(super) struct WindowsVt {
     input: Handle,
     original_mode: u32,
@@ -64,8 +59,6 @@ pub(super) enum StartError {
 }
 
 impl WindowsVt {
-    /// Enables VT input before creating any reader. Failure here is safe for the caller to treat
-    /// as unsupported and fall back to Crossterm, because no input has yet been consumed.
     pub(super) fn start() -> Result<Self, StartError> {
         let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
         if input.is_null() || input == invalid_handle() {
@@ -123,7 +116,6 @@ impl WindowsVt {
         })
     }
 
-    /// Parse raw bytes on the bounded event-reader thread, preserving all bytes in each event.
     pub(super) fn run(
         &mut self,
         sender: &SyncSender<super::Message>,
@@ -199,8 +191,6 @@ impl WindowsVt {
 impl Drop for WindowsVt {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        // A full raw-byte channel can block the reader in send; drop it before cancelling the
-        // synchronous console read and joining, so either blocking point can always be released.
         drop(self.receiver.take());
         if let Some(reader) = self.raw_reader.take() {
             let thread_handle = reader.as_raw_handle() as Handle;
@@ -325,16 +315,12 @@ struct VtParser {
 
 impl VtParser {
     fn push(&mut self, byte: u8) -> io::Result<Option<Event>> {
-        // Esc followed immediately by a new terminal sequence is two inputs. Keep the
-        // second ESC pending, or the paste opener becomes literal "[200~" draft text.
         if byte == b'\x1b' && self.event.as_slice() == b"\x1b" {
             return Ok(Some(Event::Key(KeyEvent::new(
                 KeyCode::Esc,
                 KeyModifiers::NONE,
             ))));
         }
-        // An unframed LF is ConPTY's Ctrl+Enter paste newline. Inside bracketed paste the
-        // incomplete event buffer is nonempty, so the byte remains part of Event::Paste data.
         if byte == b'\n' && self.event.is_empty() {
             return Ok(Some(Event::Key(KeyEvent::new(
                 KeyCode::Enter,
@@ -357,8 +343,6 @@ impl VtParser {
         let (consumed, event) = match crossterm::event::parse_windows_vt_event(&self.event, true) {
             Ok(parsed) => parsed,
             Err(_) if self.event.first() == Some(&b'\x1b') => {
-                // Match Crossterm's stream parser: unsupported control sequences are not
-                // text and must not close the chat or discard its existing draft.
                 self.event.clear();
                 return Ok(None);
             }
@@ -390,13 +374,9 @@ pub(super) fn normalize_event(event: Event) -> Event {
             if matches!(key.code, KeyCode::Char('h' | 'w'))
                 && key.modifiers == KeyModifiers::CONTROL =>
         {
-            // Windows hosts encode word-backspace as BS (Ctrl+H) or Ctrl+W;
-            // ordinary Backspace is DEL. Keep the word-editing intent.
             key.code = KeyCode::Backspace;
             Event::Key(key)
         }
-        // ConPTY encodes LF in its VT byte stream. Preserve the same text meaning as the
-        // Crossterm INPUT_RECORD backend, where pasted LF arrives as Ctrl+Enter.
         Event::Key(mut key)
             if (key.code == KeyCode::Char('\n') && key.modifiers.is_empty())
                 || (key.code == KeyCode::Char('j') && key.modifiers == KeyModifiers::CONTROL) =>

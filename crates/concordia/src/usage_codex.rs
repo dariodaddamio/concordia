@@ -1,4 +1,3 @@
-//! Read-only native app-server RPC. Never creates a thread or starts a model turn.
 use serde_json::{json, Value};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -89,8 +88,6 @@ pub(crate) async fn fetch_with(bin: &str, home: &Path) -> Result<String, String>
     result
 }
 
-/// The main `codex` bucket, with every other bucket in `rateLimitsByLimitId` (for example a
-/// separate allowance for one model) attached under `extra`, in limit-id order.
 pub(crate) fn limits_with_buckets(result: &Value) -> Result<Value, String> {
     let by_id = result.get("rateLimitsByLimitId").and_then(Value::as_object);
     let mut limits = by_id

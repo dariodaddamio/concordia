@@ -1,4 +1,3 @@
-//! A bounded, read-only integration catalog owned by the current conversation surface.
 use super::{App, PickerKind};
 use crate::update::{PreviewLine, UpdatePreview};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,8 +6,6 @@ use std::sync::{
     mpsc, Arc,
 };
 
-/// The mutation types exposed by F10. Confirmation is intentionally owned by the shared picker;
-/// this module only provides the stable review payload and bounded execution primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Connect,
@@ -204,7 +201,6 @@ fn catalog_footer(catalog: &crate::harness::catalog::Catalog) -> String {
 }
 
 fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
-    // Border title already names the panel; the body starts with content.
     let mut lines = Vec::new();
     if catalog.integrations.is_empty() {
         lines.push(PreviewLine::Text("No integrations connected yet.".into()));
@@ -767,8 +763,6 @@ pub(super) fn poll_action(app: &mut App) -> bool {
     true
 }
 
-/// Accept a terminal paste while the new-manifest field is active. The shared event loop may
-/// route clipboard payloads here without placing them in the composer draft.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
     if !app
         .picker

@@ -1,4 +1,3 @@
-//! Bypass only a verified stock npm bridge, using its own unmodified native executable.
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,8 +10,6 @@ pub(crate) struct Native {
     pub env: Vec<(String, String)>,
 }
 
-/// Return the package a stock npm shim declares as its entrypoint. This intentionally only
-/// identifies an existing, matching package manifest; an unrecognized shim must not be cached.
 pub(crate) fn package_for_shim(
     program: &str,
     provider: crate::store::ProviderKind,
@@ -52,8 +49,6 @@ pub(crate) fn package_for_shim(
     .then_some(package)
 }
 
-/// Run the declared entrypoint of a stock npm shim without cmd.exe. Unlike bypassing the
-/// bridge, this preserves the installed JavaScript's behavior across package updates.
 pub(crate) fn node_bridge(
     program: &str,
     provider: crate::store::ProviderKind,
@@ -195,7 +190,6 @@ mod tests {
         assert_eq!(resolve(&shim, &hash).unwrap().program, binary);
         assert!(resolve(&shim, "different bridge hash").is_none());
         if cfg!(windows) {
-            // A newer bridge is still run verbatim through native Node, never bypassed.
             let node = dir.path().join("node.exe");
             std::fs::write(&node, "synthetic node marker").unwrap();
             let (resolved_node, script) =
@@ -219,7 +213,6 @@ mod tests {
             assert_eq!(launch.args[0], script.to_string_lossy());
             assert_eq!(&launch.args[1..], ["exec", "--json", "-"]);
             assert_eq!(launch.stdin.as_deref(), Some(prompt));
-            // A package claiming a different entrypoint cannot redirect this resolution.
             std::fs::write(
                 package.join("package.json"),
                 r#"{"name":"@openai/codex","bin":{"codex":"other.js"}}"#,

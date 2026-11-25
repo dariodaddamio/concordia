@@ -1,7 +1,3 @@
-//! The landing page: recent chats grouped by project folder and each project's open work as its
-//! Harness ledger reports it. It replaces the empty transcript until
-//! the person types, resumes a chat or presses Esc.
-
 use super::{App, MsgRole, FOOTER_HINT};
 use crate::sessions::{format_relative_time, list_recent_sessions, SessionSummary};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -15,10 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
-/// How many recent chats the page lists, and how many projects it asks for open work.
 const RECENT_CHATS: usize = 40;
 const WORK_PROJECTS: usize = 6;
-/// Below this width the work pane is left out and the chats use the whole row.
 const TWO_PANES_MIN: u16 = 70;
 const DOCUMENTATION_URL: &str = "https://dariodaddamio.github.io/concordia/";
 
@@ -38,8 +32,6 @@ pub(crate) struct LandingMeter {
     pub(crate) snapshot: crate::usage::UsageSnapshot,
 }
 
-/// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
-/// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
     let current = crate::workspace_paths::display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
@@ -177,8 +169,6 @@ fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
     display_groups_at(sessions, cwd, now_ms)
 }
 
-/// The project identity, or for a git worktree its main repository: a worktree's
-/// `.git` is a file reading `gitdir: <repo>/.git/worktrees/<name>`.
 fn project_root(folder: &Path) -> PathBuf {
     let pointer = folder.join(".git");
     let main = std::fs::symlink_metadata(&pointer)
@@ -205,7 +195,6 @@ fn project_root(folder: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
-/// One project's open work. `None` when its Habena predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWork {
     pub folder: String,
@@ -215,11 +204,9 @@ pub struct ProjectWork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItem {
     pub text: String,
-    /// Parked for later, as opposed to in progress.
     pub queued: bool,
 }
 
-/// `habena run plan:open --json` output: active plans first, then the open and queued rows.
 pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     let text = |v: &serde_json::Value, key: &str| {
@@ -245,7 +232,6 @@ pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     Some(items)
 }
 
-/// The connected Habena program (`/harness connect habena`), if any.
 fn harness_program(state_root: &Path) -> Option<String> {
     crate::harness::connections::load(state_root)
         .ok()?
@@ -281,10 +267,7 @@ pub struct Landing {
     provider_health: Vec<(crate::store::ProviderKind, bool)>,
     from_chat: bool,
     all_sessions: Vec<SessionSummary>,
-    /// Sessions the default view hides. Counted once when the sessions are loaded: the count
-    /// needs a filesystem lookup per session and must never run while drawing a frame.
     hidden_total: usize,
-    /// Chat titles for `groups`, with the time they were resolved.
     titles_cache: Option<(std::time::Instant, Vec<String>, Vec<Vec<String>>)>,
     show_all: bool,
     pub(crate) hidden_temp_root: Option<PathBuf>,
@@ -300,12 +283,10 @@ pub struct Landing {
     goal_hits: Vec<Option<usize>>,
     pub(crate) work: Vec<ProjectWork>,
     work_rx: Option<mpsc::Receiver<ProjectWork>>,
-    /// Where the rows were drawn, for the mouse.
     chats_area: Rect,
     work_area: Rect,
     goals_area: Rect,
     last_click: Option<(usize, Instant)>,
-    /// Tokens through Concordia in the last 24 hours, read once when the page opens.
     tokens_24h: u64,
     tokens_all_time: u64,
     tokens_checked: Instant,
@@ -314,7 +295,6 @@ pub struct Landing {
     tokens_partial: bool,
     tokens_error: Option<String>,
     pub(crate) meters: Vec<LandingMeter>,
-    /// The shared chat list this page shows; `None` when the caller supplied the sessions.
     sessions_generation: Option<u64>,
 }
 
@@ -338,7 +318,6 @@ impl Landing {
         rows
     }
 
-    /// Open work is still being read.
     #[cfg(test)]
     pub fn work_pending(&self) -> bool {
         self.work_rx.is_some()
@@ -349,7 +328,6 @@ impl Landing {
     }
 }
 
-/// Show the landing page for this folder; with no recorded chats there is nothing to show.
 pub(super) fn open(app: &mut App) {
     let (sessions, generation) = scan_recent_chats(&app.state_root);
     let program = harness_program(&app.state_root);
@@ -392,7 +370,6 @@ pub(super) fn back_to_chat(app: &mut App) {
     app.tab_request = Some(super::tabs::TabAction::BackToChat);
 }
 
-/// An unbound conversation can host Home without replacing a saved or running chat.
 pub(super) fn can_host_home(app: &App) -> bool {
     !app.busy
         && app.native_session_id.is_none()
@@ -402,17 +379,12 @@ pub(super) fn can_host_home(app: &App) -> bool {
             .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
 }
 
-/// The newest Home chat list read in this process. Reading provider histories can take seconds,
-/// so a later Home opens with this list at once and picks up a background rescan in `poll`.
 struct RecentChats {
     state_root: PathBuf,
     sessions: Vec<SessionSummary>,
-    /// Last list that open Homes may show.
     generation: u64,
-    /// Monotonic stamp handed to each scan when it starts; only a newer stamp may publish.
     next_generation: u64,
     scanning: bool,
-    /// A Home or save asked for another pass while `scanning` was true.
     rescan_again: bool,
 }
 
@@ -444,7 +416,6 @@ fn ensure_recent_chat_cache(
     cache
 }
 
-/// Take the next start stamp for a scan of this state root.
 fn begin_recent_chat_scan(state_root: &Path) -> u64 {
     let mut cache = ensure_recent_chat_cache(state_root);
     let entry = cache.as_mut().expect("ensure_recent_chat_cache");
@@ -452,7 +423,6 @@ fn begin_recent_chat_scan(state_root: &Path) -> u64 {
     entry.next_generation
 }
 
-/// Publish only when this scan's start stamp is still the newest finished result.
 fn publish_recent_chats(state_root: &Path, generation: u64, sessions: Vec<SessionSummary>) -> bool {
     let mut cache = ensure_recent_chat_cache(state_root);
     let entry = cache.as_mut().expect("ensure_recent_chat_cache");
@@ -464,8 +434,6 @@ fn publish_recent_chats(state_root: &Path, generation: u64, sessions: Vec<Sessio
     true
 }
 
-/// Clears `scanning` on every exit (return, panic, or spawn failure follow-up) and starts one
-/// more pass when a request arrived while the finished scan was running.
 struct RecentChatScanGuard {
     state_root: PathBuf,
 }
@@ -489,7 +457,6 @@ impl Drop for RecentChatScanGuard {
     }
 }
 
-/// Read the chat list now and publish it when this scan is still the newest.
 fn scan_recent_chats(state_root: &Path) -> (Vec<SessionSummary>, u64) {
     let generation = begin_recent_chat_scan(state_root);
     let sessions = list_recent_sessions(state_root, RECENT_CHATS);
@@ -507,8 +474,6 @@ fn cached_recent_chats(state_root: &Path) -> Option<(Vec<SessionSummary>, u64)> 
         .map(|cache| (cache.sessions.clone(), cache.generation))
 }
 
-/// One background rescan at a time. A request while one is running sets `rescan_again` so another
-/// pass starts when the running one finishes.
 fn rescan_recent_chats(state_root: &Path) {
     {
         let mut cache = ensure_recent_chat_cache(state_root);
@@ -530,13 +495,8 @@ fn rescan_recent_chats(state_root: &Path) {
             let sessions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 list_recent_sessions(&root, RECENT_CHATS)
             }));
-            match sessions {
-                Ok(sessions) => {
-                    let _ = publish_recent_chats(&root, generation, sessions);
-                }
-                Err(_) => {
-                    // Leave the last good list in place; scanning clears in the guard.
-                }
+            if let Ok(sessions) = sessions {
+                let _ = publish_recent_chats(&root, generation, sessions);
             }
         });
     if spawned.is_err() {
@@ -562,7 +522,6 @@ pub(super) fn open_home_tab(app: &mut App) {
     }
 }
 
-/// Take a newer chat list from the shared cache, keeping the selected chat and folder states.
 fn poll_recent_chats(app: &mut App) -> bool {
     let Some(landing) = app.landing.as_mut() else {
         return false;
@@ -766,7 +725,6 @@ pub(super) fn close(app: &mut App) {
     }
 }
 
-/// Drafting keeps the landing page visible.
 pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     if !visible(app) || text.is_empty() {
         return false;
@@ -775,7 +733,6 @@ pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     false
 }
 
-/// On screen: opened, nothing said in this chat yet, and no picker over it.
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && app.picker.is_none()
@@ -796,7 +753,6 @@ pub(super) fn editing_goal(_app: &App) -> bool {
     false
 }
 
-/// The landing usage pane owns subscription facts whenever it is actually drawn.
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
         && app
@@ -805,7 +761,6 @@ pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
             .is_some_and(|landing| !landing.meters.is_empty() && width >= TWO_PANES_MIN)
 }
 
-/// Collect open work that arrived from the background reader.
 pub(super) fn poll(app: &mut App) -> bool {
     if app.landing.is_none() {
         return false;
@@ -863,8 +818,6 @@ fn set_pane(app: &mut App, pane: Pane) {
     }
 }
 
-/// Keys while the page shows. `false` leaves the key to the rest of the interface (Ctrl
-/// shortcuts, and a printable key after it has closed the page and joined the input).
 pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
     if app.picker.is_some()
         || app.workspace.focused.is_some()
@@ -897,7 +850,6 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    // Slash completion owns its keys even while the landing lists stay visible.
     if app
         .landing
         .as_ref()
@@ -914,8 +866,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     let plain = !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-    // A nonempty draft owns editing and Enter; Up/Down still
-    // move through the chats while the draft is one line.
     let list_key = matches!(key.code, KeyCode::Up | KeyCode::Down)
         && plain
         && !app.editor.text().contains('\n');
@@ -976,7 +926,6 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
-            // Drafting keeps the landing page visible.
             set_pane(app, Pane::Chats);
             return false;
         }
@@ -1020,7 +969,6 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     })
 }
 
-/// Wheel and clicks while the page shows; `true` when the page used the event.
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
     let documentation_hit = app
         .areas
@@ -1097,7 +1045,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
     true
 }
 
-/// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing, width: usize) -> usize {
     let work: usize = landing
         .work
@@ -1169,10 +1116,8 @@ fn meter_reset_label(raw: &str, expired: bool) -> String {
     }
 }
 
-/// One heading per account (plan, credits, limit state), then one row per usage window.
 fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     let snapshot = &meter.snapshot;
-    // The same account name `/usage` shows (for example "Codex 2"), not "codex codex-2".
     let mut heading = crate::accounts::display_account_name(meter.provider, &meter.account);
     if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
         heading.push_str(&format!(" · {plan}"));
@@ -1222,8 +1167,6 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
         }
     }
     if snapshot.windows.is_empty() {
-        // Say what is happening (checking, not shown by this provider, unavailable) rather
-        // than a bare "unknown" while `/usage` is reading the same account.
         let state = snapshot.summary.trim();
         let state = if state.is_empty() {
             "usage unknown"
@@ -1253,7 +1196,6 @@ fn goal_label(_goal: &str) -> String {
     )
 }
 
-/// Rows a line takes once wrapped into the goals pane.
 fn wrapped_rows(text: &str, width: usize) -> usize {
     wrap_goal_line(Line::from(text.to_string()), width)
         .len()
@@ -1333,9 +1275,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    // A chat title is resolved from the account store and the title file on disk. Resolve the
-    // visible titles at most every two seconds, never once per frame.
-    // The key is the listed session ids in order, so any change to the list re-resolves at once.
     let titles_key: Vec<String> = app
         .landing
         .as_ref()
@@ -1358,7 +1297,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         })
     });
     if titles_stale {
-        // One account lookup per account, not per chat: each lookup loads the account store.
         let mut homes = std::collections::HashMap::new();
         let fresh: Vec<Vec<String>> = app
             .landing
@@ -1387,7 +1325,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
-    // As tall as the longer pane's content, within the space there is.
     let welcome_visible = landing.welcome
         && crate::store::load_store(&app.state_root)
             .accounts
@@ -1400,8 +1337,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             (area.width as usize * 45 / 100).saturating_sub(2),
         ) + 7
     };
-    // Compact intro stacks above the chat list, so its rows must add to the list
-    // height rather than replace it (otherwise the list area collapses to zero).
     let content = {
         let chats = landing.rows().len();
         let intro = if welcome_visible || compact_intro {
@@ -1442,9 +1377,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
-    // A narrow window shows the focused pane, so Tab never sends input into a hidden pane.
     if !narrow_goals {
-        // Chats: groups and their chats, the selection kept in view.
         let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" chats ")
@@ -1544,7 +1477,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 1,
             ));
             landing.goals_area = Rect::default();
-            // The usage pane on the right remains independently visible at compact heights.
         }
         let list_area = if compact_intro {
             Rect::new(
@@ -1556,7 +1488,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             inner
         };
-        // Hit-testing must use the list region, not the compact intro above it.
         landing.chats_area = list_area;
         let rows = landing.rows();
         let height = list_area.height as usize;
@@ -1664,8 +1595,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize);
         let usage_height = usage_rows as u16 + 2;
         if right.height <= usage_height.saturating_add(7) {
-            // At compact heights every connected account is more useful than the optional
-            // open-work pane. Keep the complete provider snapshot on screen.
             (Some(right), Rect::default())
         } else {
             let chunks = Layout::default()
@@ -1722,8 +1651,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let mut hits: Vec<Option<usize>> = Vec::new();
     let mut focus = None;
     if lines.is_empty() && landing.work.is_empty() {
-        // An empty pane must still say what it is for and how to fill it. Open work, when
-        // present, already fills the pane and keeps its rows.
         for (text, style) in [
             (
                 "No open work.",
@@ -1817,7 +1744,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Pre-wrap with the same rows used by scrolling and mouse hit-testing.
 fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
     let mut chars = Vec::new();
     let mut runs = Vec::new();
@@ -1853,7 +1779,6 @@ fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The provider's or Concordia's title for a chat, else its first words.
 fn chat_title(
     app: &App,
     session: &SessionSummary,

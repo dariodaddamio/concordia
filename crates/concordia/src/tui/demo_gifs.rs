@@ -1,4 +1,3 @@
-//! Actual renderer and handlers; isolated fixtures and a fake dispatch channel.
 use super::*;
 use serde_json::{json, Value};
 
@@ -190,7 +189,7 @@ fn continuity() -> Value {
     for id in ["codex-3", "backup"] {
         let home = s._dir.path().join(id);
         std::fs::create_dir_all(&home).unwrap();
-        std::fs::write(home.join("auth.json"), "{}").unwrap(); // Synthetic presence marker, no credential.
+        std::fs::write(home.join("auth.json"), "{}").unwrap();
         crate::store::upsert_stored_account(
             s._dir.path(),
             crate::store::StoredAccount {

@@ -1,4 +1,3 @@
-//! Native Cursor image inputs over ACP with explicit sessions and real permission responses.
 use super::*;
 use crate::provider::interaction::InteractionConnection;
 use crate::provider::CardStatus;
@@ -187,7 +186,6 @@ impl Connection {
             )
             .await
             {
-                // A closed/missing UI cannot leave a provider awaiting an invisible grant.
                 request.respond(json!({"outcome":{"outcome":"cancelled"}}));
             }
             let answer = tokio::select! {
@@ -291,8 +289,6 @@ impl Connection {
             self.emit_commands().await;
             return;
         }
-        // session/load replays the old transcript before its response. History belongs to
-        // readback, not this turn's answer, thinking stream or active tool cards.
         if !self.prompting {
             return;
         }
@@ -383,8 +379,6 @@ impl Connection {
         }
     }
 }
-/// Cursor wraps an MCP tool's input as `{providerIdentifier, toolName, args}`. The card shows the
-/// arguments, and for Concordia's own question tool the questions themselves.
 fn tool_input_detail(raw: &Value) -> String {
     let Some(args) = raw
         .get("args")
@@ -406,9 +400,6 @@ fn tool_input_detail(raw: &Value) -> String {
     args.to_string()
 }
 
-/// Cursor keeps print-mode chats (`create-chat`, `--resume`) apart from ACP sessions, so a chat
-/// started before ACP became the default cannot be loaded here. The caller continues it in print
-/// mode; nothing was prompted and nothing was shown.
 pub(super) const SESSION_NOT_IN_ACP: &str = "Cursor ACP has no session with this id";
 
 fn standing_prompt_request(id: u64, session: &str, context: &str) -> Value {
@@ -465,9 +456,6 @@ fn ask_server_config(
     Value::Array(servers)
 }
 
-/// `agent models` lists flat variants (`claude-opus-5-5-high-fast`, `cursor-grok-4.6-low`), while
-/// ACP sessions offer one parameterized entry per base (`claude-opus-5-5[effort=medium,fast=false]`).
-/// Map a flat id onto the session's entry for its base, changing only effort, fast and thinking.
 fn acp_model_id(id: &str, available: &[String]) -> Option<String> {
     if id.contains('[') || available.iter().any(|m| m == id) {
         return Some(id.to_owned());
@@ -513,8 +501,6 @@ fn model_config_value(provider: ProviderKind, model: &str) -> Value {
     }
 }
 
-/// Trust flags are global options and must precede the `acp` subcommand. Plan mode is set per
-/// session over the protocol instead.
 fn acp_argv(provider: ProviderKind, print_argv: &[String]) -> Vec<String> {
     let mut argv = Vec::new();
     if planned_options(print_argv).any(|(flag, _)| flag == "--force") {

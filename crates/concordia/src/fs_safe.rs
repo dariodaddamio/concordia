@@ -1,4 +1,3 @@
-//! Filesystem checks used by update, release, and native-state readers.
 use std::fs;
 use std::path::{Path, PathBuf};
 

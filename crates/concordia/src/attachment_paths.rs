@@ -1,4 +1,3 @@
-//! Bounded pasted-path grammar. Parsing never imports, expands environment variables or runs files.
 use std::path::PathBuf;
 pub fn parse(text: &str) -> Option<Vec<PathBuf>> {
     let text = text.trim();
@@ -36,7 +35,6 @@ pub fn parse(text: &str) -> Option<Vec<PathBuf>> {
     if !word.is_empty() {
         paths.push(word);
     }
-    // An unquoted single path can contain spaces. Multiple paths must be quoted.
     if paths.len() > 1
         && !text.contains(['\r', '\n', '\'', '"'])
         && paths.iter().skip(1).all(|path| !absolute(path))

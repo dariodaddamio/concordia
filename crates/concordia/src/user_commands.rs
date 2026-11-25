@@ -1,11 +1,3 @@
-//! User-defined slash commands: `<state>/commands/<name>.md` becomes `/<name>`.
-//!
-//! A command is a prompt template, nothing more: optional `---` front matter with a
-//! `description:`, then a body in which `$ARGS` is replaced by what the user typed after the
-//! name. No shell, no includes, no environment expansion. Built-in commands always win a name
-//! clash (reported by `concordia doctor`). Scanning is bounded: at most [`MAX_FILES`] files of at
-//! most [`MAX_BYTES`] each, names `[a-z0-9-]{1,32}`; anything else is skipped with a warning.
-
 use crate::commands::{parse_slash, SlashCommand};
 use std::path::{Path, PathBuf};
 
@@ -18,7 +10,6 @@ const MAX_EXPANDED_BYTES: usize = 4 * 1024 * 1024;
 pub struct UserCommand {
     pub name: String,
     pub command: String,
-    /// Front-matter description, or a generic one.
     pub description: String,
     pub template: String,
 }
@@ -27,9 +18,7 @@ pub struct UserCommand {
 pub struct Scan {
     pub commands: Vec<UserCommand>,
     pub warnings: Vec<String>,
-    /// Names of files that were dropped because a built-in command has the same name.
     pub clashes: Vec<String>,
-    /// Names reserved by provider-native slash commands.
     pub provider_clashes: Vec<String>,
 }
 
@@ -44,7 +33,6 @@ pub fn valid_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-/// Whether `/name` is handled by Concordia itself (including aliases like `/quit`).
 pub fn is_builtin(name: &str) -> bool {
     !matches!(
         parse_slash(&format!("/{name}")),
@@ -52,8 +40,6 @@ pub fn is_builtin(name: &str) -> bool {
     )
 }
 
-/// Provider-native commands remain available through the slash passthrough and cannot be
-/// replaced by a user shortcut. This is the shared command set exposed by the supported CLIs.
 pub fn is_provider_command(name: &str) -> bool {
     matches!(
         name,
@@ -61,7 +47,6 @@ pub fn is_provider_command(name: &str) -> bool {
     )
 }
 
-/// Split optional `---` front matter from the body; returns (description, body).
 pub fn parse_file(text: &str) -> (Option<String>, String) {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split('\n');
@@ -70,7 +55,6 @@ pub fn parse_file(text: &str) -> (Option<String>, String) {
     }
     let rest: Vec<&str> = lines.collect();
     let Some(end) = rest.iter().position(|l| l.trim_end() == "---") else {
-        // No closing fence: not front matter after all.
         return (None, text.trim().to_string());
     };
     let mut description = None;
@@ -88,8 +72,6 @@ pub fn parse_file(text: &str) -> (Option<String>, String) {
     (description, body)
 }
 
-/// Fill the template. Only `$ARGS` is replaced, in a single pass (typed text is never
-/// re-expanded). A template without `$ARGS` keeps the typed text by appending it as a paragraph.
 pub fn render(template: &str, args: &str) -> String {
     let args = args.trim();
     if template.contains("$ARGS") {
@@ -101,7 +83,6 @@ pub fn render(template: &str, args: &str) -> String {
     }
 }
 
-/// Read `<state>/commands/*.md`. Never fails: problems become warnings.
 pub fn scan(state_root: &Path) -> Scan {
     let dir = commands_dir(state_root);
     let mut out = Scan::default();
@@ -174,8 +155,6 @@ pub fn scan(state_root: &Path) -> Scan {
     out
 }
 
-/// If `line` is `/name [args]` for a user command (and `name` is not a built-in), the prompt to
-/// send. The caller shows the original line and submits this as an ordinary user turn.
 pub fn expand(commands: &[UserCommand], line: &str) -> Result<Option<String>, String> {
     let Some(body) = line.trim().strip_prefix('/') else {
         return Ok(None);
@@ -246,12 +225,10 @@ mod tests {
         assert_eq!(render("Fix $ARGS now", " the bug "), "Fix the bug now");
         assert_eq!(render("$ARGS and $ARGS", "x"), "x and x");
         assert_eq!(render("Fix $ARGS now", ""), "Fix  now");
-        // No other expansion, and typed text is not re-expanded.
         assert_eq!(
             render("$HOME %PATH% $(whoami) {{x}} $ARGS", "$ARGS"),
             "$HOME %PATH% $(whoami) {{x}} $ARGS"
         );
-        // Without a placeholder the typed text is kept, not dropped.
         assert_eq!(render("Review it", ""), "Review it");
         assert_eq!(
             render("Review it", "focus on tests"),

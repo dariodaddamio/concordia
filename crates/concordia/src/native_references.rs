@@ -1,5 +1,3 @@
-//! Body-free projections into one explicitly owned native turn's appended source records.
-//! Full-text logs and unfinished request recovery are deliberately outside this module.
 use super::*;
 
 const TEXT_BYTES: usize = 1024 * 1024;
@@ -71,14 +69,10 @@ impl Reference {
     }
 }
 
-/// Bind an explicitly observed NEW native session, after the provider creates its source.
-/// The caller must have captured `native_session_id=None` BEFORE dispatch and received this
-/// exact session id from that launch. Missing history/resume never authorizes this constructor.
 pub fn fresh_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
     capture::fresh(root, binding)
 }
 
-/// Capture before dispatch, while the exact existing session has no turn in flight.
 pub fn begin_scope(root: &Path, binding: &Binding) -> Result<CaptureScope, String> {
     capture::begin(root, binding)
 }
@@ -87,7 +81,6 @@ fn role_valid(role: &str) -> bool {
     matches!(role, "user" | "assistant")
 }
 
-/// Only documented plaintext message fields are projected; reasoning/tool blocks are excluded.
 fn plaintext(value: &Value, provider: ProviderKind) -> Result<String, String> {
     let payload = match provider {
         ProviderKind::Codex => &value["payload"],
@@ -142,7 +135,6 @@ fn plaintext(value: &Value, provider: ProviderKind) -> Result<String, String> {
     Ok(result)
 }
 
-/// Freeze a completed turn before another request may append to the same native session.
 pub fn seal_scope(root: &Path, scope: &CaptureScope) -> Result<CaptureScope, String> {
     require_current_scope(scope)?;
     capture::seal(root, scope)
@@ -155,7 +147,6 @@ fn require_current_scope(scope: &CaptureScope) -> Result<(), String> {
     Ok(())
 }
 
-/// Capture a UNIQUE exact plaintext segment without persisting the caller's expected body.
 pub fn capture_text(
     root: &Path,
     scope: &CaptureScope,
@@ -169,8 +160,6 @@ pub fn capture_text(
     capture::text(root, scope, role, expected)
 }
 
-/// Bind the complete planned native input first, then retain a caller-defined UTF-8 segment.
-/// The caller supplies structural offsets, never a guessed occurrence of the composer text.
 pub fn capture_projected_text(
     root: &Path,
     scope: &CaptureScope,
@@ -215,7 +204,6 @@ fn tool_kind(value: &Value, provider: ProviderKind, call_id: &str) -> Option<boo
         }
         ProviderKind::Claude => {
             let blocks = value["message"]["content"].as_array()?;
-            // Whole raw records containing private/encrypted reasoning are never projected.
             if blocks.iter().any(|block| {
                 matches!(
                     block["type"].as_str(),
@@ -248,7 +236,6 @@ fn tool_kind(value: &Value, provider: ProviderKind, call_id: &str) -> Option<boo
     }
 }
 
-/// Exact scoped native tool JSONL records, without interpreting success or recreating UI cards.
 pub fn capture_tool(root: &Path, scope: &CaptureScope, call_id: &str) -> Result<Reference, String> {
     if call_id.is_empty() || call_id.len() > 256 || call_id.chars().any(char::is_control) {
         return Err("invalid native tool capture identity".into());
@@ -257,7 +244,6 @@ pub fn capture_tool(root: &Path, scope: &CaptureScope, call_id: &str) -> Result<
     capture::tool(root, scope, call_id)
 }
 
-/// Reconstruct only the originally verified UTF-8 segment; no stale/foreign fallback.
 pub fn hydrate_text(root: &Path, reference: &Reference) -> Result<String, String> {
     if !reference.current_format() {
         return Err("unsupported native reference format; original source retained; re-index and explicitly select the original source again".into());
@@ -306,8 +292,6 @@ pub fn hydrate_text(root: &Path, reference: &Reference) -> Result<String, String
     Ok(projected.to_owned())
 }
 
-/// Explicit historical read intent, pinned to an existing immutable native source index.
-/// This is never a replacement for pre-dispatch/fresh-session ownership checks.
 pub fn historical_scope(root: &Path, source_index: &str) -> Result<CaptureScope, String> {
     capture::historical_scope(root, source_index)
 }

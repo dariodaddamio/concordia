@@ -1,4 +1,3 @@
-//! App-owned Windows input and cell painting. No terminal bindings, hooks or global listeners.
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -54,8 +53,6 @@ const MAX_COLS: u16 = 500;
 const MAX_ROWS: u16 = 250;
 const DWMWA_CAPTION_COLOR: u32 = 35;
 
-/// Decoded attachment pixels and their cell-aligned viewport. Provider input retains
-/// its separate immutable file snapshot; this is only a display overlay.
 #[derive(Clone)]
 pub(super) struct RasterImage {
     pub area: Rect,
@@ -71,11 +68,15 @@ struct Screen {
     cursor_visible: bool,
     title: String,
     images: Vec<RasterImage>,
-    /// Frames committed by `Backend::flush`; test timing ties paints to the frame they show.
     seq: u64,
 }
 impl Screen {
     fn resize(&mut self, cols: u16, rows: u16, pixels: Size) {
+        if self.size == Size::new(cols.clamp(1, MAX_COLS), rows.clamp(1, MAX_ROWS))
+            && self.pixels == pixels
+        {
+            return;
+        }
         let old_cols = self.size.width;
         let old_rows = self.size.height;
         let old_cells = std::mem::take(&mut self.cells);
@@ -117,11 +118,8 @@ struct TestControl {
 struct TestState {
     focused_tab: String,
     overlays: Vec<String>,
-    /// Test-only frame timing: the label, start and committed frame of the measured input.
     measure: Option<(String, std::time::Instant, u64)>,
-    /// Every paint since `measure` started: milliseconds, frame shown and non-blank cells.
     paints: Vec<(f64, u64, usize)>,
-    /// Application draw durations in milliseconds, newest last.
     draws: Vec<f64>,
     notification_count: u64,
     notification_texts: Vec<String>,
@@ -150,7 +148,6 @@ struct TestRequest {
     reply: mpsc::SyncSender<String>,
 }
 
-/// Signed cells belong to the captured mouse-up message, before terminal clamping.
 pub(super) enum NativeEvent {
     Event(Event),
     Close,
@@ -174,7 +171,6 @@ pub(super) struct WindowBackend {
     stopped: Receiver<()>,
 }
 
-/// Every receiver belongs to one HWND and therefore one Concordia process/run UI.
 pub(super) fn open() -> io::Result<(WindowBackend, Receiver<NativeEvent>)> {
     open_with_root(None)
 }
@@ -258,7 +254,6 @@ impl WindowBackend {
         state.focused_tab = focused_tab;
         state.overlays = overlays;
     }
-    /// Test-only: record how long the application spent producing one frame.
     pub(super) fn note_draw(&mut self, elapsed: Duration) {
         let Some(test) = self.shared.test_control.as_ref() else {
             return;
@@ -276,8 +271,6 @@ impl WindowBackend {
                 .requested_status
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            // The run loop reports the dot on every pass. Repainting only on a real change keeps
-            // an idle window from redrawing (and re-blitting its images) many times a second.
             if *requested == status {
                 return;
             }
@@ -363,8 +356,6 @@ impl WindowBackend {
         if hwnd.is_null() {
             return Err(io::Error::other("Native window has closed"));
         }
-        // SAFETY: the handle is published by our own live message thread. PostMessage
-        // copies numeric arguments and never borrows application data across threads.
         if unsafe { PostMessageW(hwnd, message, 0, 0) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -402,7 +393,6 @@ impl Drop for WindowBackend {
     fn drop(&mut self) {
         self.shared.closing.store(true, Ordering::Release);
         let _ = self.post(SHUTDOWN);
-        // A stuck display driver must not block provider cancellation or application exit.
         if self
             .stopped
             .recv_timeout(std::time::Duration::from_secs(3))
@@ -555,7 +545,6 @@ struct Window {
     pressed: Option<MouseButton>,
     focused: bool,
     blink: bool,
-    /// Whether the caret timer is armed; re-arming it on every paint would keep it from firing.
     caret_timer: bool,
     wheel: i32,
     last_motion: Option<MouseEvent>,
@@ -588,7 +577,6 @@ struct BitmapPixels {
     bgra: Vec<u8>,
 }
 
-/// Cached pixels belong to the window thread. Unchanged rows need no GDI calls.
 struct Surface {
     dc: HDC,
     bitmap: HBITMAP,
@@ -600,7 +588,6 @@ struct Surface {
     columns: u16,
     rows: u16,
     filled: usize,
-    /// True after an empty-frame StretchBlt seed; the next real paint must clear first.
     seeded: bool,
 }
 impl Drop for Surface {
@@ -744,9 +731,6 @@ impl Window {
         let Some((item_id, text)) = pending else {
             return;
         };
-        // Windows exposes one callback target for this window. Replace an older displayed
-        // balloon before showing the next distinct item so a later actionable item is not
-        // blocked indefinitely by the previous tray target.
         if self.tray_added {
             notify_tray(hwnd, NIM_DELETE, None);
             self.tray_added = false;
@@ -803,7 +787,6 @@ impl Window {
         send_until_closed(&self.events, event, &self.shared.closing);
     }
     unsafe fn fonts(&mut self, hwnd: HWND, dpi: u32) {
-        // Cached glyphs must be regenerated after a DPI/font change.
         self.surface = None;
         for cache in &mut self.glyph_fonts {
             cache.clear();
@@ -921,7 +904,6 @@ impl Window {
             modifiers: modifiers(),
         };
         if matches!(kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
-            // A drag reports movement inside a cell too, so a scrollbar can follow the pixel.
             let dragging = matches!(kind, MouseEventKind::Drag(_));
             if self.last_motion == Some(event) && (!dragging || self.last_sub_row == sub_row) {
                 return;
@@ -953,6 +935,12 @@ impl Window {
         }
         let mut client: RECT = mem::zeroed();
         GetClientRect(hwnd, &mut client);
+        if client.right <= 0 || client.bottom <= 0 {
+            if supplied_dc.is_none() {
+                EndPaint(hwnd, &paint);
+            }
+            return;
+        }
         let surface_background = super::theme::native_default(false);
         let mut previous_surface = None;
         if self.surface.as_ref().is_none_or(|surface| {
@@ -960,10 +948,6 @@ impl Window {
                 || surface.height != client.bottom
                 || surface.background != surface_background
         }) {
-            // Rebuild the backing bitmap for the new client size. Start from the theme
-            // background; StretchBlt of the previous frame is applied only when the incoming
-            // cell buffer is still empty (see preserve_seed below). Stretching into a frame that
-            // will be fully redrawn leaves ClearType blend differences versus a clean paint.
             previous_surface = self.surface.take();
             let previous_cells = previous_surface
                 .as_ref()
@@ -1007,8 +991,6 @@ impl Window {
                 seeded: false,
             });
         }
-        // GDI rendering can be much slower than updating the cell buffer. Never keep
-        // the application thread waiting on the screen mutex while painting.
         let screen = self
             .shared
             .screen
@@ -1017,17 +999,11 @@ impl Window {
             .clone();
         let surface = self.surface.as_mut().expect("surface initialized above");
         let memory = surface.dc;
-        // The resized logical buffer may still be the transient, partially drawn frame produced
-        // by WM_SIZE. Keep the committed bitmap while the incoming frame is materially emptier;
-        // the first complete frame then replaces the cache normally.
         let incoming_filled = screen
             .cells
             .iter()
             .filter(|cell| **cell != Cell::default())
             .count();
-        // A resize can briefly expose an empty frame while the application catches up. Seed only
-        // that transient paint from the previous bitmap; a non-empty frame redraws on a clean
-        // background so it matches a from-scratch paint.
         let preserve_seed = previous_surface.is_some() && incoming_filled == 0;
         if preserve_seed {
             if let Some(previous) = previous_surface.as_ref() {
@@ -1045,8 +1021,6 @@ impl Window {
                     SRCCOPY,
                 );
             }
-            // The old bitmap can extend into a partial cell at the new client edge. That strip
-            // is outside the logical frame and must match a fresh paint exactly.
             SetDCBrushColor(memory, color(Color::Reset, false));
             let grid_right = (client.right / self.cell_width) * self.cell_width;
             let grid_bottom = (client.bottom / self.cell_height) * self.cell_height;
@@ -1075,9 +1049,8 @@ impl Window {
                 );
             }
             surface.seeded = true;
-            // The seed came from the old flat row stride. Invalidate that cache before recording
-            // the new dimensions below, or the first row can compare equal against the old prefix
-            // and be skipped on the first complete frame after a shrink.
+            surface.cells.clear();
+        } else if previous_surface.is_some() {
             surface.cells.clear();
         }
         drop(previous_surface);
@@ -1085,8 +1058,6 @@ impl Window {
         let same_grid = surface.columns == screen.size.width && surface.rows == screen.size.height;
         let expected_cells =
             usize::from(screen.size.width).saturating_mul(usize::from(screen.size.height));
-        // A prior empty-frame StretchBlt can still sit under this paint when the grid size already
-        // matches. Clear first so glyph antialiasing is not blended onto the stretched seed.
         if !preserve_seed && (surface.seeded || !same_grid || surface.cells.len() != expected_cells)
         {
             SetDCBrushColor(memory, color(Color::Reset, false));
@@ -1102,8 +1073,6 @@ impl Window {
             if same_grid && surface.cells.get(start..end) == Some(&screen.cells[start..end]) {
                 continue;
             }
-            // Redraw the entire changed row so removing a wide character also clears
-            // both of its old cells and styled background runs remain continuous.
             let mut covered = 0;
             for x in 0..screen.size.width {
                 if x < covered {
@@ -1138,7 +1107,6 @@ impl Window {
                     | (usize::from(cell.modifier.contains(Modifier::CROSSED_OUT)) << 3);
                 SelectObject(memory, self.fonts[style]);
                 if paint_status_symbol(memory, cell.symbol(), &rect) {
-                    // These UI status marks have a fixed outline, independent of font linking.
                 } else if cell.symbol() == "▀" || cell.symbol() == "█" {
                     SetDCBrushColor(memory, bg);
                     FillRect(memory, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
@@ -1197,10 +1165,6 @@ impl Window {
             }
         }
         SelectObject(memory, original_font);
-        // Caret is an overlay, never part of the cached backing image. Images are
-        // overlays too, but the backing surface must be copied without clipping: a
-        // previous image can have covered a larger or different rectangle, and leaving
-        // that rectangle out of the copy preserves the old raster pixels.
         BitBlt(dc, 0, 0, client.right, client.bottom, memory, 0, 0, SRCCOPY);
         let [red, green, blue] = super::theme::image_background();
         let image_background = u32::from(blue) | (u32::from(green) << 8) | (u32::from(red) << 16);
@@ -1217,9 +1181,6 @@ impl Window {
             }
         }
         self.paint_images(dc, &screen.images, &client);
-        // HALFTONE can touch a few edge pixels outside its destination rectangle.
-        // Restore the non-image part of every card after the blit so an old or
-        // antialiased edge can never become a second thumbnail fragment.
         for image in &screen.images {
             let area = RECT {
                 left: i32::from(image.area.x) * self.cell_width,
@@ -1249,6 +1210,10 @@ impl Window {
                     top: drawn.bottom,
                     ..area
                 });
+                fill(RECT {
+                    bottom: drawn.top,
+                    ..area
+                });
             } else {
                 fill(area);
             }
@@ -1267,14 +1232,17 @@ impl Window {
                 right: left + 2,
                 bottom: top + self.cell_height - 2,
             };
-            let over_attachment = !screen.images.is_empty();
+            let over_attachment = screen.images.iter().any(|image| {
+                image.area.contains(ratatui::layout::Position::new(
+                    screen.cursor.x,
+                    screen.cursor.y,
+                ))
+            });
             if !over_attachment {
                 SetDCBrushColor(dc, color(Color::Reset, true));
                 FillRect(dc, &rect, GetStockObject(DC_BRUSH) as HBRUSH);
             }
         }
-        // The caret and other overlays are painted last. Re-apply the card margins so no
-        // overlay can leave a fragment beside a thumbnail.
         SetDCBrushColor(dc, image_background);
         for image in &screen.images {
             let area = RECT {
@@ -1301,6 +1269,10 @@ impl Window {
                     top: drawn.bottom,
                     ..area
                 });
+                fill(RECT {
+                    bottom: drawn.top,
+                    ..area
+                });
             } else if area.right > area.left && area.bottom > area.top {
                 FillRect(dc, &area, GetStockObject(DC_BRUSH) as HBRUSH);
             }
@@ -1310,7 +1282,6 @@ impl Window {
         }
     }
 
-    /// Pixel rectangle an image covers: scaled down to fit its cells, never up, top-left aligned.
     fn image_rect(&self, image: &RasterImage, client: &RECT) -> Option<RECT> {
         Self::image_rect_for(
             image.area,
@@ -1340,16 +1311,14 @@ impl Window {
         let scale = (f64::from(available_width) / f64::from(width))
             .min(f64::from(available_height) / f64::from(height))
             .min(1.0);
+        let drawn_height = (f64::from(height) * scale).floor().max(1.0) as i32;
+        let top = top + (available_height - drawn_height).max(0) / 2;
         Some(RECT {
             left,
             top,
-            // Leave a two-pixel safety margin for GDI's HALFTONE kernel. It samples adjacent
-            // source pixels at the destination edge even when the destination is clipped.
-            // HALFTONE contributes a two-pixel sampling fringe at the destination edge. Include
-            // that fringe in the thumbnail rectangle so it remains one continuous image.
             right: (left + (f64::from(width) * scale).floor().max(1.0) as i32 + 2)
                 .min(left + available_width),
-            bottom: top + (f64::from(height) * scale).floor().max(1.0) as i32,
+            bottom: top + drawn_height,
         })
     }
 
@@ -1572,8 +1541,6 @@ unsafe fn handle_test_control(window: &mut Window) {
             state.paints.clear();
         }
         match request.request.get("op").and_then(|v| v.as_str()) {
-            // Simulated Alt+Tab: the same focus messages Windows sends, without changing
-            // the foreground window of the user's desktop.
             Some("deactivate") => {
                 let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
                 SendMessageW(hwnd, WM_ACTIVATE, WA_INACTIVE as WPARAM, 0);
@@ -1583,8 +1550,6 @@ unsafe fn handle_test_control(window: &mut Window) {
                 let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
                 SendMessageW(hwnd, WM_ACTIVATE, WA_ACTIVE as WPARAM, 0);
                 SendMessageW(hwnd, WM_SETFOCUS, 0, 0);
-                // The synthetic focus message does not enter the desktop compositor, so
-                // request the same repaint that a real activation exposes.
                 InvalidateRect(hwnd, null(), 0);
                 RedrawWindow(
                     hwnd,
@@ -1614,8 +1579,6 @@ unsafe fn handle_test_control(window: &mut Window) {
                     }
                 }
             }
-            // Test-only delivery of the target selected by the native notification path. The
-            // shell notification itself stays disabled for test-controlled windows.
             Some("notification_click") => {
                 if let Some(item_id) = window
                     .shared
@@ -1704,7 +1667,6 @@ extern "system" {
     fn PrintWindow(hwnd: HWND, dc: HDC, flags: u32) -> i32;
 }
 
-/// A top-down 32-bit DIB selected into its own memory DC; test-only pixel access.
 struct PixelBuffer {
     dc: HDC,
     bitmap: HBITMAP,
@@ -1750,7 +1712,6 @@ impl PixelBuffer {
         })
     }
     fn pixel(&self, x: i32, y: i32) -> u32 {
-        // SAFETY: callers stay inside the DIB, which lives as long as `self`.
         unsafe { *self.bits.add((y * self.width + x) as usize) & 0x00ff_ffff }
     }
 }
@@ -1764,9 +1725,6 @@ impl Drop for PixelBuffer {
     }
 }
 
-/// Test-only proof that the window shows no stale pixels: compare the composited window
-/// with a from-scratch paint of the current frame, and require every image area to hold
-/// only the image itself and the image background.
 unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde_json::Value {
     let hwnd = window.shared.hwnd.load(Ordering::Acquire) as HWND;
     let mut client: RECT = mem::zeroed();
@@ -1777,17 +1735,14 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
     ) else {
         return serde_json::json!({"ok": false, "error": "no pixel buffer"});
     };
-    // Finish only the paints Windows already has pending; never invalidate more here, or
-    // a missing invalidation would be hidden by the check itself.
     UpdateWindow(hwnd);
-    let captured = PrintWindow(hwnd, actual.dc, 1 | 2) != 0; // client only, full content
+    let captured = PrintWindow(hwnd, actual.dc, 1 | 2) != 0;
     let blink = window.blink;
     window.blink = false;
     let cached = window.surface.take();
     window.paint(hwnd, Some(fresh.dc));
     window.surface = cached;
     window.blink = blink;
-    // The caret blinks independently of frames; leave its cell out of the comparison.
     let caret = {
         let screen = window
             .shared
@@ -1858,7 +1813,6 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
             "actual_outside": actual_outside,
         }));
     }
-    // Callers name the exact colour of a synthetic image to prove a closed image left no pixels.
     let probe = request
         .get("color")
         .and_then(|v| v.as_str())
@@ -1882,8 +1836,6 @@ unsafe fn pixel_check(window: &mut Window, request: &serde_json::Value) -> serde
     })
 }
 
-/// Tiny application status marks must never depend on a fallback font or script substitution.
-/// Keep their ordinary Unicode text in the shared UI and copied output; only native paint is geometric.
 unsafe fn paint_status_symbol(dc: HDC, symbol: &str, rect: &RECT) -> bool {
     if !matches!(symbol, "◉" | "✓" | "✗") {
         return false;
@@ -1989,8 +1941,6 @@ pub(super) fn status_fixture_proof() {
     }
 }
 
-/// Glyphs that neither the window font nor its Segoe UI Symbol fallback can draw.
-/// The emoji font is excluded on purpose: icons must not depend on it.
 #[cfg(test)]
 pub(super) fn glyphs_without_font(glyphs: &[String]) -> Vec<String> {
     unsafe {
@@ -2044,9 +1994,6 @@ pub(super) fn glyphs_without_font(glyphs: &[String]) -> Vec<String> {
     }
 }
 
-/// GDI's fixed Consolas cell metrics are not the natural metrics of symbol/emoji
-/// fonts. Choose an installed glyph face, then fit its complete ink into the
-/// allocated terminal cells rather than clipping a wider glyph at the right edge.
 unsafe fn paint_glyph(
     dc: HDC,
     symbol: &str,
@@ -2108,8 +2055,6 @@ unsafe fn paint_glyph(
         RestoreDC(dc, saved);
         return;
     }
-    // Advance widths exclude negative side bearings (notably italic symbols).
-    // Include their actual ink, then translate it back inside the destination.
     let mut left = 0_i32;
     let mut right = measured.cx;
     let mut top = 0_i32;
@@ -2200,9 +2145,6 @@ unsafe fn paint_glyph(
     RestoreDC(dc, saved);
 }
 
-/// Load the executable's master icon at the requested native size. The resource
-/// includes 16/32/48/256-pixel frames shared by Explorer, taskbar and titlebar.
-/// Without LR_SHARED the window owns this handle and releases it on shutdown.
 unsafe fn app_icon(size: i32) -> HICON {
     if let Some(portrait) = super::brand::portrait() {
         let mut pixels = image::imageops::resize(
@@ -2248,7 +2190,6 @@ unsafe fn app_icon(size: i32) -> HICON {
     }
     LoadImageW(
         GetModuleHandleW(null()),
-        // MAKEINTRESOURCEW(1): resource identifier, never a dereferenced string pointer.
         std::ptr::without_provenance(1),
         IMAGE_ICON,
         size,
@@ -2329,7 +2270,6 @@ unsafe fn status_icon(size: i32, [red, green, blue]: crate::config::Rgb) -> HICO
 }
 
 unsafe fn notify_tray(hwnd: HWND, operation: u32, message: Option<&str>) -> bool {
-    // Windows driven by the test control channel are hidden; they must never notify the user.
     if !native_signal_allowed(std::env::var_os("CONCORDIA_TEST_CONTROL").is_some()) {
         return false;
     }
@@ -2376,10 +2316,8 @@ unsafe fn window_thread(
     events: SyncSender<NativeEvent>,
     ready: &mpsc::SyncSender<io::Result<()>>,
 ) -> io::Result<()> {
-    // Only this thread creates/destroys windows and owns all GDI objects.
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     let instance = GetModuleHandleW(null());
-    // Stable class plus our exact process id gives diagnostics an explicit owned HWND.
     let class = wide("Concordia.Native.Cells");
     let window_class = WNDCLASSW {
         lpszClassName: class.as_ptr(),
@@ -2484,9 +2422,6 @@ unsafe fn window_thread(
     window.resized(hwnd);
     DragAcceptFiles(hwnd, 1);
     set_caption_color(hwnd);
-    // Keep journey windows rendered at their off-screen position.  SW_HIDE prevents normal
-    // paint delivery on some Windows versions, while NOACTIVATE and TOOLWINDOW keep this
-    // test-only window out of focus and the taskbar.
     ShowWindow(
         hwnd,
         if test_window {
@@ -2510,9 +2445,6 @@ unsafe fn window_thread(
     Ok(())
 }
 
-/// Test-only control is an authenticated, local loopback channel. It is deliberately
-/// attached to the native message thread: injected events and real Win32 input share
-/// the same `Window::emit`/`Window::mouse` path and therefore the same input precedence.
 fn start_test_control(shared: &Arc<Shared>, hwnd: HWND) {
     let Some(spec) = std::env::var_os("CONCORDIA_TEST_CONTROL") else {
         return;
@@ -2593,8 +2525,6 @@ unsafe extern "system" fn window_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    // SAFETY: GWLP_USERDATA is set only from our boxed Window during CreateWindowEx;
-    // the box stays alive on this message thread until after WM_DESTROY/GetMessage exit.
     if message == WM_NCCREATE {
         let create = &*(lparam as *const CREATESTRUCTW);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
@@ -2603,15 +2533,9 @@ unsafe extern "system" fn window_proc(
     if pointer.is_null() {
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
-    // Native APIs can synchronously re-enter the window procedure. Handle stateless
-    // messages and focus/capture transitions before borrowing our Window instance.
     match message {
         SHUTDOWN => {
             DestroyWindow(hwnd);
-            // The owner requested this window's backend to stop. Post the quit
-            // message here, after destruction, so WM_DESTROY remains a local
-            // cleanup notification and cannot terminate an unrelated window
-            // loop that happens to share the process.
             PostQuitMessage(0);
             return 0;
         }
@@ -2705,9 +2629,6 @@ unsafe extern "system" fn window_proc(
         }
         WM_ACTIVATE => {
             if (wparam as u32 & 0xffff) != WA_INACTIVE {
-                // Activation repaints the cached surface without a new application
-                // frame. Give the paint probe a new visible-frame sequence so it can
-                // distinguish that repaint from the frame shown before deactivation.
                 window
                     .shared
                     .screen
@@ -2868,8 +2789,6 @@ unsafe extern "system" fn window_proc(
                 let mut point: POINT = mem::zeroed();
                 GetCursorPos(&mut point);
                 ScreenToClient(hwnd, &mut point);
-                // Focus loss cancels selection capture; it is not a captured release message
-                // and must not detach a file based on a later global cursor position.
                 let (column, row) = window.coordinates(point.x, point.y);
                 window.emit(Event::Mouse(MouseEvent {
                     kind: MouseEventKind::Up(button),
@@ -3035,7 +2954,6 @@ unsafe extern "system" fn window_proc(
 
 unsafe fn set_caption_color(hwnd: HWND) {
     let [red, green, blue] = super::theme::native_default(false);
-    // DWMWA_CAPTION_COLOR takes a COLORREF (BGR packed in a DWORD), not a ratatui RGB value.
     let color = u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16);
     let _ = DwmSetWindowAttribute(
         hwnd,
@@ -3124,7 +3042,6 @@ fn key(vk: u16, modifiers: KeyModifiers) -> Option<KeyCode> {
         {
             KeyCode::Char('`')
         }
-        // Ctrl+1..9 selects a tab; AltGr (Ctrl+Alt) still types its character.
         0x31..=0x39
             if modifiers.contains(KeyModifiers::CONTROL)
                 && !modifiers.contains(KeyModifiers::ALT) =>
@@ -3221,6 +3138,40 @@ fn color(color: Color, foreground: bool) -> u32 {
 #[cfg(test)]
 mod image_rect_tests {
     use super::*;
+
+    #[test]
+    fn restoring_to_the_same_size_keeps_the_screen_and_its_images() {
+        let mut screen = Screen {
+            size: Size::new(10, 4),
+            pixels: Size::new(90, 80),
+            cells: vec![Cell::new("x"); 40],
+            cursor: Position::default(),
+            cursor_visible: true,
+            title: String::new(),
+            images: vec![RasterImage {
+                area: Rect::new(0, 0, 2, 2),
+                pixels: std::sync::Arc::new(image::RgbaImage::new(1, 1)),
+            }],
+            seq: 0,
+        };
+        screen.resize(10, 4, Size::new(90, 80));
+        assert_eq!(screen.images.len(), 1);
+        assert!(screen.cells.iter().all(|cell| cell.symbol() == "x"));
+    }
+
+    #[test]
+    fn a_short_image_is_centred_in_a_tall_area() {
+        let client = RECT {
+            left: 0,
+            top: 0,
+            right: 400,
+            bottom: 400,
+        };
+        let rect =
+            Window::image_rect_for(Rect::new(0, 0, 10, 10), 100, 50, &client, 10, 10).unwrap();
+        assert_eq!(rect.top, 25);
+        assert_eq!(rect.bottom, 75);
+    }
 
     #[test]
     fn preview_preserves_source_aspect_ratio_when_fitted_to_cells() {

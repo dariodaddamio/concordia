@@ -1,11 +1,9 @@
-//! Durable worker ownership and bounded failover. Recovery never starts a provider turn.
 use super::*;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 
 const LEDGER_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Bounded Concordia-owned metadata only; never scans native session histories.
 pub(crate) fn managed_references(
     root: &Path,
     id: &str,
@@ -198,7 +196,7 @@ mod tests {
             0,
         );
         let job = d.get_mut(id).unwrap();
-        job.reference_storage = false; // An existing pre-reference row must remain body-based.
+        job.reference_storage = false;
         job.spec.cwd = workspace.clone();
         job.spec.prompt = "original explicit task".into();
         job.spec.prefix = Some("conversation body must not persist".into());
@@ -256,7 +254,6 @@ mod tests {
             .attach_recovery(&recovery, dir.path(), dir.path())
             .is_err());
 
-        // New, durably returned plain-text jobs retain only exact native references.
         let home = dir.path().join("native-home");
         std::fs::create_dir_all(home.join("sessions")).unwrap();
         crate::store::upsert_stored_account(
@@ -580,7 +577,6 @@ mod tests {
         );
         assert!(d.set_dependencies(&run, Vec::new()).is_err());
         assert_eq!(d.jobs.len(), 1);
-        // Viewer pruning cannot discard a successful prerequisite that is still referenced.
         d.jobs.clear();
         d.save_recovery().unwrap();
         assert_eq!(d.dependency_graph().tasks().len(), 2);
@@ -985,7 +981,6 @@ impl Delegates {
     }
 
     pub(super) fn save_recovery(&mut self) -> Result<(), String> {
-        // Build a validated snapshot before touching either durable state or the accepted graph.
         let mut graph = self.schedule.clone();
         graph.retain_receipts(&self.jobs.iter().map(|j| j.run_id.as_str()).collect());
         for job in &self.jobs {
@@ -1070,12 +1065,10 @@ impl Delegates {
         Ok(())
     }
 
-    /// Descriptive metadata only: readiness never authorizes or dispatches a provider turn.
     pub fn dependency_graph(&self) -> &schedule::Graph {
         &self.schedule
     }
 
-    /// Register a proposed task without adding it to the provider execution queue.
     pub fn add_dependency_task(&mut self, task: schedule::Task) -> Result<(), String> {
         if self.recovery.is_none() {
             return Err("dependency metadata requires durable worker ownership".into());
@@ -1092,7 +1085,6 @@ impl Delegates {
         Ok(())
     }
 
-    /// Update proposed edges atomically under the same owner lease as worker recovery.
     pub fn set_dependencies(
         &mut self,
         task_id: &str,
@@ -1156,7 +1148,6 @@ impl Delegates {
         Ok(())
     }
 
-    /// Explicit inspection reads a revision-bound pointer, never the latest assistant response.
     pub fn recovery_source(&self, id: u32) -> Result<(PathBuf, String), String> {
         let root = self
             .recovery
@@ -1182,7 +1173,6 @@ impl Delegates {
 
     pub fn restore_result(&mut self, id: u32, result: String) -> Result<(), String> {
         let job = self.get_mut(id).ok_or("unknown worker run")?;
-        // An uncertain run remains paused even if its native source contains some assistant text.
         if job.state != WorkerState::Done {
             return Err(
                 "run was not durably completed; inspect its source and reconcile before retry"

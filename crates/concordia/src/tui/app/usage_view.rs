@@ -1,6 +1,5 @@
 use super::super::*;
 
-/// One footer for the usage page, however it was opened or refreshed.
 pub(in crate::tui) const USAGE_FOOTER: &str =
     "←↑↓→ move · PgUp/PgDn scroll card · r refresh · t tokens · Esc";
 
@@ -136,7 +135,6 @@ impl App {
     pub(in crate::tui) fn account_label(&self) -> String {
         self.named_account(self.provider, &self.account)
     }
-    /// Header, settings Accounts row, and `/use` share this chip (no lowercase provider id).
     pub(in crate::tui) fn account_heading(&self) -> String {
         crate::accounts::format_account_heading(
             self.provider,
@@ -183,7 +181,6 @@ impl App {
             picker.state = old.state;
             picker.usage_scroll = old.usage_scroll;
             picker.usage_cols = old.usage_cols;
-            // A background refresh must not swap the heading the panel was opened with.
             if picker.kind == PickerKind::Usage {
                 picker.title = old.title;
             }

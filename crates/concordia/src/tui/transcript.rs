@@ -1,21 +1,10 @@
-//! Transcript as wrapped visual rows: scrolling, mouse hit-testing, drag selection, copy text.
-//!
-//! The view owns the rows built on the last draw so mouse events resolve against exactly what
-//! is on screen. Selection is stored in row coordinates; it is cleared when the width changes
-//! (rows re-wrap) and stays valid while new rows are appended at the end.
-
 use super::markdown;
 use super::text::{col_to_index, word_bounds, wrap_ranges_hang};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::hash::{Hash, Hasher};
 
-/// The row cache is a viewport cache, not a second transcript. Older content is rebuilt from
-/// the caller's thread-backed blocks when the user scrolls above the fold.
 pub const MAX_RENDERED_ROWS: usize = 5_000;
-// Reuse the existing block keys for exact folded-cache comparisons when they fit. This
-// avoids hashing every style and source byte on every unchanged frame, while larger
-// histories still use a fingerprint instead of retaining another unbounded text copy.
 const MAX_FOLDED_KEYS_BYTES: usize = 8 * 1024 * 1024;
 
 fn folded_keys_fit(blocks: &[Block]) -> bool {
@@ -69,26 +58,20 @@ fn is_diff(text: &str) -> bool {
             })
 }
 
-/// Inline style over part of one line of a block: `(line, start, end, style)`, chars within the line.
 pub type LineRun = (usize, usize, usize, Style);
 
-/// Character range in a plain heading and its exact provider-reported file target.
 pub type HeaderFile = (std::ops::Range<usize>, String);
 
-/// One logical chunk of transcript (a message, a card line, …) before wrapping.
 pub struct Block<'a> {
     pub identity: Option<usize>,
     pub gutter: &'a str,
     pub gutter_style: Style,
     pub style: Style,
     pub text: &'a str,
-    /// Render the text as markdown (assistant replies).
     pub markdown: bool,
     pub linkify: bool,
-    /// Extra inline styles per line (plain blocks only), e.g. the coloured `/usage` block.
     pub runs: &'a [LineRun],
     pub header_files: &'a [HeaderFile],
-    /// Leading chars of the first line that are decoration (a card border) and not copied.
     pub decor_prefix: usize,
 }
 
@@ -100,13 +83,10 @@ pub struct Row {
     pub gutter_style: Style,
     pub text: Vec<char>,
     pub style: Style,
-    /// Soft-wrap continuation of the previous row: no newline between them when copying.
     pub joins_prev: bool,
-    /// Inline style runs `(start, end, style)` in chars of `text`, applied over `style`.
     pub runs: Vec<(usize, usize, Style)>,
     pub links: Vec<(usize, usize, crate::file_links::Candidate)>,
     pub web_links: Vec<(usize, usize, String)>,
-    /// Decorative char ranges (bars, borders) that are painted but never selected or copied.
     pub decor: Vec<(usize, usize)>,
 }
 
@@ -126,8 +106,6 @@ pub struct Pos {
     pub col: usize,
 }
 
-/// What a block looked like when its rows were last wrapped; if it still matches, its rows are
-/// reused instead of being wrapped again.
 #[derive(Clone, PartialEq, Eq)]
 struct BlockKey {
     identity: Option<usize>,
@@ -199,19 +177,14 @@ fn projection_signature(blocks: &[Block], link_root: Option<&std::path::Path>) -
 #[derive(Default)]
 pub struct TranscriptView {
     pub rows: Vec<Row>,
-    /// Per block: how it was wrapped and where its first row sits in `rows`.
     keys: Vec<(BlockKey, usize)>,
-    /// Rows hidden below the viewport (0 = following the newest output).
     pub scroll: usize,
-    /// `(anchor, head)`; may be reversed.
     pub sel: Option<(Pos, Pos)>,
     pub dragging: bool,
     width: usize,
     height: usize,
     first: usize,
     row_blocks: Vec<(Option<usize>, usize)>,
-    /// Directory that relative file references resolve against. When set, only references that
-    /// name an existing file are underlined and clickable.
     pub link_root: Option<std::path::PathBuf>,
     folded: bool,
     rehydrate_fold: bool,
@@ -222,9 +195,6 @@ pub struct TranscriptView {
 }
 
 impl TranscriptView {
-    /// Re-wrap the transcript for `width`. A long session has tens of thousands of rows and this
-    /// runs on every frame and every mouse event, so only blocks from the first one that changed
-    /// are wrapped again (normally just the newest); earlier blocks reuse their cached rows.
     pub fn rebuild(&mut self, blocks: &[Block], width: usize, height: usize) {
         let requested_rehydrate = self.rehydrate_fold;
         let rehydrate_fold =
@@ -232,8 +202,6 @@ impl TranscriptView {
         self.rehydrate_fold = false;
         let width_changed = width != self.width;
         if self.folded && self.sel.is_some() && !width_changed {
-            // Keep the selected cache stable while the source changes underneath it.
-            // Clearing the selection lets the next rebuild reconcile the source.
             self.height = height;
             self.clamp_scroll();
             return;
@@ -264,8 +232,6 @@ impl TranscriptView {
             return;
         }
         if self.folded {
-            // The visible tail/head is only a cache. Rebuild from the caller's source blocks so
-            // the discarded rows are never retained alongside the newly rehydrated window.
             self.rows.clear();
             self.row_blocks.clear();
             self.keys.clear();
@@ -283,7 +249,6 @@ impl TranscriptView {
             self.keys.clear();
         }
 
-        // First block that is new or differs from what was cached.
         let keep = self
             .keys
             .iter()
@@ -350,8 +315,6 @@ impl TranscriptView {
                 decor: Vec::new(),
             };
             if rehydrate_fold {
-                // Keep a bounded window around the requested position. Previously this kept
-                // the first rows, making one upward wheel tick jump to the transcript's top.
                 let target_first = self.rows.len().saturating_sub(height + self.scroll);
                 let window_start = target_first.saturating_sub(retained.saturating_sub(height));
                 let window_end = (window_start + retained).min(self.rows.len());
@@ -378,9 +341,6 @@ impl TranscriptView {
             self.folded_blocks = blocks.len();
             self.folded_head = rehydrate_fold;
             if folded_keys_fit(blocks) {
-                // Row offsets in these keys refer to the full projection. They are only
-                // equality keys while folded; any changed/re-hydrated projection clears
-                // them above before the normal row-cache code can consume those offsets.
                 self.keys.shrink_to_fit();
                 self.folded_signature = super::diagrams::revision();
                 self.folded_link_root = self.link_root.clone();
@@ -398,7 +358,6 @@ impl TranscriptView {
         }
 
         if !width_changed && self.scroll > 0 && self.rows.len() > prev_rows {
-            // Keep the viewport still while output streams in below it.
             self.scroll = self.scroll.saturating_add(self.rows.len() - prev_rows);
         }
         self.width = width;
@@ -437,9 +396,6 @@ impl TranscriptView {
 
     pub fn scroll_up(&mut self, n: usize) {
         if self.folded && self.scroll == 0 {
-            // The next rebuild receives the complete, thread-backed block list and paints the
-            // oldest bounded window. This keeps the row cache bounded while preserving access
-            // to history without copying it into a second in-memory transcript.
             self.rehydrate_fold = true;
         }
         self.scroll += n;
@@ -474,8 +430,6 @@ impl TranscriptView {
         self.height
     }
 
-    /// Thumb offset and size, measured from the top of the rail. Scroll counts
-    /// hidden rows below the viewport, so following output is the bottom endpoint.
     pub fn scroll_thumb(&self, track: u16) -> (u16, u16) {
         let track = usize::from(track);
         let total = self.rows.len().max(1);
@@ -485,7 +439,6 @@ impl TranscriptView {
         (offset as u16, size as u16)
     }
 
-    /// Thumb offset and size in eighths of a cell, so the thumb can sit between cell rows.
     pub fn scroll_thumb_eighths(&self, track: u16) -> (usize, usize) {
         let track = usize::from(track) * 8;
         let total = self.rows.len().max(1);
@@ -495,7 +448,6 @@ impl TranscriptView {
         (offset, size)
     }
 
-    /// Move the thumb's top to `offset` eighths of a cell from the top of the rail.
     pub fn drag_scroll_thumb(&mut self, offset: usize, track: u16) {
         let (_, size) = self.scroll_thumb_eighths(track);
         let travel = (usize::from(track) * 8).saturating_sub(size);
@@ -509,10 +461,6 @@ impl TranscriptView {
         }
     }
 
-    // ---- hit-testing -----------------------------------------------------------------
-
-    /// Position under viewport cell `(rel_row, rel_col)`. `None` when the cell is below the last
-    /// row; rows above/below the viewport clamp to its edge (for drags that leave the pane).
     pub fn pos_at(&self, rel_row: isize, rel_col: usize) -> Option<Pos> {
         if self.rows.is_empty() {
             return None;
@@ -536,7 +484,6 @@ impl TranscriptView {
         Some(Pos { row, col })
     }
 
-    /// End of the last visible row (drag target when the pointer is below the content).
     pub fn last_pos(&self) -> Option<Pos> {
         let vis = self.visible();
         (vis.end > vis.start).then(|| self.end_of(vis.end - 1))
@@ -549,8 +496,6 @@ impl TranscriptView {
         }
     }
 
-    // ---- selection -------------------------------------------------------------------
-
     pub fn start_selection(&mut self, p: Pos) {
         self.sel = Some((p, p));
         self.dragging = true;
@@ -562,7 +507,6 @@ impl TranscriptView {
         }
     }
 
-    /// Mouse released: a click without movement selects nothing.
     pub fn finish_selection(&mut self) {
         self.dragging = false;
         if let Some((a, b)) = self.sel {
@@ -586,7 +530,6 @@ impl TranscriptView {
         self.dragging = false;
     }
 
-    /// Select the whole logical line (all soft-wrapped rows) at `p`.
     pub fn select_line(&mut self, p: Pos) {
         if p.row >= self.rows.len() {
             return;
@@ -608,7 +551,6 @@ impl TranscriptView {
         Some(if a <= b { (a, b) } else { (b, a) })
     }
 
-    /// Selected char range within `row`, if any.
     fn row_selection(&self, row: usize) -> Option<(usize, usize)> {
         let (a, b) = self.ordered()?;
         if row < a.row || row > b.row {
@@ -643,8 +585,6 @@ impl TranscriptView {
         (!out.is_empty()).then_some(out)
     }
 
-    // ---- rendering -------------------------------------------------------------------
-
     pub fn lines(&self) -> Vec<Line<'static>> {
         self.visible()
             .map(|i| {
@@ -654,7 +594,6 @@ impl TranscriptView {
                     spans.push(Span::styled(r.gutter.clone(), r.gutter_style));
                 }
                 spans.extend(row_spans(r, self.row_selection(i)));
-                // Padding is paint-only: copying and source offsets still use the original row.
                 if r.style
                     .bg
                     .is_some_and(|color| color != ratatui::style::Color::Reset)
@@ -670,7 +609,6 @@ impl TranscriptView {
             .collect()
     }
 
-    /// Display width of the widest visible row (tests).
     #[cfg(test)]
     fn max_row_width(&self) -> usize {
         self.visible()
@@ -680,7 +618,6 @@ impl TranscriptView {
     }
 }
 
-/// The styled segments of one row: its text split at every style-run and selection boundary.
 fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
     let n = r.text.len();
     let mut cuts = vec![0, n];
@@ -702,7 +639,6 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
             continue;
         }
         let mut style = r.style;
-        // Later runs win, so nested emphasis (bold containing code) layers correctly.
         for (ra, rb, rs) in &r.runs {
             if *ra <= a && b <= *rb {
                 style = style.patch(*rs);
@@ -716,8 +652,6 @@ fn row_spans(r: &Row, selection: Option<(usize, usize)>) -> Vec<Span<'static>> {
     out
 }
 
-/// Wrap one block into display rows. The gutter glyph appears once, on the block's first row;
-/// every other row gets blank space of the same width, plus any indent the line asks for.
 fn wrap_block(
     b: &Block,
     width: usize,
@@ -807,8 +741,6 @@ fn wrap_block(
         })
         .collect();
         if let Some(root) = link_root {
-            // Prose before a filename also forms path-shaped candidates ("I edited main.rs"), so
-            // keep only references that exist, and the longest one where they overlap.
             links.retain(|(_, _, c)| c.markdown || crate::file_links::exists_cached(c, root));
             links.sort_by_key(|(a, z, _)| (std::cmp::Reverse(z - a), *a));
             let mut kept: Vec<(usize, usize, crate::file_links::Candidate)> = Vec::new();
@@ -851,7 +783,6 @@ fn wrap_block(
                         .map_or(ml.text.len(), |(i, _)| i)
                 };
                 candidate.range = byte(start)..byte(end);
-                // Structured file paths are exact; they must not use the Markdown docs fallback.
                 candidate.markdown = false;
                 links.retain(|(a, z, _)| !(*a < end && start < *z));
                 links.push((start, end, candidate));
@@ -873,7 +804,6 @@ fn wrap_block(
             let lead = if first_row {
                 b.gutter.to_string()
             } else if b.gutter.starts_with('|') {
-                // Command/system blocks keep their left bar on wrapped rows.
                 format!("|{}", " ".repeat(gw.saturating_sub(1)))
             } else {
                 " ".repeat(gw)
@@ -1026,7 +956,7 @@ mod tests {
         assert!(v.rows.len() > 1);
         assert!(v.rows[1].joins_prev);
         assert_eq!(v.rows[1].gutter, "    ");
-        assert!(v.max_row_width() <= 15); // hanging space may overhang by one cell
+        assert!(v.max_row_width() <= 15);
     }
 
     #[test]
@@ -1051,7 +981,6 @@ mod tests {
         let mut v = view(&[blk("a ", "hello"), blk("b ", "world")], 40, 10);
         v.sel = Some((Pos { row: 0, col: 3 }, Pos { row: 1, col: 2 }));
         assert_eq!(v.selected_text().as_deref(), Some("lo\nwo"));
-        // reversed drag selects the same text
         v.sel = Some((Pos { row: 1, col: 2 }, Pos { row: 0, col: 3 }));
         assert_eq!(v.selected_text().as_deref(), Some("lo\nwo"));
     }
@@ -1078,7 +1007,7 @@ mod tests {
     #[test]
     fn drag_selects_range() {
         let mut v = view(&[blk("> ", "hello world")], 40, 10);
-        let a = v.pos_at(0, 2).unwrap(); // gutter is 2 wide: col 2 -> char 0
+        let a = v.pos_at(0, 2).unwrap();
         let b = v.pos_at(0, 7).unwrap();
         assert_eq!((a.col, b.col), (0, 5));
         v.start_selection(a);
@@ -1222,7 +1151,6 @@ mod tests {
             .collect()
     }
 
-    /// The incremental result must always equal wrapping everything from scratch.
     fn assert_matches_fresh(v: &TranscriptView, blocks: &[Block], w: usize, h: usize) {
         let fresh = view(blocks, w, h);
         assert_eq!(rows_text(v), rows_text(&fresh));
@@ -1261,14 +1189,12 @@ mod tests {
         }
 
         let mut v = TranscriptView::default();
-        // append one at a time
         for n in 1..=12 {
             let owned = mk(n, None);
             let blocks = as_blocks(&owned);
             v.rebuild(&blocks, 30, 10);
             assert_matches_fresh(&v, &blocks, 30, 10);
         }
-        // edit a block in the middle in place (a tool card flipping to done does this)
         let owned = mk(
             12,
             Some((
@@ -1279,16 +1205,13 @@ mod tests {
         let blocks = as_blocks(&owned);
         v.rebuild(&blocks, 30, 10);
         assert_matches_fresh(&v, &blocks, 30, 10);
-        // shrink it again, then edit the first block
         let owned = mk(12, Some((0, "x")));
         let blocks = as_blocks(&owned);
         v.rebuild(&blocks, 30, 10);
         assert_matches_fresh(&v, &blocks, 30, 10);
-        // resize
         let blocks = as_blocks(&owned);
         v.rebuild(&blocks, 17, 10);
         assert_matches_fresh(&v, &blocks, 17, 10);
-        // truncate (a /new clears the transcript)
         let owned = mk(3, None);
         let blocks = as_blocks(&owned);
         v.rebuild(&blocks, 17, 10);
@@ -1304,7 +1227,6 @@ mod tests {
             blk("concordia ", "general kenobi"),
         ];
         let mut v = view(&blocks, 40, 10);
-        // Poison the cached rows: if the next rebuild reused them untouched they stay poisoned.
         v.rows[0].text = vec!['#'];
         v.rebuild(&blocks, 40, 10);
         assert_eq!(
@@ -1312,7 +1234,6 @@ mod tests {
             vec!['#'],
             "unchanged block was wrapped again"
         );
-        // Changing the *last* block re-wraps only it.
         let changed = [blk("you ", "hello there"), blk("concordia ", "changed")];
         v.rebuild(&changed, 40, 10);
         assert_eq!(v.rows[0].text, vec!['#'], "earlier block must be reused");
@@ -1397,7 +1318,6 @@ mod tests {
         let g: Vec<&str> = v.rows.iter().map(|r| r.gutter.as_str()).collect();
         assert_eq!(g[0], "\u{25cf} ", "marker on the first row only");
         assert!(g[1..].iter().all(|x| !x.contains('\u{25cf}')));
-        // The wrapped bullet's continuation rows are indented past the bullet.
         let bullet = v
             .rows
             .iter()
@@ -1410,7 +1330,6 @@ mod tests {
             2 + 2,
             "marker width + hang"
         );
-        // Inline code carries a style run over exactly its characters.
         let code = v
             .rows
             .iter()
@@ -1457,7 +1376,6 @@ mod tests {
 
     #[test]
     fn style_runs_that_end_before_a_wrapped_row_do_not_underflow() {
-        // A run at the very start, then enough text to wrap several rows past it.
         let v = view(
             &[md(
                 "",
@@ -1486,11 +1404,9 @@ mod tests {
                 )
             })
             .collect();
-        // "see " plain-reversed, "code" code-style-reversed, " here" untouched.
         assert!(reversed.iter().any(|(t, r)| t == "see " && *r));
         assert!(reversed.iter().any(|(t, r)| t == "code" && *r));
         assert!(reversed.iter().any(|(t, r)| t.trim() == "here" && !*r));
-        // Copy gives the visible text, without markdown markers.
         assert_eq!(v.selected_text().as_deref(), Some("see code"));
 
         let patch = "File: src/example.rs\n@@ -41,3 +57,3 @@\n fn example() {\n-    let answer = 1;\n+    let answer = 42; // 雪\n }\nSource: immutable historical fixture\n+not a diff after source metadata";
@@ -1696,7 +1612,6 @@ mod diagram_cache_tests {
             quote,
             "wise words that wrap around the pane edge because they are long enough to need two rows"
         );
-        // The highlight skips the bar too.
         let first = &v.lines()[0];
         assert!(first.spans.iter().all(|s| !s.content.contains('\u{2502}')
             || !s.style.add_modifier.contains(Modifier::REVERSED)));

@@ -1,4 +1,3 @@
-//! Explicit UTF-8 and native PDF snapshots. Binary bytes never become prompt text.
 use super::*;
 pub const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 pub const MAX_PDF_BYTES: usize = 8 * 1024 * 1024;
@@ -99,7 +98,6 @@ impl Document {
     }
 }
 
-/// Immutable local PDF snapshot for providers that accept native document content blocks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PdfDocument {

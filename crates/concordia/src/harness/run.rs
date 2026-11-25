@@ -1,5 +1,3 @@
-//! Run one adapter command: no shell, no stdin, capped output, hard timeout.
-
 use super::RunOutcome;
 use std::path::Path;
 use std::process::Stdio;
@@ -18,10 +16,8 @@ pub(crate) fn with_extra_env<T>(names: &[String], f: impl FnOnce() -> T) -> T {
     })
 }
 
-/// How long an adapter command may run before it is killed.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_OUTPUT: usize = 64 * 1024;
-/// Run `argv` (program first) in `cwd`. A program that cannot start is reported in `stderr`.
 pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome {
     run_command_cancellable(
         argv,
@@ -31,7 +27,6 @@ pub fn run_command(argv: &[String], cwd: &Path, timeout: Duration) -> RunOutcome
     )
 }
 
-/// The caller retains cancellation ownership; cancellation kills this child's tracked tree.
 pub fn run_command_cancellable(
     argv: &[String],
     cwd: &Path,
@@ -51,7 +46,6 @@ pub fn run_command_cancellable(
             ..RunOutcome::default()
         };
     };
-    // Resolve as a shell would, so npm-style `.cmd` shims start; the stored name is unchanged.
     let executable = which::which(program).unwrap_or_else(|_| program.into());
     if cfg!(windows)
         && crate::provider::launch::is_batch_shim(&executable.to_string_lossy())

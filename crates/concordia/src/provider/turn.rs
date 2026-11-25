@@ -1,5 +1,3 @@
-//! Unified provider turns with tracked cancel (Ctrl+C).
-
 use crate::provider::claude::{plan_claude_turn, ClaudeTurnRequest};
 use crate::provider::codex::{self, apply_stream_parts, plan_turn_argv, TurnRequest as CodexReq};
 use crate::provider::cursor::{plan_cursor_turn, CursorTurnRequest};
@@ -29,14 +27,10 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, Mutex, Notify};
 
-/// Lines of provider stderr kept for error reporting.
 const STDERR_KEEP_LINES: usize = 12;
-/// How long to wait for the provider to exit after it has been killed.
 const REAP_TIMEOUT: Duration = Duration::from_secs(5);
-/// After a cancel, how long taskkill gets to finish before we terminate the direct child.
 const KILL_GRACE: Duration = Duration::from_millis(2000);
 const STDERR_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
-/// A single provider output line is kept up to this size; the rest of it is discarded.
 const LINE_MAX: usize = 1024 * 1024;
 
 pub const VISIBLE_TEXT_MAX: usize = 4 * 1024 * 1024;
@@ -44,7 +38,6 @@ pub const PROGRESS_CAPACITY: usize = 64;
 const VISIBLE_TEXT_KEEP: usize = 3 * 1024 * 1024;
 const OMITTED_TEXT: &str = "[Earlier output omitted from this view; inspect the original native session for full output.]\n";
 
-/// Keep a bounded, explicitly incomplete display projection; native records remain authoritative.
 pub fn append_visible_text(text: &mut String, fragment: &str) {
     if text.len().saturating_add(fragment.len()) <= VISIBLE_TEXT_MAX {
         text.push_str(fragment);
@@ -96,7 +89,6 @@ pub(crate) async fn send_progress(
     }
 }
 
-/// A native history-write failure is not evidence of quota exhaustion or a deleted rollout.
 pub fn thread_recording_failed(provider: ProviderKind, stderr: &str) -> bool {
     provider == ProviderKind::Codex
         && stderr.contains("failed to record rollout items")
@@ -112,15 +104,11 @@ pub struct ProviderTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
-    /// The selected provider-reported reasoning effort. Providers may encode this in model IDs.
     pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
     pub context_prefix: Option<&'a str>,
-    /// When set, the prompt opens with this time and the relative times it mentions resolved
-    /// (`prompt_time::header`). Every user and worker turn sets it; `None` sends the text as is.
     pub local_time: Option<crate::prompt_time::LocalTime>,
-    /// Native compaction is provider-owned; retained only in fixtures and observation records.
     pub compaction: crate::capacity::Compaction,
 }
 
@@ -128,10 +116,7 @@ pub struct ProviderTurnRequest<'a> {
 pub struct PlannedTurn {
     pub command: String,
     pub argv: Vec<String>,
-    /// The full prompt (context prefix included); always the last entry of `argv`.
     pub prompt: String,
-    /// Session id this turn creates (Claude `--session-id`, Cursor `create-chat`); promoted to the
-    /// conversation's session once the turn succeeds.
     pub new_session_id: Option<String>,
     pub env: Vec<(String, String)>,
     pub env_remove: Vec<String>,
@@ -140,8 +125,6 @@ pub struct PlannedTurn {
     pub standing_context: Option<String>,
 }
 
-/// Inspect planner-owned options, excluding the final prompt and option values.
-/// Prompt/model text must never become a native permission flag.
 pub(super) fn planned_options(argv: &[String]) -> impl Iterator<Item = (&str, Option<&str>)> {
     let mut arguments = argv[..argv.len().saturating_sub(1)].iter();
     std::iter::from_fn(move || {
@@ -173,11 +156,6 @@ pub(super) fn planned_options(argv: &[String]) -> impl Iterator<Item = (&str, Op
     })
 }
 
-/// Authoritative terminal state for a provider turn.
-///
-/// This is derived from structured provider terminal events, app-server turn status,
-/// cancellation, and the child process status. It is deliberately independent of
-/// rendered error text so worker control can make a decision without prose parsing.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum TurnTerminalOutcome {
     Success,
@@ -190,21 +168,17 @@ pub enum TurnTerminalOutcome {
 
 #[derive(Debug, Default, Clone)]
 pub struct TurnOutcome {
-    /// A terminal failure event, independent of the process exit code.
     pub failed: bool,
     pub exit_code: Option<i32>,
     pub text: String,
     pub session_id: Option<String>,
     pub cancelled: bool,
     pub cards: Vec<StreamCard>,
-    /// Last lines the provider wrote to stderr (why it failed, when it did).
     pub stderr_tail: String,
-    /// Structured terminal signal for worker orchestration and recovery.
     pub terminal_outcome: TurnTerminalOutcome,
 }
 
 impl TurnOutcome {
-    /// Stable machine-readable label for worker control and external receipts.
     pub fn terminal_outcome_label(&self) -> &'static str {
         match self.terminal_outcome {
             TurnTerminalOutcome::Success => "success",
@@ -216,7 +190,6 @@ impl TurnOutcome {
     }
 }
 
-/// Apply native image inputs after normal launch planning; payloads never pass through a shell.
 pub fn attach_images(
     launch: &mut super::launch::Launch,
     provider: ProviderKind,
@@ -282,30 +255,24 @@ pub enum TurnProgress {
     },
     Text(String),
     TextDelta(String),
-    /// The provider finished a distinct assistant message within the active turn.
     TextBoundary,
     Card(StreamCard),
     Error(String),
     Thinking(String),
     ThinkingDelta(String),
-    /// Token counts the provider reported for the turn (never reply text).
     Usage(TurnUsage),
-    /// Concordia's own explanation of how it changed the turn (for example, read-only enforcement).
     Notice(String),
-    /// The provider has produced no output for the configured interval. This never cancels.
     Idle {
         provider: ProviderKind,
         minutes: u64,
         silent_for: Duration,
     },
-    /// Bounded source maps prepared off the UI thread for this existing user request.
     ChatReferences {
         maps: Vec<(String, String)>,
         notices: Vec<String>,
     },
 }
 
-/// Why this turn will run read-only instead of with the trust it asked for, if it will.
 pub fn enforcement_notice(req: &ProviderTurnRequest<'_>) -> Option<String> {
     enforcement::effective_trust(req.cwd, req.provider, req.home_path, req.trust).1
 }
@@ -320,9 +287,7 @@ pub fn plan_provider_turn(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         ..req.clone()
     };
     let plan = plan_provider_turn_raw(req)?;
-    // Current structured/native controls stay explicit; unsupported observed interfaces fail.
     crate::provider::compat::validate_planned(&plan, req.trust)?;
-    // A turn the gate made read-only must still be read-only, or it does not start.
     if lowered.is_some() {
         enforcement::ensure_read_only(plan.provider, &plan.argv)?;
     }
@@ -361,7 +326,6 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
         }
     }
     if let Some(now) = &req.local_time {
-        // Relative times are read from what the user wrote, not from the context pack.
         prompt = format!("{}\n{prompt}", crate::prompt_time::header(raw_prompt, now));
     }
     match req.provider {
@@ -508,8 +472,6 @@ fn plan_provider_turn_raw(req: &ProviderTurnRequest<'_>) -> Result<PlannedTurn> 
     }
 }
 
-/// Text to add to a running turn. The transport answers on `reply` once the provider accepts or
-/// refuses it; a dropped reply means the turn ended before an answer arrived.
 pub(crate) struct SteerRequest {
     pub text: String,
     pub reply: tokio::sync::oneshot::Sender<Result<(), String>>,
@@ -518,10 +480,8 @@ pub(crate) struct SteerRequest {
 pub struct RunningTurn {
     pub cancel_flag: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
-    /// Pid of the spawned process (0 until spawn); used to kill the whole tree.
     pid: Arc<AtomicU32>,
     wake: Arc<Notify>,
-    /// Set only by a transport that can steer the active turn, and only while that turn runs.
     steering: std::sync::Mutex<Option<mpsc::Sender<SteerRequest>>>,
 }
 
@@ -542,14 +502,12 @@ impl RunningTurn {
         }
     }
 
-    /// Whether the active turn can take a message mid-run.
     pub fn can_steer(&self) -> bool {
         self.steering
             .lock()
             .is_ok_and(|slot| slot.as_ref().is_some_and(|tx| !tx.is_closed()))
     }
 
-    /// Hand `text` to the running turn. The returned receiver resolves with the provider's answer.
     pub fn steer(
         &self,
         text: String,
@@ -568,7 +526,6 @@ impl RunningTurn {
         Ok(answer)
     }
 
-    /// Process id of the provider child, once it has been spawned.
     pub fn process_id(&self) -> u32 {
         self.pid.load(Ordering::SeqCst)
     }
@@ -581,9 +538,6 @@ impl RunningTurn {
             .is_some_and(|status| status.is_none())
     }
 
-    /// Cancel the turn: mark it, wake the reader, and kill the provider **and everything it
-    /// started**. On Windows the CLI is usually a `.cmd` shim in front of node, so killing only
-    /// the direct child would leave the real agent running (and spending tokens).
     pub fn cancel(&self) {
         if self.cancel_flag.swap(true, Ordering::SeqCst) {
             return;
@@ -591,9 +545,6 @@ impl RunningTurn {
         self.wake.notify_one();
         let pid = self.pid.load(Ordering::SeqCst);
         if cfg!(windows) && pid != 0 {
-            // taskkill walks the tree from the *live* parent. Terminating the shim ourselves
-            // first would orphan its children before taskkill can find them, so the direct kill
-            // is only a fallback, applied by the runner after a grace period.
             kill_process_tree(pid);
         } else if let Ok(mut guard) = self.child.try_lock() {
             if let Some(child) = guard.as_mut() {
@@ -603,7 +554,6 @@ impl RunningTurn {
     }
 }
 
-/// Kill `pid` and all its descendants. Fire-and-forget; no-op for pid 0.
 pub(crate) fn kill_process_tree(pid: u32) {
     if pid == 0 {
         return;
@@ -623,8 +573,6 @@ pub(crate) fn kill_process_tree(pid: u32) {
     }
 }
 
-/// Run a provider turn. If `on_started` is Some, sends the cancel handle as soon as the child spawns.
-/// If `on_progress` is Some, streams Codex text/cards as they arrive.
 pub async fn run_provider_turn(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
@@ -649,7 +597,6 @@ pub async fn run_provider_turn_with_progress(
     .await
 }
 
-/// Testable/configurable variant of the standard turn runner. A zero timeout disables notices.
 pub async fn run_provider_turn_with_idle_timeout(
     req: &ProviderTurnRequest<'_>,
     on_started: Option<mpsc::UnboundedSender<Arc<RunningTurn>>>,
@@ -668,7 +615,6 @@ pub async fn run_provider_turn_with_idle_timeout(
     .await
 }
 
-/// App-owned turns bind native input before spawning, without changing request/transport defaults.
 pub async fn run_provider_turn_with_owner(
     req: &ProviderTurnRequest<'_>,
     owner: InteractionOwner,
@@ -761,7 +707,6 @@ async fn run_provider_turn_inner(
     ask_server_executable: Option<PathBuf>,
 ) -> Result<TurnOutcome> {
     let timing = Instant::now();
-    // Idle notices are advisory. Bound even direct API durations before Instant arithmetic.
     let idle_timeout = idle_timeout.min(Duration::from_secs(365 * 24 * 60 * 60));
     let source_started = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -781,8 +726,6 @@ async fn run_provider_turn_inner(
         || crate::harness::skills::needs_setup(&setup_store, req.home_path)
             .map_err(anyhow::Error::msg)?
     {
-        // Setup adapters run before the provider. Publish their cancellation owner too;
-        // aborting this future must kill the tracked adapter rather than orphan it.
         if let Some(started) = &on_started {
             if started.send(handle.clone()).is_err() {
                 return Ok(TurnOutcome {
@@ -885,8 +828,6 @@ async fn run_provider_turn_inner(
     } else {
         plan.env_remove.push("HABENA_RUNTIME_CONTEXT".into());
     }
-    // Bind MCP child provenance to the already-validated app owner. Never derive these values
-    // from model parameters or allow stale inherited identities on unbound/manual turns.
     const OWNER_ENV: [&str; 3] = [
         "CONCORDIA_PARENT_CONVERSATION",
         "CONCORDIA_PARENT_RUN",
@@ -963,14 +904,10 @@ async fn run_provider_turn_inner(
             return Ok(out);
         }
     }
-    // codex exec has no response channel for request_user_input; the app-server transport does.
-    // Only an interactive owner can answer, so ownerless turns stay on exec.
     if mode == crate::native_input::Mode::CodexAppServer
         || (req.provider == ProviderKind::Codex
             && mode == crate::native_input::Mode::Standard
             && owner.is_some()
-            // Test/diagnostic launchers speak the exec stream contract, not Codex app-server.
-            // Keep them on the stream path; real Codex uses the native popup transport.
             && std::env::var_os("CONCORDIA_CODEX_BIN").is_none())
     {
         let fallback_progress = on_progress.clone();
@@ -983,7 +920,6 @@ async fn run_provider_turn_inner(
             handle.clone(),
         )
         .await;
-        // Only a missing or changed app-server falls back; policy and identity refusals stand.
         let out = match out {
             Ok(out) => out,
             Err(error) if format!("{error:#}").contains("Could not start Codex app-server") => {
@@ -1015,7 +951,6 @@ async fn run_provider_turn_inner(
             }
             return Ok(out);
         }
-        // A Codex update must not stop the chat: run this turn on Codex's standard transport.
         crate::logging::info(&out.stderr_tail);
         if let Some(progress) = fallback_progress {
             let _ = progress
@@ -1029,8 +964,6 @@ async fn run_provider_turn_inner(
     if mode == crate::native_input::Mode::ClaudeStdio {
         return claude_native::run(req, &plan, owner, on_started, on_progress, handle).await;
     }
-    // Cursor has no way to name a session up front: ask the CLI for a chat id first, then resume
-    // it explicitly. Refuse an unbound turn if native session creation fails.
     if plan.provider == ProviderKind::Cursor
         && req.native_session_id.is_none_or(|s| s.trim().is_empty())
     {
@@ -1042,7 +975,7 @@ async fn run_provider_turn_inner(
         )
         .await
         .context("Cursor did not create an exact native chat; the turn was not started")?;
-        let at = plan.argv.len() - 1; // the prompt stays last
+        let at = plan.argv.len() - 1;
         plan.argv.insert(at, id.clone());
         plan.argv.insert(at, "--resume".into());
         plan.new_session_id = Some(id);
@@ -1118,7 +1051,6 @@ async fn run_provider_turn_inner(
     for key in &plan.env_remove {
         cmd.env_remove(key);
     }
-    // Conservative defaults for build tools. Explicit provider/user environment always wins.
     let inherited = plan
         .env
         .iter()
@@ -1139,7 +1071,6 @@ async fn run_provider_turn_inner(
     for (key, value) in crate::resource_governor::default_build_env(build.build_jobs, inherited) {
         cmd.env(key, value);
     }
-    // Do not echo argv here: it contains the whole prompt.
     let setup_ms = timing.elapsed().as_millis();
     let spawning = Instant::now();
     if handle.cancel_flag.load(Ordering::SeqCst) {
@@ -1165,13 +1096,11 @@ async fn run_provider_turn_inner(
         crate::process_lifetime::own_tokio_process(&child).map_err(anyhow::Error::msg)?;
     let spawn_ms = spawning.elapsed().as_millis();
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
-    // Counted in the footer stats (when on) until this turn ends.
     let _stats_guard = crate::sysstats::register(child.id().unwrap_or(0));
     let stdout = child.stdout.take().context("stdout")?;
     let stderr = child.stderr.take().context("stderr")?;
     let recorder = crate::provider::recording::Recorder::from_env(plan.provider);
     if let (Some(prompt), Some(mut stdin)) = (launch.stdin.clone(), child.stdin.take()) {
-        // Written off-thread so a provider that has not started reading cannot stall us.
         tokio::spawn(async move {
             let _ = stdin.write_all(prompt.as_bytes()).await;
             let _ = stdin.shutdown().await;
@@ -1179,7 +1108,6 @@ async fn run_provider_turn_inner(
     }
     let last_activity_ms = Arc::new(AtomicU64::new(timing.elapsed().as_millis() as u64));
     let stderr_activity = last_activity_ms.clone();
-    // Always drain stderr: an unread pipe blocks a chatty child, and it is where failures go.
     let mut stderr_task = tokio::spawn(read_stderr_tail(stderr, move || {
         stderr_activity.store(timing.elapsed().as_millis() as u64, Ordering::SeqCst);
     }));
@@ -1189,8 +1117,6 @@ async fn run_provider_turn_inner(
     }
     if let Some(tx) = on_started {
         if tx.send(handle.clone()).is_err() {
-            // No caller can cancel or observe this child anymore. Stop it here so a
-            // receiver that disappeared during startup cannot leave a provider running.
             handle.cancel();
         }
     }
@@ -1219,7 +1145,6 @@ async fn run_provider_turn_inner(
             out.cancelled = true;
             break;
         }
-        // Wake on cancel even when the provider is silent or its pipe is held by an orphan.
         let next = tokio::select! {
             _ = handle.wake.notified() => {
                 out.cancelled = true;
@@ -1287,8 +1212,6 @@ async fn run_provider_turn_inner(
                         },
                     };
                     if plan.provider == ProviderKind::Claude && req.native_session_id.is_some() {
-                        // Recent Claude versions restore earlier session cost into result totals.
-                        // Without a verified baseline, that total is not this attempt's cost.
                         for part in &mut parts {
                             if let StreamPart::Usage(usage) = part {
                                 usage.cost_usd = None;
@@ -1300,8 +1223,6 @@ async fn run_provider_turn_inner(
                     apply_stream_parts(parts, &mut chunk);
                     if let Some(sid) = chunk.session_id {
                         if session_guard.is_none() {
-                            // The CLI has already opened its own writer. Hold our guard for
-                            // the remainder of the turn so another pane cannot resume it.
                             session_guard = super::session_guard::acquire(
                                 &crate::store::default_store_root(),
                                 req.home_path,
@@ -1372,7 +1293,6 @@ async fn run_provider_turn_inner(
     let child = handle.child.lock().await.take();
     if let Some(mut child) = child {
         if out.cancelled {
-            // Idempotent with cancel(); covers the path where the reader noticed first.
             kill_process_tree(handle.pid.load(Ordering::SeqCst));
             match tokio::time::timeout(KILL_GRACE, child.wait()).await {
                 Ok(Ok(status)) => out.exit_code = status.code(),
@@ -1382,7 +1302,6 @@ async fn run_provider_turn_inner(
                         handle.pid.load(Ordering::SeqCst),
                         libc::SIGKILL,
                     );
-                    // Tree kill did not finish the job: terminate the direct child.
                     let _ = child.start_kill();
                     if let Ok(Ok(status)) = tokio::time::timeout(REAP_TIMEOUT, child.wait()).await {
                         out.exit_code = status.code();
@@ -1393,11 +1312,7 @@ async fn run_provider_turn_inner(
             out.exit_code = status.code();
         }
     }
-    // Stop can race with stdout EOF while we are waiting for process exit. It is still a
-    // cancellation, even when the reader has already left its select loop.
     out.cancelled |= handle.cancel_flag.load(Ordering::SeqCst);
-    // A conversation's first turn names its session; keep it only if the turn really ran, so a
-    // failed first turn never leaves an id that does not exist to be resumed next time.
     if out.session_id.is_none() && !out.cancelled && out.exit_code == Some(0) {
         out.session_id = plan.new_session_id.clone();
     }
@@ -1498,7 +1413,6 @@ fn terminal_failure(line: &str) -> Option<bool> {
     }
 }
 
-/// Detect quota/rate-limit terminal signals only from structured provider output.
 fn structured_quota_signal(line: &str) -> bool {
     let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
         return false;
@@ -1529,8 +1443,6 @@ fn structured_quota_signal(line: &str) -> bool {
     matched
 }
 
-/// Replayed complete snapshots with explicit event/message identity are safe to omit.
-/// Deltas and text without identity must retain repetition. This cache belongs to one turn.
 #[derive(Default)]
 struct CompletedEvents {
     entries: VecDeque<(String, String)>,
@@ -1544,7 +1456,6 @@ impl CompletedEvents {
         };
         let kind = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let id = match kind {
-            // This runner owns one turn, so terminal events have an implicit per-run identity.
             "turn.completed" | "turn.failed" | "result" => Some("terminal"),
             "item.completed" => event.pointer("/item/id").and_then(|v| v.as_str()),
             "assistant" if event.get("timestamp_ms").is_none() => event
@@ -1616,7 +1527,6 @@ mod replay_tests {
     }
 }
 
-/// Drain every transport's stderr without blocking the child; retain only a bounded tail.
 async fn read_stderr_tail(
     stderr: tokio::process::ChildStderr,
     mut on_line: impl FnMut(),
@@ -1637,9 +1547,6 @@ async fn read_stderr_tail(
     tail.into_iter().collect::<Vec<_>>().join("\n")
 }
 
-/// Read one line into `buf` (cleared first), keeping at most `LINE_MAX` bytes and discarding the
-/// remainder of an over-long line. Returns the bytes consumed; 0 means end of stream. Unlike
-/// `lines()`, invalid UTF-8 is not an error (the caller decodes lossily) and memory is bounded.
 async fn read_line_bounded<R: AsyncBufRead + Unpin>(
     r: &mut R,
     buf: &mut Vec<u8>,
@@ -1675,7 +1582,6 @@ async fn read_line_bounded_with_limit<R: AsyncBufRead + Unpin>(
     }
 }
 
-/// Lossy UTF-8 without the line terminator; marks a line that hit `LINE_MAX`.
 fn decode_line(buf: &[u8]) -> String {
     let mut line = String::from_utf8_lossy(buf)
         .trim_end_matches(['\r', '\n'])
@@ -1706,7 +1612,6 @@ async fn emit_progress(
     }
 }
 
-/// Kill a mock long-running child — used by cancel tests.
 pub async fn spawn_and_cancel_mock() -> Result<bool> {
     let handle = RunningTurn::new();
     let cancel_flag = handle.cancel_flag.clone();
@@ -1843,7 +1748,6 @@ mod gate_tests {
             compaction: Default::default(),
         };
         let plan = plan_provider_turn(&req).unwrap();
-        // "last week" in the pack is not the user's words, so it is not resolved.
         assert_eq!(
             plan.prompt,
             "[Fri Oct 30 2026, 2:05pm local]\n\"yesterday\" = Thu Oct 29 2026\n\

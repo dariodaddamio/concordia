@@ -1,4 +1,3 @@
-//! A compact, local-only Concordia portrait on roomy Home screens.
 use super::*;
 use std::sync::{Arc, OnceLock};
 
@@ -23,13 +22,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     let Some(pixels) = portrait() else {
         return area;
     };
-    let hero = Rect::new(area.x + 1, area.y, 14, 6);
+    let hero = Rect::new(area.x + 1, area.y + 1, 14, 7);
     raster::draw_brand(f, hero, app, pixels);
     let text = Rect::new(
         hero.right() + 2,
-        area.y + 1,
+        hero.y,
         area.width.saturating_sub(18),
-        7,
+        hero.height,
     );
     let mut lines = vec![Line::from(Span::styled(
         "Concordia",
@@ -70,8 +69,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) -> Rect {
     )
 }
 
-/// The newest changes, one short line each: the first bullet of each changelog entry, not the
-/// entry heading (headings are only a kind and a build stamp).
 pub(super) fn whats_new(count: usize, width: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut in_entry = false;

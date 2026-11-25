@@ -1,4 +1,3 @@
-//! Main-turn scope ownership and explicit inspection. Native permissions remain authoritative.
 use super::*;
 use crate::workspaces::{self, Admission, Declaration, Request};
 

@@ -1,5 +1,3 @@
-//! The tokens screen behind `/usage` (`t`): what went through Concordia, and where.
-
 use super::token_line::compact;
 use super::{App, PickerKind};
 use crate::token_log::{breakdown, totals, Entry, Totals};
@@ -44,7 +42,6 @@ enum Loaded {
 }
 
 const DAY: u64 = 24 * 60 * 60;
-/// Chats beyond this many are left out of the per-chat list.
 const TOP_CHATS: usize = 8;
 
 fn now() -> u64 {
@@ -54,7 +51,6 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Rolling 24-hour and all-time totals from the persistent Concordia log.
 #[cfg(test)]
 pub(super) fn landing_totals(state_root: &Path) -> (u64, u64) {
     let entries = crate::token_log::load(state_root);
@@ -77,10 +73,8 @@ fn share(part: u64, whole: u64) -> String {
     format!("{percent}%")
 }
 
-/// A breakdown's title and how it names an entry's group.
 type Section<'a> = (&'a str, Box<dyn Fn(&Entry) -> String>);
 
-/// The screen's lines for `entries` as of `now`; `chat_title` names a chat by account and id.
 pub fn lines(
     entries: &[Entry],
     now: u64,

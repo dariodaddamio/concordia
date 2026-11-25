@@ -1,9 +1,6 @@
-//! OSC 22 mouse feedback. Hosts that do not support it ignore the request.
 use super::*;
 use std::io::Write;
 
-/// Where inside its cell row the mouse is, in eighths from the top. The native window knows
-/// the pixel; a terminal host reports whole cells and leaves this at the middle.
 static SUB_ROW: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(4);
 
 pub(super) fn set_sub_row(eighths: u8) {
@@ -120,8 +117,24 @@ pub(super) fn shape(app: &App, x: u16, y: u16) -> &'static str {
     {
         return "pointer";
     }
+    if app.header_dropdown.is_some()
+        && app
+            .areas
+            .header_dropdown
+            .is_some_and(|rect| contains(rect, x, y))
+    {
+        return "pointer";
+    }
     if app.picker.is_some() || app.activity.detail.is_some() || workers::overlay_open(app) {
         return "default";
+    }
+    if landing::visible(app)
+        && app
+            .areas
+            .home_documentation
+            .is_some_and(|rect| contains(rect, x, y))
+    {
+        return "pointer";
     }
     if [
         app.areas.header_home,

@@ -1,4 +1,3 @@
-//! User settings and local provider customization inventory. Never executes discovered content.
 use super::*;
 
 fn row(id: &str, label: impl Into<String>, detail: impl Into<String>) -> PickerRow {
@@ -39,8 +38,6 @@ fn setting(
     )
 }
 
-/// Every setting with its current value. Reads saved state, so call it on open and after a
-/// change, never per frame.
 fn settings_rows(app: &App) -> Vec<(usize, SettingsRow)> {
     let ui = &app.appearance.ui;
     let saved = crate::store::get_settings(&app.state_root);
@@ -235,8 +232,6 @@ fn settings_rows(app: &App) -> Vec<(usize, SettingsRow)> {
     ]
 }
 
-/// Opens the settings screen, or rebuilds it in place after a change, keeping the tab, the
-/// selected row of every tab and the filter.
 pub(super) fn open(app: &mut App) {
     let previous = app.settings_view.take();
     let mut tabs: Vec<SettingsTab> = TABS
@@ -271,14 +266,12 @@ pub(super) fn open(app: &mut App) {
     app.picker = None;
 }
 
-/// Rebuilds the rows once a popup opened from the screen has closed.
 pub(super) fn refresh_if_stale(app: &mut App) {
     if app.picker.is_none() && app.settings_view.as_ref().is_some_and(|view| view.stale) {
         open(app);
     }
 }
 
-/// The rows on screen as (tab, row): the active tab, or every match while a filter is typed.
 pub(super) fn visible(view: &SettingsView) -> Vec<(usize, usize)> {
     if view.filter.is_empty() {
         return (0..view.tabs[view.active].rows.len())
@@ -327,8 +320,6 @@ fn switch_tab(view: &mut SettingsView, forward: bool) {
     };
 }
 
-/// Runs the selected row: a switch flips in place, anything larger opens its popup over the
-/// screen, and a file or terminal leaves the screen.
 fn act(app: &mut App) {
     let Some(view) = app.settings_view.as_ref() else {
         return;
@@ -409,7 +400,6 @@ pub(super) fn key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// A click selects a tab or a row; a click on the row that is already selected runs it.
 pub(super) fn mouse(app: &mut App, event: MouseEvent) {
     let Some(view) = app.settings_view.as_mut() else {
         return;

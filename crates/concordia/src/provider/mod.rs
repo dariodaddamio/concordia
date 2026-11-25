@@ -19,8 +19,6 @@ pub mod turn;
 use crate::store::ProviderKind;
 use std::path::PathBuf;
 
-/// A provider's interactive slash surface. Support is determined by the transport, while the
-/// provider remains the owner of the command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandSpec {
     pub name: &'static str,
@@ -32,10 +30,6 @@ pub struct AvailableCommand {
     pub name: String,
     pub description: String,
 }
-
-// Codex app-server 0.170.0's generated ClientRequest schema has no command-list RPC.
-// Keep this provider-owned fallback list until the protocol advertises commands explicitly;
-// never invent a discovery request that the server does not define.
 
 const CODEX_COMMANDS: &[CommandSpec] = &[
     CommandSpec {
@@ -279,11 +273,6 @@ impl LocateEnv {
     }
 }
 
-/// Whether a PATH directory must be excluded from executable discovery.
-///
-/// Project directories are untrusted because a checked-out project can plant a provider name,
-/// but a user's home directory is a normal place for CLI installations. Relative PATH entries
-/// are rejected by the caller before this predicate is used.
 pub(crate) fn is_untrusted_path_dir(
     dir: &std::path::Path,
     cwd: &std::path::Path,
@@ -444,8 +433,6 @@ pub use turn::{
     RunningTurn, TurnOutcome, TurnProgress,
 };
 
-/// Explicit provider CLI path from the environment (custom installs, and the fake provider in
-/// tests). Empty values are ignored.
 pub fn bin_override(var: &str) -> Option<String> {
     std::env::var(var)
         .ok()

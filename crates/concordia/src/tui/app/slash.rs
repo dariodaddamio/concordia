@@ -569,7 +569,6 @@ impl App {
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
-            // Catalog titles carry provider and scope (`Skills · codex · evidence`); keep them.
             settings::catalog(self, *hooks);
             self.footer_left = "↑↓ choose · Enter open source · Esc close".into();
             return true;
@@ -607,10 +606,6 @@ impl App {
                 return true;
             }
         }
-        // Unknown slash names are provider-owned. Returning false deliberately sends the
-        // original line through the active provider turn instead of manufacturing a Concordia
-        // "unknown command" dead end. Native execution is unavailable in print/exec mode; the
-        // picker explains that boundary while direct input remains provider-visible.
         if matches!(&cmd, SlashCommand::Unknown(_)) {
             return false;
         }

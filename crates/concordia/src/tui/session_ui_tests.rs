@@ -172,7 +172,6 @@ fn resume_of_session_without_task_record_works() {
     select_account(&app.state_root, "synthetic").unwrap();
     set_model(&app.state_root, "chosen-small-model").unwrap();
     app.open_resume_picker();
-    // The list is built off the UI thread; wait for it to arrive.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !app.poll_picker_load() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -259,7 +258,6 @@ fn home_model_selection_is_saved_without_sending_a_turn_or_map() {
     let (mut app, _dir, home) = setup();
     select_account(&app.state_root, "synthetic").unwrap();
     app.refresh_binding();
-    // Model picks must resolve through the account catalog.
     std::fs::write(
         home.join("models_cache.json"),
         r#"{"models":[{"slug":"chosen-small-model","display_name":"Chosen Small","visibility":"list"}]}"#,

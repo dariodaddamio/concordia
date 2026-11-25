@@ -1,19 +1,9 @@
-//! Cross-provider / cross-account continuity — bounded packs, never `--last`.
-//!
-//! Contract (mock-first, from P0 docs + PLAN):
-//! - Same provider + same home + explicit session id → native resume, **no pack**.
-//! - Otherwise → new native session; the pack is the thread *map* (`threads::build_map`,
-//!   at most `MAP_CHARS`), never a transcript dump; never pass a foreign session id into
-//!   another home/provider.
-
 pub use crate::context_types::{PackMessage, PackRole};
 use crate::store::ProviderKind;
 use crate::threads;
 
-/// Character budget for the context pack (a char budget, not a tokenizer).
 pub const MAX_CONTEXT_CHARS: usize = 6000;
 
-/// Rough estimate only (no live tokenizer / model). ~4 chars per token.
 pub fn estimate_tokens(chars: usize) -> usize {
     chars.div_ceil(4)
 }
@@ -31,11 +21,8 @@ pub struct ContextPack {
 
 #[derive(Debug, Clone)]
 pub struct ContinuityDecision {
-    /// True only when same provider + same home + non-empty session id.
     pub native_resume: bool,
-    /// Session id to pass to the provider — **None** unless native_resume.
     pub session_id: Option<String>,
-    /// Pack prepended to the next user prompt — **None** when native_resume or empty history.
     pub pack: Option<ContextPack>,
     pub pack_chars: usize,
     pub est_tokens: usize,
@@ -50,9 +37,7 @@ pub struct ContinuityRequest<'a> {
     pub to_home: Option<&'a str>,
     pub session_id: Option<&'a str>,
     pub messages: &'a [PackMessage],
-    /// Id of the stored thread log, when recording is on (the map's `more:` line points at it).
     pub thread_id: Option<&'a str>,
-    /// When false, decide switch policy only (no pack body) — e.g. account bind before next turn.
     pub include_pack_if_needed: bool,
 }
 
@@ -76,12 +61,10 @@ pub fn should_attempt_native_resume(
     }
 }
 
-/// Single planner used by TUI + tests — omit pack when native resume applies.
 pub fn plan_continuity(req: &ContinuityRequest<'_>) -> ContinuityDecision {
     plan_continuity_capped(req, MAX_CONTEXT_CHARS)
 }
 
-/// Same planner with a caller-chosen (smaller) pack budget, e.g. for delegated workers.
 pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> ContinuityDecision {
     let native = should_attempt_native_resume(
         req.from_provider,
@@ -121,7 +104,7 @@ pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> 
     let est_tokens = pack.as_ref().map(|p| p.est_tokens).unwrap_or(0);
     ContinuityDecision {
         native_resume: false,
-        session_id: None, // never leak foreign / cross-home session ids
+        session_id: None,
         pack,
         pack_chars,
         est_tokens,
@@ -129,7 +112,6 @@ pub fn plan_continuity_capped(req: &ContinuityRequest<'_>, max_chars: usize) -> 
     }
 }
 
-/// The reason for an ordinary new chat; it is not worth a notice.
 pub const NEW_SESSION: &str = "New session.";
 
 fn continuity_reason(req: &ContinuityRequest<'_>) -> &'static str {
@@ -152,8 +134,6 @@ fn continuity_reason(req: &ContinuityRequest<'_>) -> &'static str {
     }
 }
 
-/// The pack is the deterministic thread map (no transcript), at most
-/// `min(max_chars, MAP_CHARS)` characters. `thread_id` is Some when the log is stored.
 pub fn build_context_pack(
     messages: &[PackMessage],
     from: ProviderKind,
@@ -206,7 +186,6 @@ pub fn build_context_pack_with_workspace(
     })
 }
 
-/// Assert pack never exceeds budget (fixture gate).
 pub fn assert_pack_within_budget(pack: &ContextPack, max_chars: usize) -> Result<(), String> {
     if pack.pack_chars > max_chars {
         return Err(format!(
@@ -306,7 +285,6 @@ mod tests {
             role: PackRole::User,
             text: "x".repeat(100),
         }];
-        // many assistants
         for _ in 0..50 {
             msgs.push(PackMessage {
                 role: PackRole::Assistant,
@@ -333,7 +311,7 @@ mod tests {
         });
         assert!(!d.native_resume);
         assert!(d.session_id.is_none());
-        assert!(d.pack.is_none()); // empty history
+        assert!(d.pack.is_none());
     }
 
     #[test]

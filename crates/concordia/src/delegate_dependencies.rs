@@ -1,4 +1,3 @@
-//! Approved, shared-workspace dependency dispatch through the ordinary worker queue.
 use super::*;
 use crate::accounts::is_logged_in;
 

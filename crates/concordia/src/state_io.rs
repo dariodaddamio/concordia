@@ -1,4 +1,3 @@
-//! Small cross-process transactions for append logs and independently saved state.
 use std::fs::{OpenOptions, TryLockError};
 use std::io;
 use std::io::Write;
@@ -11,7 +10,6 @@ pub(crate) fn with_lock<T>(path: &Path, write: impl FnOnce() -> io::Result<T>) -
     with_lock_file(path, |_, _| write())
 }
 
-/// The callback can initialize or verify a body-free protocol marker while ownership is held.
 pub(crate) fn with_lock_file<T>(
     path: &Path,
     write: impl FnOnce(&mut std::fs::File, bool) -> io::Result<T>,
@@ -32,7 +30,6 @@ pub(crate) fn with_lock_file<T>(
             Ok(file) => Ok((file, true)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 match options.open(path) {
-                    // Another writer may remove its pathname between the two opens.
                     Err(error)
                         if error.kind() == io::ErrorKind::NotFound && Instant::now() < deadline =>
                     {
@@ -69,8 +66,6 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic_mode(path, bytes, true)
 }
 
-/// Publish complete bytes only if the destination is still absent. A concurrent
-/// creator wins; filesystems without hard-link support fail without replacing it.
 pub(crate) fn write_atomic_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_atomic_mode(path, bytes, false)
 }
@@ -95,12 +90,9 @@ fn write_atomic_mode(path: &Path, bytes: &[u8], replace: bool) -> io::Result<()>
         drop(f);
         if !replace {
             std::fs::hard_link(&tmp, path)?;
-            // Publication succeeded. A retained staging link is harmless and
-            // must not make the caller retry a completed native config write.
             let _ = std::fs::remove_file(&tmp);
             return Ok(());
         }
-        // Another pane may hold the destination open for a moment (Windows): try a few times.
         let mut last = Ok(());
         for _ in 0..3 {
             match std::fs::rename(&tmp, path) {

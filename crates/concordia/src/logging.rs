@@ -1,9 +1,3 @@
-//! A small append-only event log in the state folder (`concordia.log`), so a crash or a strange
-//! failure leaves a trace. It records *events* (startup, turn outcomes, updates, account changes,
-//! panics) and never prompt text, replies, or credentials.
-//!
-//! It rotates at 1 MB (`concordia.log.1`). `CONCORDIA_LOG=off` disables it.
-
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +16,6 @@ fn disabled() -> bool {
     std::env::var("CONCORDIA_LOG").is_ok_and(|v| v.eq_ignore_ascii_case("off") || v == "0")
 }
 
-/// Start logging to `<state_root>/concordia.log`. Safe to call more than once; the first wins.
 pub fn init(state_root: &Path) {
     if !disabled() {
         let _ = PATH.set(log_path(state_root));
@@ -54,7 +47,6 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// UTC `YYYY-MM-DDTHH:MM:SSZ` for a unix timestamp (civil-from-days, no dependencies).
 pub fn iso_utc(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
@@ -76,8 +68,6 @@ pub fn iso_utc(secs: u64) -> String {
     )
 }
 
-/// Append one line, rotating first if the file is already at its size cap. A line is written with
-/// a single `write_all` in append mode, so concurrent panes do not interleave inside a line.
 fn append(path: &Path, level: &str, msg: &str, secs: u64) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -87,7 +77,6 @@ fn append(path: &Path, level: &str, msg: &str, secs: u64) -> std::io::Result<()>
         let _ = fs::remove_file(&rotated);
         let _ = fs::rename(path, rotated);
     }
-    // Keep it to one line per event.
     let flat = crate::redact::redact(msg).replace(['\r', '\n'], " | ");
     let line = format!(
         "{} {level:<5} pid={} {flat}\n",
@@ -109,7 +98,7 @@ mod tests {
     fn timestamps_are_correct_utc() {
         assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso_utc(1_700_000_000), "2023-11-14T22:13:20Z");
-        assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00Z"); // a leap day
+        assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(iso_utc(4_102_444_799), "2099-12-31T23:59:59Z");
     }
 
@@ -142,7 +131,6 @@ mod tests {
             fs::metadata(p.with_extension("log.1")).unwrap().len(),
             MAX_BYTES
         );
-        // A second rotation replaces the old file rather than accumulating.
         fs::write(&p, vec![b'y'; MAX_BYTES as usize]).unwrap();
         append(&p, "INFO", "again", 0).unwrap();
         assert_eq!(fs::read(p.with_extension("log.1")).unwrap()[0], b'y');

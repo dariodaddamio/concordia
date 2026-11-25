@@ -1,4 +1,3 @@
-//! Lossless UTF-8 file editing with delta undo and compare-before-replace saves.
 use std::io::{Read, Write};
 use std::ops::Range;
 use std::path::Path;
@@ -338,7 +337,6 @@ pub fn visible_line(text: &str, column: usize, width: usize) -> String {
         }
         let end = col + cells;
         if c == '\t' || (cells > 1 && (col < column || end > right)) {
-            // Partial wide glyphs occupy blank cells; later text keeps its true column.
             output.extend(std::iter::repeat_n(
                 ' ',
                 end.min(right).saturating_sub(col.max(column)),
@@ -351,7 +349,6 @@ pub fn visible_line(text: &str, column: usize, width: usize) -> String {
     output
 }
 
-/// Existing bytes must still match exactly. Failures never retry or truncate the target.
 pub fn save(path: &Path, expected: &str, replacement: &str) -> Result<(), String> {
     let read_current = || -> Result<Vec<u8>, String> {
         let meta = std::fs::symlink_metadata(path).map_err(|e| format!("save: {e}"))?;
@@ -404,7 +401,6 @@ pub fn save(path: &Path, expected: &str, replacement: &str) -> Result<(), String
         return Err(error);
     }
     if let Err(error) = replace_file(path, &temp, &backup) {
-        // ReplaceFileW can fail after moving files. Retain staging/backup and report uncertainty.
         return Err(format!(
             "save replacement failed ({error}); inspect {} and {}; no automatic retry",
             temp.display(),
@@ -462,7 +458,6 @@ fn replace_file(path: &Path, temp: &Path, backup: &Path) -> std::io::Result<()> 
     let original = wide(path);
     let replacement = wide(temp);
     let saved = wide(backup);
-    // SAFETY: live nul-terminated UTF-16 buffers; reserved arguments null; merge errors not ignored.
     let result = unsafe {
         ReplaceFileW(
             original.as_ptr(),

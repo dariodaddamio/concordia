@@ -111,7 +111,6 @@ fn submitting_while_busy_does_not_replace_active_prompt_or_queue_another_turn() 
     app.editor.set_text("second prompt");
     app.submit_input(&tx);
 
-    // FIX2: prompts submitted during a turn enter the editable queue immediately.
     assert_eq!(app.editor.text(), "");
     assert!(app.busy);
     assert_eq!(app.submitted_prompt.as_deref(), Some("active prompt"));

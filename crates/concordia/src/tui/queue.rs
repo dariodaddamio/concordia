@@ -1,11 +1,3 @@
-//! The prompt queue: lines up the next prompts while a turn runs (see docs/architecture.md,
-//! "Prompt queue"). The panel sits above the prompt box and is separate from the draft; the
-//! first item is sent through the normal submit path when a turn finishes successfully, and a
-//! cancelled or failed turn pauses the queue. Persisted to the pane's recovery record.
-//!
-//! All state lives in [`Queue`]; this module only reads and writes `App` fields from its own
-//! `impl App` block, so `tui/mod.rs` keeps just the call sites.
-
 use super::editor::Editor;
 use super::text::char_width;
 use super::{contains, App, JobKind};
@@ -17,9 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use tokio::sync::mpsc;
 
-/// Item rows shown before `+N more`.
 const PANEL_MAX: usize = 5;
-/// Characters of a prompt shown in its row.
 const LABEL_CHARS: usize = 60;
 const EDIT_ROWS: usize = 6;
 
@@ -74,18 +64,13 @@ impl Dispatch {
 #[derive(Default)]
 pub(super) struct Queue {
     pub items: Vec<String>,
-    /// Set by a cancel or a failed turn (and at launch); explicitly resumed with Ctrl+R.
     pub paused: bool,
-    /// Selected row while the panel has focus.
     pub sel: usize,
     pub focused: bool,
-    /// Inline editor for `items[sel]`.
     pub edit: Option<Editing>,
     pub(super) edit_scroll: usize,
     pub(super) edit_rect: Option<(Rect, usize)>,
-    /// Click targets from the last draw.
     pub rects: Vec<(Rect, usize)>,
-    /// The turn that just ended was clean: the next item may be sent.
     pub(super) dispatch: Dispatch,
     pub(super) send_targets: Vec<(Rect, usize)>,
     pressed_send: Option<usize>,
@@ -99,7 +84,6 @@ impl Queue {
             self.edit = None;
             self.edit_scroll = 0;
             self.edit_rect = None;
-            // Nothing left to resume: the next queued prompt starts fresh.
             self.paused = false;
         } else {
             self.sel = self.sel.min(self.items.len() - 1);
@@ -114,7 +98,6 @@ impl Queue {
     }
 }
 
-/// One-line label: whitespace collapsed, cut to [`LABEL_CHARS`].
 fn label(text: &str) -> String {
     let flat = crate::attachments::Message::text(text)
         .split_whitespace()
@@ -143,7 +126,6 @@ fn fit(s: &str, width: usize) -> String {
     out
 }
 
-/// Which items the panel shows and how many rows it needs.
 struct Plan {
     first: usize,
     count: usize,
@@ -154,7 +136,6 @@ impl Plan {
     fn of(q: &Queue) -> Plan {
         let n = q.items.len();
         let count = n.min(PANEL_MAX);
-        // Keep the selected row in view when focus moves past the fifth item.
         let first = if q.focused && q.sel >= PANEL_MAX {
             q.sel + 1 - PANEL_MAX
         } else {
@@ -175,9 +156,6 @@ impl Plan {
     }
 }
 
-// ---- layout ------------------------------------------------------------------------------
-
-/// Take the panel's rows off the bottom of the transcript area (nothing when the queue is empty).
 pub(super) fn carve(transcript: &mut Rect, app: &App) -> Rect {
     let q = &app.queue;
     let rows = if let Some(edit) = q.edit.as_ref() {
@@ -451,10 +429,6 @@ fn plan_indices(q: &Queue) -> std::ops::Range<usize> {
     plan.first..(plan.first + plan.count).min(q.items.len())
 }
 
-// ---- keys and mouse ----------------------------------------------------------------------
-
-/// Tab: queue the typed prompt when a turn is running or others are already queued. Returns
-/// false when Tab should keep its slash-completion job.
 pub(super) fn tab(app: &mut App) -> bool {
     if app.images.importing() {
         app.flash("Wait for the attachment to finish importing");
@@ -485,7 +459,6 @@ pub(super) fn tab(app: &mut App) -> bool {
     true
 }
 
-/// Up on the first prompt row with an empty draft and a queue: focus the panel.
 pub(super) fn focus_on_up(app: &mut App) -> bool {
     if app.queue.items.is_empty() || !app.editor.chars().is_empty() || app.hist_pos.is_some() {
         return false;
@@ -496,7 +469,6 @@ pub(super) fn focus_on_up(app: &mut App) -> bool {
     true
 }
 
-/// Keys while the panel has focus. Returns true when the key was consumed.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if app.queue.focused
         && app.queue.edit.is_none()
@@ -549,7 +521,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             app.begin_queue_edit(ed);
         }
         KeyCode::Delete => app.remove_queued(app.queue.sel),
-        // Typing goes back to the prompt: leave the panel and let the key through.
         KeyCode::Char(_) | KeyCode::Backspace if !ctrl || alt => {
             app.queue.unfocus();
             return false;
@@ -585,7 +556,6 @@ fn edit_key(
             let i = edit.index;
             let attachments = app.close_queue_edit().expect("queued edit is open");
             if text.trim().is_empty() && attachments.is_empty() {
-                // Emptied on purpose: same as deleting the item.
                 app.remove_queued(i);
             } else {
                 let original = crate::attachments::Message::decode(&app.queue.items[i]);
@@ -642,7 +612,6 @@ fn edit_key(
     true
 }
 
-/// Pasted text goes to the inline editor while one is open. True when it took the text.
 pub(super) fn paste(app: &mut App, text: &str, continues: bool) -> bool {
     match app.queue.edit.as_mut() {
         Some(edit) => {
@@ -656,7 +625,6 @@ pub(super) fn paste(app: &mut App, text: &str, continues: bool) -> bool {
     }
 }
 
-/// Click a queued row to select it; a click anywhere else leaves the panel.
 pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
     let send_hit = app
         .queue
@@ -715,8 +683,6 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
     }
 }
 
-// ---- state changes -----------------------------------------------------------------------
-
 impl App {
     pub(super) fn begin_queue_edit(&mut self, editor: Editor) {
         let message = crate::attachments::Message::decode(&self.queue.items[self.queue.sel]);
@@ -770,7 +736,6 @@ impl App {
             "Sending the selected queued message; remaining messages stay paused.".into()
         }
     }
-    /// Persist after any change and keep the selection valid.
     pub(super) fn queue_changed(&mut self) {
         self.queue.clamp();
         self.persist_draft_now();
@@ -794,19 +759,14 @@ impl App {
         self.queue_changed();
     }
 
-    /// Esc / Ctrl+C on a running turn: nothing queued may fire after it.
     pub(super) fn pause_queue(&mut self) {
         if !self.queue.items.is_empty() {
             self.queue.paused = true;
         }
     }
 
-    /// Called at the end of `finalize_turn`. A cancelled or failed turn pauses the queue and
-    /// leaves the draft alone on cancellation. Only failure offers its prompt for retry.
     pub(super) fn turn_finished(&mut self, cancelled: bool, failed: bool) {
         let sent = self.last_sent.take();
-        // Cancellation belongs to the submitted turn. A slash-prefixed draft may
-        // have been typed after submission and must remain independent.
         if cancelled || failed {
             self.queue.dispatch.clear_automatic();
             self.pause_queue();
@@ -824,7 +784,6 @@ impl App {
         }
     }
 
-    /// A turn ended: finish it, then send the next queued prompt if the turn was clean.
     pub(super) fn on_turn_done(
         &mut self,
         mut outcome: crate::provider::turn::TurnOutcome,
@@ -835,7 +794,6 @@ impl App {
         }
         let scope_closed = self.finish_main_scope(&outcome);
         if !scope_closed {
-            // A failed admission must not consume an explicitly selected queue item.
             self.queue.dispatch = Dispatch::Idle;
             self.pause_queue();
         }
@@ -878,7 +836,6 @@ impl App {
         );
         self.native_accounting_owner = None;
         if turn_closed && scope_closed && self.reference_journal.pending() {
-            // Keep the request recovery transaction until its verified references are durable.
             self.reference_journal
                 .defer_close(self.continuation.run_id());
         } else {
@@ -886,7 +843,6 @@ impl App {
             self.save_turn_checkpoint(turn_closed && scope_closed);
         }
         self.persist_draft_now();
-        // An open question holds queued prompts until the user answers it (owner, 2026-11-18).
         if self.continuation.waiting() || self.questions.waiting() {
             self.queue.dispatch.clear_automatic();
             self.pause_queue();
@@ -897,7 +853,6 @@ impl App {
         self.queue_advance(tx);
     }
 
-    /// Send queued prompts through the normal submit path until one starts a turn.
     pub(super) fn queue_advance(&mut self, tx: &mpsc::UnboundedSender<String>) {
         if self.reference_journal.backlogged() || self.rename_editor.is_some() {
             return;
@@ -944,8 +899,6 @@ impl App {
                 self.continue_usage(&target, tx);
             }
         }
-        // An inline editor owns the queue until its edit is saved or cancelled. Removing
-        // even an earlier row here would change what `sel` refers to and lose unsaved work.
         if self.queue.edit.is_some() || self.session_ui.loading() {
             return;
         }
@@ -954,7 +907,6 @@ impl App {
         }
         while !self.busy && !self.queue.paused && !self.queue.items.is_empty() {
             if self.job.as_ref().is_some_and(|j| j.kind == JobKind::Update) {
-                // A prompt cannot start while an update is installing; do not lose the queue.
                 self.queue.paused = true;
                 self.push_system("queue paused - an update is running");
                 break;
@@ -984,7 +936,6 @@ impl App {
         true
     }
 
-    /// `/queue` and `/queue clear`.
     pub(super) fn queue_command(&mut self, arg: &str) -> Vec<String> {
         if arg == "send" || arg.starts_with("send ") {
             let index = if arg == "send" {
@@ -1045,7 +996,6 @@ impl App {
     }
 }
 
-/// The argument of a `/queue` line, or None when `line` is some other command.
 pub(super) fn slash_arg(line: &str) -> Option<&str> {
     let t = line.trim();
     if t == "/queue" {

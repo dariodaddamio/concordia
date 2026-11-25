@@ -1,4 +1,3 @@
-//! Pane-owned unfinished request recovery. It never dispatches a turn during restoration.
 use super::*;
 use serde::{Deserialize, Serialize};
 
@@ -51,7 +50,7 @@ impl App {
         self.remember_native_source();
         let Some(lease) = &self.keep.lease else {
             #[cfg(test)]
-            return true; // Unit harnesses can dispatch into fake channels without startup persistence.
+            return true;
             #[cfg(not(test))]
             {
                 self.keep.turn_recovery_notice = true;
@@ -144,7 +143,6 @@ impl App {
                 self.usage_block = None;
                 self.thread = crate::threads::start(&self.state_root);
                 self.thread_meta_done = false;
-                // Recovery is a display projection, not a new submitted/logged user turn.
                 self.messages.push(ChatLine {
                     role: MsgRole::User,
                     text: crate::attachments::Message::decode(&checkpoint.prompt).display(),
@@ -195,7 +193,6 @@ mod tests {
             let mut app = App::new(dir.path().into(), dir.path().into());
             app.refresh_binding();
             app.restore_state();
-            // The initial checkpoint precedes scope admission and native-session delivery.
             app.continuation
                 .begin("fixture", "", "First request before scope admission");
             assert!(app.save_turn_checkpoint(false));
@@ -228,7 +225,6 @@ mod tests {
             .validate_for(ProviderKind::Codex, dir.path(), Some(&home))
             .unwrap();
             app.reserve_main_scope(&owner).unwrap();
-            // A rejected input/launch before on_started never owned a provider process.
             assert!(app.finish_main_scope(&TurnOutcome {
                 stderr_tail: "synthetic pre-spawn image validation failure".into(),
                 ..Default::default()
@@ -326,7 +322,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().into(), dir.path().into());
         app.restore_state();
-        // Create a directory at the checkpoint path, preserving it rather than overwriting it.
         let root = app.keep.recovery_root.as_ref().unwrap();
         let record = std::fs::read_dir(root)
             .unwrap()

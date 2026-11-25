@@ -1,4 +1,3 @@
-//! One explicitly opened local shell per chat tab. Shell bytes never enter provider channels.
 use super::*;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
@@ -77,9 +76,6 @@ struct Session {
     pending_bytes: usize,
     refused_input: bool,
     name: String,
-    /// None is the explicitly opened local shell. Native sessions carry an exact
-    /// provider/account/native-session binding so they can never be reused after a
-    /// chat or account switch.
     owner: Option<String>,
     size: (u16, u16),
 }
@@ -167,7 +163,6 @@ impl State {
                     session.input.take();
                     session.pending.clear();
                     session.pending_bytes = 0;
-                    // Reap/close remaining descendants even if the shell itself already exited.
                     session.tree.take();
                     changed = true;
                 }
@@ -216,7 +211,6 @@ impl State {
             self.notice = Some("Terminal paste exceeds 64 KiB; nothing was sent".into());
             return;
         }
-        // A clipboard escape cannot close bracketed paste and inject terminal control sequences.
         let clean = text
             .replace("\r\n", "\n")
             .replace('\r', "\n")
@@ -275,8 +269,6 @@ impl Session {
         let errors = out_tx.clone();
         let (input, in_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUE);
         let (reply_tx, reply_rx) = mpsc::sync_channel::<Vec<u8>>(QUEUE);
-        // Start workers before creating a ConPTY: a thread-creation failure must
-        // never leave a newly created console waiting for its cursor reply.
         let (reader_init, reader_ready) = mpsc::sync_channel::<Box<dyn Read + Send>>(1);
         let (writer_init, writer_ready) = mpsc::sync_channel::<Box<dyn Write + Send>>(1);
         std::thread::Builder::new()
@@ -310,7 +302,6 @@ impl Session {
                                 );
                                 size = next;
                             }
-                            // Sole owner of terminal replies, including during shutdown.
                             parser.process(&buffer[..length]);
                             if parser.callbacks().failed && connected {
                                 connected = out_tx
@@ -325,8 +316,6 @@ impl Session {
                                     .send(Output::Bytes(buffer[..length].to_vec()))
                                     .is_ok();
                             }
-                            // A closed UI receiver means discard, never stop draining:
-                            // ClosePseudoConsole can emit a final frame synchronously.
                         }
                         Err(error) => {
                             if connected {
@@ -348,9 +337,6 @@ impl Session {
                 let mut cursor_ready = !cfg!(windows);
                 let mut shutdown_started: Option<Instant> = None;
                 loop {
-                    // EOF on the output pipe can depend on closing the input pipe.
-                    // Do not retain it until reader EOF. The initial ConPTY cursor
-                    // reply must have been written before shutdown closes input.
                     if writer_closing.load(std::sync::atomic::Ordering::Acquire) {
                         let since = shutdown_started.get_or_insert_with(Instant::now);
                         if cursor_ready || since.elapsed() >= Duration::from_secs(1) {
@@ -362,7 +348,6 @@ impl Session {
                             break;
                         }
                     }
-                    // Status replies take priority over queued interactive input.
                     let bytes = match reply_rx.try_recv() {
                         Ok(bytes) => bytes,
                         Err(mpsc::TryRecvError::Empty) if input_open => {
@@ -497,13 +482,10 @@ pub(super) fn command(app: &mut App, args: &str) {
     }
 }
 
-/// The real interactive CLI owns settings, promotions and approvals. When the chat has an
-/// explicit native session, the provider resumes that exact session rather than opening a fork.
 pub(super) fn native_controls(app: &mut App) {
     open_native(app, None);
 }
 
-/// Open the provider UI and optionally run one provider-native command in it.
 pub(super) fn native_command(app: &mut App, command_line: &str) {
     open_native(app, Some(command_line));
 }
@@ -522,8 +504,6 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
             .unwrap_or_default(),
         app.native_session_id.as_deref().unwrap_or_default()
     );
-    // Reuse only a live native session; one that already exited is relaunched on the same
-    // exact binding instead of showing its dead pane again.
     if app.local_terminal.session.as_ref().is_some_and(|session| {
         session.owner.as_deref() == Some(expected_owner.as_str())
             && matches!(session.phase, Phase::Running)
@@ -536,8 +516,6 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
         }
         return;
     }
-    // A shell or a native session belonging to another conversation is not a
-    // valid target. Stop it explicitly and launch a new bound session.
     if app.local_terminal.session.is_some() {
         app.local_terminal.stop();
     }
@@ -552,9 +530,6 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
                 program = native.program;
                 env = native.env;
             }
-            // Start the provider's documented interactive interface. Codex versions
-            // that use a daemon choose that transport internally; --no-daemon is not
-            // accepted by the installed interactive CLI.
             if let Some(session) = app
                 .native_session_id
                 .as_deref()
@@ -587,9 +562,6 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
                 args.push(script.into_os_string());
                 args.extend(provider_args);
             } else {
-                // Windows installs for opencode and the other CLIs can be published as
-                // .cmd shims. Run the selected shim in cmd.exe without changing the
-                // provider's arguments or account environment.
                 let shim = program;
                 let provider_args = std::mem::take(&mut args);
                 program = which::which("cmd.exe")?;
@@ -636,8 +608,6 @@ fn open_native(app: &mut App, initial_input: Option<&str>) {
         for (key, value) in env {
             command.env(key, value);
         }
-        // Keep provider-native login/settings authoritative; inherited API keys
-        // must not silently select a different account or billing mode.
         if app.provider == ProviderKind::Grok {
             command.env_remove("XAI_API_KEY");
         }
@@ -829,10 +799,8 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut title = " Local terminal".to_string();
     if let Some(session) = app.local_terminal.session.as_mut() {
         title = if session.owner.is_some() {
-            // A provider's own interface is named after the account it runs as.
             format!(" {}", session.name)
         } else {
-            // The shell's name, not its full path ("powershell", not C:\WINDOWS\...\powershell.exe).
             let shell = std::path::Path::new(&session.name)
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
@@ -911,8 +879,6 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new(title).style(Style::default().fg(Color::Cyan)),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    // Footer keys in priority order; whole items are dropped from the end when the row is too
-    // narrow, so no key is ever cut in half.
     let hint = match app.local_terminal.notice.as_deref() {
         Some(notice) => notice.to_owned(),
         None => {

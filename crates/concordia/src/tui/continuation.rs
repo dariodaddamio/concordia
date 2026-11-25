@@ -1,8 +1,6 @@
-//! Bounded, opt-in handoff after a provider explicitly reports exhausted usage.
 use super::*;
 use std::collections::HashSet;
 
-/// Whether an automatic retry may proceed. Review and deferral cannot overlap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Retry {
     Ready,
@@ -124,7 +122,7 @@ impl State {
         self.context_limited = checkpoint.reason == "context-limited";
         self.context_rollovers = checkpoint.context_rollovers;
         self.recovered = true;
-        self.retry = Retry::RequiresReview; // A restart cannot prove previous tool completion.
+        self.retry = Retry::RequiresReview;
     }
 
     pub(super) fn pending_text(&self) -> Option<&str> {
@@ -250,7 +248,6 @@ impl App {
         }
     }
 
-    /// Called before finalization while the completed turn's cards and draft still exist.
     pub(super) fn prepare_usage_continuation(&mut self, outcome: &TurnOutcome) -> Option<String> {
         if outcome.cancelled || self.cancel_requested {
             if self.handoff_after_cancel {
@@ -285,7 +282,7 @@ impl App {
                 self.continuation.pending = self.continuation.prompt.clone();
                 self.continuation.retry_draft = self.last_sent.clone();
                 self.continuation.retry = Retry::RequiresReview;
-                self.continuation.recovered = true; // Explicit continuation must start a fresh session.
+                self.continuation.recovered = true;
                 self.push_system(format!("Codex could not record its native thread. Saved history may still exist; this is not a quota signal. Your request is kept and queued work is paused. Check any partial edits, then choose where to continue on {}; nothing was sent again.", self.account));
                 self.open_continuation_picker();
                 return None;
@@ -539,7 +536,6 @@ impl App {
                 return;
             }
         }
-        // A draft typed while the turn was running belongs to the user.
         if !get_account(&self.state_root, target).is_some_and(|account| account.home_path.is_some())
         {
             self.push_system(
@@ -648,7 +644,6 @@ impl App {
             self.restore_composer(&unsent);
             self.persist_draft_now();
         }
-        // The failure finalizer paused the queue; continuation must finish before explicit resume.
         self.queue.dispatch.clear_automatic();
     }
 }
@@ -677,7 +672,6 @@ mod tests {
             },
         )
         .unwrap();
-        // Synthetic login-presence marker; no provider process or real credentials.
         std::fs::write(
             home.join("credentials.json"),
             "synthetic-login-presence-marker",
@@ -698,7 +692,6 @@ mod tests {
         assert!(rx.try_recv().is_err());
         assert!(!app.busy);
         assert_eq!(app.continuation.preferred_account.as_deref(), Some("third"));
-        // A new window still uses the configured order, not this window's choice.
         let reopened = App::new(dir.path().into(), dir.path().into());
         assert!(reopened.continuation.preferred_account.is_none());
         assert!(reopened.continuation.automatic);
@@ -987,7 +980,6 @@ mod tests {
             )
             .unwrap();
         }
-        // These fixtures explicitly opt into the terms-sensitive same-provider path.
         crate::store::accept_same_provider_terms(dir.path(), ProviderKind::Codex).unwrap();
         select_account(dir.path(), "primary").unwrap();
         set_model(dir.path(), "fixture-model").unwrap();

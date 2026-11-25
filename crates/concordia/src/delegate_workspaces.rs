@@ -1,4 +1,3 @@
-//! Durable workspace admission through the existing worker executor.
 use super::*;
 use crate::workspaces::{self, Admission};
 

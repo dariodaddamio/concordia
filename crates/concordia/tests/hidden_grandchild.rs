@@ -1,5 +1,3 @@
-//! Windows-only console inheritance coverage in an isolated integration-test process.
-
 use concordia::provider::{run_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use std::time::{Duration, Instant};

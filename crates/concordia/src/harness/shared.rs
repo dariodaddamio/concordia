@@ -1,4 +1,3 @@
-//! Reconcile explicitly shared project setup before an account's first native turn.
 use super::{command, connections, Context, RunOutcome};
 use crate::store::ProviderKind;
 use std::path::Path;

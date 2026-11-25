@@ -1,5 +1,3 @@
-//! Native image inputs and a backwards-compatible envelope for durable draft/queue strings.
-//! Bytes live in app-owned, content-addressed storage, never in prompts or history labels.
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -166,7 +164,6 @@ impl Message {
             .iter()
             .any(|attachment| matches!(attachment, Attachment::PdfDocument(_)))
     }
-    /// Build Claude's native ordered content blocks without copying binary bytes into prompt text.
     pub fn claude_content(&self, prompt: &str) -> Result<Vec<serde_json::Value>, String> {
         self.validate()?;
         let mut content = vec![serde_json::json!({"type":"text","text":prompt})];
@@ -333,7 +330,7 @@ fn read_regular(path: &Path, limit: usize, kind: &str) -> Result<Vec<u8>, String
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        options.custom_flags(0x0020_0000); // Open the reparse point itself, never follow it.
+        options.custom_flags(0x0020_0000);
     }
     #[cfg(unix)]
     {
@@ -388,8 +385,6 @@ fn store_snapshot(
     }
     Ok(target)
 }
-/// `canonicalize` on Windows returns `\\?\C:\...`; provider CLIs and image viewers handle the
-/// plain drive form. UNC and other verbatim forms are kept as they are.
 fn plain_path(path: PathBuf) -> PathBuf {
     let text = path.to_string_lossy();
     match text.strip_prefix(r"\\?\") {
@@ -408,7 +403,6 @@ pub fn import(root: &Path, path: &Path) -> Result<Image, String> {
     let data = read(path)?;
     let (mime, ext) = mime(&data).unwrap();
     let hash = format!("{:x}", Sha256::digest(&data));
-    // Same bytes can share one immutable snapshot. Existing bytes are verified at dispatch.
     let target = store_snapshot(root, &hash, ext, &data)?;
     Ok(Image {
         path: plain_path(

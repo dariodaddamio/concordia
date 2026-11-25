@@ -1,4 +1,3 @@
-//! Explicit, bounded access to native CLI chats. No session resume, context transfer or inference.
 #[cfg(test)]
 use crate::provider::stream_cards::StreamCard;
 use crate::{sessions, store::ProviderKind};

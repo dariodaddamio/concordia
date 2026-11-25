@@ -1,13 +1,3 @@
-//! Read-only provider interface observation and required-capability validation.
-//!
-//! Concordia never installs or updates the provider CLIs. For each one it reads `--version` and, once
-//! per binary revision (cached in `<state>/version-probes.json`), `--help`, and records which flags exist. Turn
-//! planning preserves its current structured/native controls and rejects known missing requirements.
-//! [`OBSERVED_INTERFACES`] records read-only installed interface observations, not live qualification.
-//!
-//! Detection never runs a turn. The runner is injectable so tests use fake output; the real one
-//! runs `--version` / `--help` with a 5 s bound and kills the process tree on timeout.
-
 use crate::provider::launch::{cursor_ps1_beside, is_batch_shim};
 use crate::provider::turn::PlannedTurn;
 use crate::store::{ProviderKind, TrustMode};
@@ -18,15 +8,12 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Installed interfaces observed through bounded --version/--help on 2026-11-08.
-/// This table is diagnostic metadata, never proof of model-turn or approval parity.
 pub const OBSERVED_INTERFACES: &[(ProviderKind, &[&str])] = &[
     (ProviderKind::Claude, &["2.1.319"]),
     (ProviderKind::Codex, &["0.166.0"]),
     (ProviderKind::Cursor, &["2026.11.05-86047df"]),
 ];
 
-/// Bump when the help parsing below changes, so cached results are read again.
 const PARSER_REV: u32 = 3;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_MAX: usize = 512 * 1024;
@@ -51,23 +38,15 @@ impl VersionComparison {
     }
 }
 
-/// Which flags native help declares. Unknown observations grant no capability evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caps {
-    /// `--output-format stream-json` (Codex: `--json`).
     pub stream_json: bool,
-    /// `--permission-mode` (Claude).
     pub permission_mode: bool,
-    /// A read-only planning mode (Claude `--permission-mode plan`, Cursor `--mode plan`).
     pub plan_mode: bool,
-    /// `--include-partial-messages` / `--stream-partial-output`.
     pub partial_messages: bool,
-    /// `-s/--sandbox`.
     pub sandbox: bool,
-    /// Claude advertises the native `--effort` option.
     #[serde(default)]
     pub effort: bool,
-    /// False when native help was unavailable or malformed.
     pub known: bool,
 }
 
@@ -87,19 +66,13 @@ impl Caps {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Compat {
-    /// First line of `--version`, as printed.
     pub version: String,
     pub comparison: VersionComparison,
     pub caps: Caps,
 }
 
-/// Runs `program args...` and returns its output (stdout then stderr).
 pub type Runner<'a> = &'a dyn Fn(&Path, &[&str]) -> Result<String, String>;
 
-// ---- versions -----------------------------------------------------------------------------
-
-/// The version token of a `--version` line: `2.1.319 (Claude Code)` gives `2.1.319`,
-/// `codex-cli 0.166.0` gives `0.166.0`.
 pub fn version_token(line: &str) -> Option<String> {
     line.split_whitespace()
         .map(|t| t.trim_start_matches('v'))
@@ -107,7 +80,6 @@ pub fn version_token(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// `2026.10.14-0f9edde` gives `[2026, 10, 14]`.
 fn numeric(v: &str) -> Option<Vec<u64>> {
     let head: String = v
         .chars()
@@ -121,10 +93,6 @@ fn numeric(v: &str) -> Option<Vec<u64>> {
     parts.filter(|p| !p.is_empty())
 }
 
-/// Whether a provider version is at least the required numeric version.
-///
-/// Provider metadata protocols are pinned to a known-good minimum, while newer native
-/// executables may continue to expose the same initialize/control schema.
 pub fn version_at_least(version: &str, required: &str) -> bool {
     let Some(version) = numeric(version) else {
         return false;
@@ -154,7 +122,6 @@ fn compare_against(token: &str, observed: &[&str]) -> VersionComparison {
     }
 }
 
-/// How `version_line` compares with what [`OBSERVED_INTERFACES`] lists for the provider.
 pub fn compare_version(provider: ProviderKind, version_line: &str) -> VersionComparison {
     let Some(token) = version_token(version_line) else {
         return VersionComparison::Unknown;
@@ -167,10 +134,6 @@ pub fn compare_version(provider: ProviderKind, version_line: &str) -> VersionCom
         })
 }
 
-// ---- help parsing -------------------------------------------------------------------------
-
-/// Flags from `--help` text; `None` when it does not look like help at all (then the caller
-/// retains an explicitly unknown observation).
 pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
     if help.lines().filter(|l| l.contains("--")).count() < 3 {
         return None;
@@ -190,7 +153,6 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
         ProviderKind::Codex => Caps {
             stream_json: has("--json"),
             permission_mode: false,
-            // No planning mode; Concordia uses a read-only sandbox, which needs `--sandbox`.
             plan_mode: has("--sandbox"),
             partial_messages: false,
             sandbox: has("--sandbox"),
@@ -228,15 +190,12 @@ pub fn parse_help(provider: ProviderKind, help: &str) -> Option<Caps> {
     Some(caps)
 }
 
-/// The help arguments for each provider (Codex lists its run flags under `exec`).
 fn help_args(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Codex => &["exec", "--help"],
         _ => &["--help"],
     }
 }
-
-// ---- cache --------------------------------------------------------------------------------
 
 fn cache_path(state_root: &Path) -> PathBuf {
     state_root.join("compat.json")
@@ -354,7 +313,6 @@ fn cached_version(state_root: &Path, provider: ProviderKind, bin: &Path) -> Opti
         .then_some(entry.version)
 }
 
-/// Refresh the version cache after an explicit live probe, such as `concordia doctor`.
 pub fn cache_version_probe(state_root: &Path, provider: ProviderKind, bin: &Path, version: &str) {
     let Some((path, size, modified_secs, modified_nanos)) = binary_fingerprint(bin) else {
         return;
@@ -394,16 +352,12 @@ fn save_cache(state_root: &Path, map: &BTreeMap<String, Caps>) {
     }
 }
 
-// ---- detection ----------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheMode {
     Persist,
     ReadOnly,
 }
 
-/// Version and capabilities of one CLI. With a state root, a matching binary fingerprint avoids
-/// both provider probes; `--help` is only run when this version is not in the help cache.
 pub fn detect(
     provider: ProviderKind,
     bin: &Path,
@@ -465,10 +419,6 @@ pub fn detect_with_mode(
     })
 }
 
-// ---- the real runner ----------------------------------------------------------------------
-
-/// `program args...` with a 5 s deadline; the whole process tree is killed on timeout. Arguments
-/// are an array, never a shell string; a Cursor `.cmd` shim is bypassed the way a turn does.
 pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
     use std::process::Stdio;
     let mut cmd;
@@ -511,8 +461,6 @@ pub fn run_cli(program: &Path, args: &[&str]) -> Result<String, String> {
     Ok(text)
 }
 
-/// Run detection for these CLIs on background threads (one each); results arrive on the channel
-/// as each finishes. The UI polls it on tick, so nothing here blocks it.
 type SharedRunner = Arc<dyn Fn(&Path, &[&str]) -> Result<String, String> + Send + Sync>;
 
 pub fn start_detection(
@@ -534,7 +482,6 @@ pub fn start_detection(
     rx
 }
 
-/// Detection for the CLIs a turn would use right now (the real runner).
 pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Compat)> {
     let bins = [
         ProviderKind::Codex,
@@ -551,12 +498,9 @@ pub fn start_real_detection(state_root: PathBuf) -> Receiver<(ProviderKind, Comp
     start_detection(bins, state_root, Arc::new(run_cli))
 }
 
-// ---- what planning does with it -----------------------------------------------------------
-
 static CAPS: Mutex<Vec<(&'static str, Caps)>> = Mutex::new(Vec::new());
 static VERSIONS: Mutex<Vec<(&'static str, String)>> = Mutex::new(Vec::new());
 
-/// Record detected capabilities for explicit turn validation and `concordia doctor`.
 pub fn set_caps(provider: ProviderKind, caps: Caps) {
     if let Ok(mut v) = CAPS.lock() {
         v.retain(|(p, _)| *p != provider.as_str());
@@ -564,7 +508,6 @@ pub fn set_caps(provider: ProviderKind, caps: Caps) {
     }
 }
 
-/// Record the version alongside detected capabilities for actionable Plan refusals.
 pub fn set_compat(provider: ProviderKind, compat: &Compat) {
     set_caps(provider, compat.caps);
     if let Ok(mut v) = VERSIONS.lock() {
@@ -618,7 +561,6 @@ pub fn caps_for(provider: ProviderKind) -> Option<Caps> {
         .map(|(_, c)| *c)
 }
 
-/// Validate the declared current interface without rewriting argv or weakening native controls.
 fn validate_argv(
     provider: ProviderKind,
     argv: &[String],
@@ -627,8 +569,6 @@ fn validate_argv(
 ) -> anyhow::Result<()> {
     ensure_plan_supported(provider, trust, caps)?;
     if !caps.known {
-        // Unknown is not supported evidence. Keep explicit native flags and let the
-        // selected CLI validate them; never remove controls or substitute plain text.
         return Ok(());
     }
     for (flag, value) in super::turn::planned_options(argv) {
@@ -650,7 +590,6 @@ fn validate_argv(
     Ok(())
 }
 
-/// Check observations for the selected provider; absence remains explicitly unverified.
 pub fn validate_planned(plan: &PlannedTurn, trust: TrustMode) -> anyhow::Result<()> {
     validate_caps(
         plan,
@@ -736,7 +675,6 @@ mod tests {
             compare_version(ProviderKind::Codex, "codex-cli 0.200.1"),
             VersionComparison::Newer
         );
-        // Another build on the same date is not the observed binary revision.
         assert_eq!(
             compare_version(ProviderKind::Cursor, "2026.11.05-abcdef0"),
             VersionComparison::Unknown
@@ -766,7 +704,6 @@ mod tests {
         assert!(c.stream_json && c.plan_mode && c.partial_messages && c.sandbox);
         let c = parse_help(ProviderKind::Codex, CODEX_EXEC_HELP).unwrap();
         assert!(c.stream_json && c.sandbox && !c.permission_mode);
-        // Not help text at all: unknown, not "nothing is supported".
         assert!(parse_help(ProviderKind::Claude, "error: unrecognized").is_none());
     }
 
@@ -810,7 +747,6 @@ mod tests {
             "help is cached; a non-filesystem test path cannot fingerprint the binary"
         );
 
-        // A new CLI version is read again.
         calls.borrow_mut().clear();
         let old_help = CLAUDE_HELP.replace("stream-json", "ndjson");
         let run2 = fake(&calls, "2.9.0 (Claude Code)", &old_help);

@@ -1,4 +1,3 @@
-//! Read-only discovery over existing Harness receipts and Concordia-owned MCP registrations.
 use super::{connections, parse_manifest};
 use crate::{store::ProviderKind, update::PreviewLine};
 use serde::Serialize;
@@ -30,8 +29,6 @@ pub struct Catalog {
     pub incomplete: bool,
 }
 
-/// Capture a catalog row's exact mutation identity. The caller must display and confirm the
-/// returned target before passing it to a reviewed command; no adapter is executed here.
 pub fn action_target(
     root: &Path,
     id: &str,
@@ -290,7 +287,6 @@ pub fn rows(catalog: &Catalog) -> Vec<PreviewLine> {
     rows
 }
 
-/// Minimal summaries keep discovery cheap; individual tool pages are requested explicitly.
 pub fn tool(
     root: &Path,
     id: Option<&str>,

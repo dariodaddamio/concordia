@@ -1,4 +1,3 @@
-//! Explicit, revision-bound native Git integration and retirement. Preview never grants action.
 use super::*;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -74,7 +73,6 @@ pub struct Preview {
     pub reference_hash: String,
 }
 
-/// Observed repository state for dependency review, never a claim about commit authorship.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DependencySnapshot {
@@ -191,8 +189,6 @@ fn edited(status: &str) -> bool {
     status.lines().any(|line| !line.starts_with("!! "))
 }
 
-/// Worker reservations bound to this managed workspace's exact checkout. Empty means no
-/// delegated worker ran there, so any change in it is the user's own.
 fn worker_origins(
     root: &Path,
     id: &str,
@@ -425,8 +421,6 @@ fn preview_with(
     preview.references = references;
     preview.reference_hash = reference_hash(&preview.references);
     preview.blockers.extend(blockers);
-    // A workspace a delegated worker changed must carry that worker's task references. A
-    // workspace with no worker reservation is the user's own change and needs none.
     if preview.references.is_empty()
         && !worker_origins(root, id, &preview.record.execution)?.is_empty()
     {
@@ -612,9 +606,6 @@ pub fn execute(
         git.protect_checkout(owner,&root).map_err(std::io::Error::other)?;
         let before = preview_with(&root,owner,id,action,&git).map_err(std::io::Error::other)?;
         let origins_before = worker_origins(&root, id, &before.record.execution).map_err(std::io::Error::other)?.len();
-        // Guard both checkouts so any live reservation on either is refused; a released worker
-        // origin never conflicts. Branch deletion runs from the owner, and the worker checkout
-        // may already be retired, as before.
         let paths = if action == Action::DeleteBranch { vec![before.record.owner.as_path()] } else { vec![before.record.owner.as_path(),before.record.execution.as_path()] };
         crate::workspaces::with_workspace_guard(&root,&paths,|guard| {
             let current = preview_with(&root,owner,id,action,&git)?;
@@ -627,13 +618,9 @@ pub fn execute(
             if origins.len() != origins_before {
                 return Err("workspace review changed; obtain and review a new preview".into());
             }
-            // Any worker that ran here must have left its task references.
             if !origins.is_empty() && (current.reference_hash.is_empty() || current.blockers.iter().any(|blocker| blocker.contains("originating worker task manifest/reference identity"))) {
                 return Err("exact originating worker run/attempt/task reference is unavailable; lifecycle retained".into());
             }
-            // One worker: reacquire its exact released run. No worker (the user's own change) or
-            // several sequential workers: fresh lifecycle runs guard both checkouts, and the guard
-            // still refuses any live reservation on them.
             let reacquire = match origins.as_slice() { [origin] => Some(origin), _ => None };
             let (runs, conversation, attempt) = match reacquire {
                 Some(origin) => (vec![origin.run.clone()], origin.conversation.clone(), origin.attempt.clone()),
@@ -726,7 +713,6 @@ pub(super) fn reconcile_retained(
     }).map_err(|error|error.to_string())
 }
 
-/// Explicit user declaration after inspecting a stopped native process. Never infers exit.
 pub fn stopped(root: &Path, owner: &Path, id: &str) -> Result<String, String> {
     let root = root_path(root)?;
     let lock = root.join("managed-workspaces.lock");

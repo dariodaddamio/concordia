@@ -289,8 +289,6 @@ impl App {
                 self.clear_idle_notice();
                 self.commit_live_text();
                 self.phase = Phase::Thinking;
-                // Deltas are pieces of one running text and may split a word; providers send their
-                // own separator when a new reasoning part starts.
                 crate::provider::turn::append_visible_text(&mut self.live_thinking, &t);
             }
             TurnProgress::Text(t) => {
@@ -500,7 +498,6 @@ impl App {
             .session_output
             .saturating_add(usage.output.unwrap_or(0));
         self.session_cost += usage.cost_usd.unwrap_or(0.0);
-        // Events only: never the prompt or the reply.
         crate::logging::info(&format!(
             "turn provider={} account={} exit={:?} cancelled={} ms={} stderr_lines={}",
             self.provider.as_str(),
@@ -524,7 +521,6 @@ impl App {
                     Some(code) => code != 0,
                     None => !outcome.stderr_tail.trim().is_empty(),
                 });
-        // The runner clears this on the active tab; a background tab keeps it until visited.
         self.tab_outcome = (!outcome.cancelled).then_some(!failed);
         let finish_incomplete = |mut card: StreamCard| {
             card.status = CardStatus::Error;
@@ -547,8 +543,6 @@ impl App {
             });
             card
         };
-        // Final output may contain edits completed after the last progress event was drained.
-        // Reconcile by id even when some cards have already streamed.
         for card in outcome.cards {
             let id = card.id.clone();
             upsert_card(&mut self.live_cards, card);
@@ -579,8 +573,6 @@ impl App {
         } else {
             text.clone()
         };
-        // A provider that failed to start, or exited non-zero, must say why. Its stderr is the
-        // only place the reason (expired login, bad flag, missing CLI) ever appears.
         let thought = self.live_thinking.clone();
         if !thought.is_empty() {
             let meta = Some(self.reply_meta());
@@ -667,7 +659,6 @@ impl App {
                 .collect();
             for l in lines.iter().skip(lines.len().saturating_sub(6)) {
                 let t = l.trim();
-                // Skip CLI chatter and anything already reported above.
                 if tail.contains("apply_patch verification failed")
                     || t.is_empty()
                     || is_cli_noise(t)
@@ -683,7 +674,6 @@ impl App {
         self.streamed_text_committed = false;
         self.live_thinking.clear();
         self.turn_finished(outcome.cancelled, failed);
-        // The turn used some of this account's limits: re-check them in the background.
         self.usage_fetcher.invalidate(&self.account);
         self.refresh_usage();
         self.update_usage_block();
@@ -830,8 +820,6 @@ impl App {
         self.update_progress();
         visible_change |= self.poll_compat();
         visible_change |= self.poll_proposals();
-        // Polling alone never ages a completed cache. Re-read on a cheap UI timer so idle
-        // panes notice resets and start the fetcher's bounded TTL refresh.
         if self.usage_fetcher.poll() || self.tick_count.is_multiple_of(50) {
             self.refresh_store_warning();
             self.refresh_usage();

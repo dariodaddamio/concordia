@@ -1,9 +1,3 @@
-//! Streaming JSON events from Claude Code (`--output-format stream-json --verbose`) and Cursor
-//! (`--output-format stream-json`) -> text, thinking and tool cards.
-//!
-//! Both formats require JSON objects. Unknown structured events are ignored; invalid protocol
-//! output is reported as an error and is never promoted into an assistant reply.
-
 use super::stream_cards::{CardStatus, StreamCard, StreamPart, TurnUsage};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -12,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 const TOOL_MAP_MAX: usize = 4096;
 
-/// Compare Cursor's repeated whole messages without keeping a second copy of the stream.
 #[derive(Default)]
 struct SegmentFingerprint {
     hash: Sha256,
@@ -54,7 +47,6 @@ pub enum Flavor {
     Cursor,
 }
 
-/// Stateful because a tool result names only the call id; the title and detail come from the call.
 pub struct StreamParser {
     flavor: Flavor,
     tools: HashMap<String, (String, Option<String>)>,
@@ -62,11 +54,8 @@ pub struct StreamParser {
     dropped_tools: usize,
     dropped_partial_tools: usize,
     saw_text: bool,
-    /// Cursor is mid-way through a run of stamped text (see `parse_line`).
     streaming_text: bool,
-    /// The last run of stamped text, to recognise Cursor's unstamped repeat of it.
     segment: SegmentFingerprint,
-    /// Tool paths inside this folder are shown relative to it.
     cwd: Option<PathBuf>,
     invalid_output: bool,
 }
@@ -131,10 +120,6 @@ impl StreamParser {
             }
         }
         match typ {
-            // Cursor stamps text with `timestamp_ms` as it is written: fragments with
-            // `--stream-partial-output`, whole messages without it. A run of stamped text is one
-            // segment; the whole copy that may follow repeats it and is dropped if so. Before a
-            // tool call that copy is stamped too, so it is recognised by matching the segment.
             "assistant" if self.flavor == Flavor::Cursor && ev.get("timestamp_ms").is_some() => {
                 let whole = Self::block_texts(&ev).concat();
                 if self.streaming_text && whole.len() > 1 && self.segment.matches(&whole) {
@@ -280,14 +265,12 @@ impl StreamParser {
         }
     }
 
-    /// Close a run of stamped Cursor text so the next text starts on its own line.
     fn end_segment(&mut self, out: &mut Vec<StreamPart>) {
         if std::mem::take(&mut self.streaming_text) {
             out.push(StreamPart::TextDelta("\n".into()));
         }
     }
 
-    /// The text blocks of an `assistant` event, whitespace included (a delta may be just a space).
     fn block_texts(ev: &Value) -> Vec<String> {
         ev.pointer("/message/content")
             .and_then(Value::as_array)
@@ -387,8 +370,6 @@ impl StreamParser {
         }
     }
 
-    /// Cursor: `{"type":"tool_call","subtype":"started|completed","call_id":..,
-    /// "tool_call":{"readToolCall":{"args":{"path":..}}}}`.
     fn cursor_tool_call(&mut self, ev: &Value, out: &mut Vec<StreamPart>) {
         let id = ev
             .get("call_id")
@@ -398,7 +379,6 @@ impl StreamParser {
         let Some(call) = ev.get("tool_call").and_then(Value::as_object) else {
             return;
         };
-        // The call sits beside bookkeeping fields (`startedAtMs`, `toolCallId`, ...).
         let Some((kind, body)) = call.iter().find(|(k, _)| k.ends_with("ToolCall")) else {
             return;
         };
@@ -459,8 +439,6 @@ impl StreamParser {
         }));
     }
 
-    /// What a finished edit, read or glob shows instead of its raw result: the diff, the line
-    /// count, or the matched files. `None` keeps the generic output for other tools.
     fn cursor_result_summary(&self, kind: &str, body: &Value) -> Option<String> {
         let success = body.pointer("/result/success")?;
         let arg = |key: &str| {
@@ -490,8 +468,6 @@ impl StreamParser {
         }
     }
 
-    /// `text` with this session's folder removed from the front of any path inside it.
-    /// A tool's input as card detail, with file paths inside the session folder made relative.
     fn input_detail(&self, input: &Value) -> Option<String> {
         let mut input = input.clone();
         if let Some(map) = input.as_object_mut() {
@@ -528,7 +504,6 @@ impl StreamParser {
             }
         }
         if self.flavor == Flavor::Cursor && usage.is_empty() {
-            // Cursor names its counts in camelCase (`inputTokens`, `cacheReadTokens`).
             let num = |k: &str| ev.pointer(&format!("/usage/{k}")).and_then(Value::as_u64);
             usage.input = num("inputTokens");
             usage.output = num("outputTokens");
@@ -571,13 +546,11 @@ impl StreamParser {
                     .and_then(Value::as_str),
             )));
         } else if !self.saw_text {
-            // The final result repeats the assistant text; use it only if no text streamed.
             out.push(StreamPart::Text(text.to_string()));
         }
     }
 }
 
-/// A short, readable summary of a tool's input: the command, path, pattern or query.
 fn tool_input_detail(input: &Value) -> Option<String> {
     (!input.is_null()).then(|| format_provider_value(input))
 }
@@ -626,7 +599,6 @@ mod tests {
         assert_eq!((done.id.as_str(), done.status), ("t1", CardStatus::Done));
         assert_eq!(done.title, "Bash", "the result keeps the call's title");
         assert!(matches!(&parts[4], StreamPart::Text(t) if t == "All green."));
-        // The result repeats the text: it must not be shown twice.
         assert_eq!(
             parts
                 .iter()
@@ -914,13 +886,11 @@ mod usage_tests {
         assert!(line.contains("calc.py") && !line.contains("work"), "{line}");
     }
 
-    /// A recorded Cursor turn, parsed as a turn in `C:\work\calc` would be.
     fn cursor_fixture(text: &str) -> Vec<StreamPart> {
         let mut p = StreamParser::new(Flavor::Cursor).with_cwd(Path::new(r"C:\work\calc"));
         text.lines().flat_map(|l| p.parse_line(l)).collect()
     }
 
-    /// The last state of each card, in the order the cards first appeared.
     fn final_cards(parts: &[StreamPart]) -> Vec<StreamCard> {
         let mut cards: Vec<StreamCard> = Vec::new();
         for part in parts {
@@ -972,7 +942,6 @@ mod usage_tests {
             thinking.lines().next(),
             Some("I need to explain what calc.py does in one sentence.")
         );
-        // Cursor reports its counts in camelCase; they used to be dropped.
         let usage: Vec<_> = parts
             .iter()
             .filter_map(|p| match p {
@@ -988,8 +957,6 @@ mod usage_tests {
 
     #[test]
     fn a_stamped_whole_copy_before_a_tool_is_not_shown_twice() {
-        // Shape seen live on 2026-10-30: streamed fragments, then the same text whole and
-        // stamped, then a tool call.
         let parts = cursor_fixture(concat!(
             r#"{"type":"assistant","timestamp_ms":1,"message":{"content":[{"type":"text","text":"Checking the"}]}}"#,
             "\n",

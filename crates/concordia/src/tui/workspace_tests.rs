@@ -266,7 +266,6 @@ fn file_recovery_retains_layout_cursor_and_edits_when_disk_changes() {
         .position();
     h.app.workspace.flush_file_recovery().unwrap();
     let checkpoint = lease.files().unwrap();
-    // Switching instances must not overwrite the pending record before first draw.
     let mut restored = Workspace::default();
     restored
         .set_file_recovery(lease.clone(), h.dir.path())
@@ -372,7 +371,6 @@ fn focused_raw_editor_owns_typing_enter_paste_and_dirty_close_preserves_chat() {
     assert_eq!(h.app.editor.text(), "preserve me!");
     h.key(KeyCode::F(6), KeyModifiers::NONE);
     assert!(h.app.workspace.focused.is_some());
-    // Raw letters are file content; closing unsaved work requires a decision.
     h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
     assert!(!h.app.workspace.panes.is_empty());
     h.key(KeyCode::Char('q'), KeyModifiers::NONE);
@@ -391,7 +389,6 @@ fn focused_raw_editor_owns_typing_enter_paste_and_dirty_close_preserves_chat() {
     assert!(h.app.workspace.close(id));
     h.key(KeyCode::Char('d'), KeyModifiers::NONE);
     assert!(h.app.workspace.panes.is_empty());
-    // An untouched pane behaves like a pager: bare q closes it.
     h.open("note.txt", "body");
     h.key(KeyCode::Char('q'), KeyModifiers::NONE);
     assert!(h.app.workspace.panes.is_empty());
@@ -462,7 +459,6 @@ fn mouse_and_keyboard_scroll_and_resize_without_editing_or_dispatch() {
     );
     assert!(h.app.workspace.panes[0].area.height < first.height);
 
-    // Horizontal movement scrolls the viewport and keeps the caret and file bytes intact.
     let mut h = Harness::new(110, 30);
     let body = format!("{}\nsecond line", "wide ".repeat(60));
     h.open("wide.txt", &body);
@@ -511,7 +507,6 @@ fn mouse_and_keyboard_scroll_and_resize_without_editing_or_dispatch() {
         body
     );
 
-    // Detaching keeps exactly one document and routes child typing without moving chat focus.
     assert!(h.app.workspace.request_detach(id).is_err());
     h.app.workspace.set_native_windows(true);
     h.app.workspace.tab_drag = Some((id, area.x + 2, area.y));
@@ -556,7 +551,6 @@ fn mouse_and_keyboard_scroll_and_resize_without_editing_or_dispatch() {
     );
     assert!(!h.app.workspace.panes[0].document.as_ref().unwrap().dirty());
 
-    // Read-only raw/diff views use terminal columns too, including tabs and wide glyphs.
     let pane = &mut h.app.workspace.panes[0];
     pane.document = None;
     pane.formatted = None;
@@ -575,7 +569,6 @@ fn mouse_and_keyboard_scroll_and_resize_without_editing_or_dispatch() {
         190usize.saturating_sub(usize::from(pane.area.width.saturating_sub(2)))
     );
 
-    // A detached bottom border never grabs the main workspace's sibling divider.
     let mut h = Harness::new(110, 30);
     let child = h.open("child.txt", "child document");
     let sibling = h.open("sibling.txt", "docked sibling");

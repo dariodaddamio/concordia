@@ -1,4 +1,3 @@
-//! One semantic palette for terminal and native cells; image pixels remain source pixels.
 use crate::config::{contrast, luminance, Rgb, Theme, Ui};
 use ratatui::{
     buffer::Buffer,
@@ -170,14 +169,11 @@ impl Palette {
         if !self.enabled {
             return;
         }
-        // Syntax colors repeat across thousands of cells; adjust each color/background once.
         let mut foregrounds = HashMap::new();
         for cell in &mut buffer.content {
             if cell.symbol() == " " && cell.fg == color(self.background) && cell.bg == cell.fg {
-                // Native image overlays are collected after this pass and match this exact marker.
                 continue;
             }
-            // Half-block cell previews represent image data, not UI semantic colors.
             if cell.symbol() == "▀"
                 && matches!(cell.fg, Color::Rgb(..))
                 && matches!(cell.bg, Color::Rgb(..))
@@ -214,7 +210,6 @@ impl Palette {
                 };
                 color(readable(foreground, background, 4.5))
             });
-            // Muted RGB already carries DIM; applying native GDI dimming again loses contrast.
             if dim {
                 cell.modifier.remove(Modifier::DIM);
             }
@@ -245,7 +240,6 @@ fn current() -> Palette {
     TEST_PALETTE.with(|slot| *slot.borrow())
 }
 
-/// Tests set `no_color` explicitly so a developer shell's `NO_COLOR` cannot change expectations.
 pub(crate) fn env_no_color() -> bool {
     !cfg!(test) && std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty())
 }
@@ -286,15 +280,12 @@ pub(super) fn apply(buffer: &mut Buffer, no_color: bool, native: bool) {
     current().apply(buffer, no_color, native);
 }
 
-// Role names for draw code. `apply` turns these into the active theme's colors, so a role
-// follows the theme in every mode, including the terminal palette.
 pub(super) fn accent() -> Color {
     Color::Cyan
 }
 pub(super) fn muted() -> Color {
     Color::DarkGray
 }
-/// Background of the selected row.
 pub(super) fn selection() -> Color {
     Color::Indexed(235)
 }
@@ -328,7 +319,6 @@ pub(super) fn export_current(ui: &Ui) -> Result<crate::theme_library::ThemeFile,
 
 #[cfg(windows)]
 pub(super) fn image_marker() -> Color {
-    // Uncovered cells in an image's rectangle must match the surrounding canvas.
     color(current().background)
 }
 
@@ -336,7 +326,6 @@ pub(super) fn image_background() -> Rgb {
     current().background
 }
 
-/// Native Reset colors also fill the client margin outside the whole-cell grid.
 #[cfg(windows)]
 pub(super) fn native_default(foreground: bool) -> Rgb {
     let palette = current();

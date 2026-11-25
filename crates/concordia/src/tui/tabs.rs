@@ -1,14 +1,7 @@
-//! Browser-style conversation tabs.
-//!
-//! The runner owns the provider channels; this module owns tab identity and lifecycle.  Keeping
-//! whole `App` values here is intentional: drafts, queues, selections and native session ids are
-//! consequently never shared between conversations.
-
 use super::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 
-/// What a tab must answer before it closes.
 pub(crate) trait TabState {
     fn needs_close_confirmation(&self) -> bool;
     fn can_evict_closed(&self) -> bool {
@@ -98,7 +91,6 @@ impl<T: TabState> TabSet<T> {
         self.active = self.tabs.len() - 1;
     }
 
-    /// Returns whether the tab may close immediately.  The caller owns the confirmation UI.
     pub(crate) fn needs_close_confirmation(&self) -> bool {
         self.active().needs_close_confirmation()
     }
@@ -115,8 +107,6 @@ impl<T: TabState> TabSet<T> {
         true
     }
 
-    /// Keep a small reopen cache of clean conversations. Unsaved or unfinished
-    /// closed tabs stay owned in memory; eviction never deletes native/recovery files.
     pub(crate) fn prune_closed(&mut self) {
         let mut clean = self
             .closed
@@ -162,7 +152,6 @@ impl<T: TabState> TabSet<T> {
         }
     }
 
-    /// Move a tab to `to` (an index in the final order). The active tab stays active.
     pub(crate) fn move_tab(&mut self, from: usize, to: usize) -> bool {
         if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
             return false;
@@ -182,7 +171,6 @@ impl<T: TabState> TabSet<T> {
         true
     }
 
-    /// Ctrl+Shift+PgUp/PgDn: move the active tab one place, without wrapping.
     pub(crate) fn move_active(&mut self, right: bool) -> bool {
         let to = if right {
             self.active + 1
@@ -196,10 +184,6 @@ impl<T: TabState> TabSet<T> {
     }
 }
 
-/// Pointer drag that reorders items laid out in one row, such as the tab strip.
-///
-/// It knows only the row's rectangles, so a panel strip can reuse it; docking would add
-/// further drop targets beside `slot`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DragReorder {
     pub source: usize,
@@ -218,7 +202,6 @@ impl DragReorder {
         }
     }
 
-    /// Track the pointer; a drag starts once it leaves the pressed column.
     pub(crate) fn hover(&mut self, x: u16) {
         self.pointer = x;
         self.moved |= x.abs_diff(self.origin) >= 2;
@@ -228,8 +211,6 @@ impl DragReorder {
         self.moved
     }
 
-    /// The insertion slot under the pointer, `0..=items.len()`: before the item whose centre
-    /// is right of the pointer.
     pub(crate) fn slot(&self, items: &[Rect]) -> usize {
         items
             .iter()
@@ -237,7 +218,6 @@ impl DragReorder {
             .unwrap_or(items.len())
     }
 
-    /// Where the dragged item lands, as an index in the final order, or `None` for no change.
     pub(crate) fn target(&self, items: &[Rect]) -> Option<usize> {
         if !self.moved || self.source >= items.len() {
             return None;
@@ -248,7 +228,6 @@ impl DragReorder {
     }
 }
 
-/// Tab keys, recognised before any other dispatch so pickers and the editor never see them.
 pub(crate) fn action_for(key: KeyEvent) -> TabAction {
     if key.kind == KeyEventKind::Release
         || !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -259,7 +238,6 @@ pub(crate) fn action_for(key: KeyEvent) -> TabAction {
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Char('t' | 'T') if shift => TabAction::Reopen,
-        // Native hosts may report Ctrl+T as uppercase without Shift.
         KeyCode::Char('t' | 'T') => TabAction::New,
         KeyCode::Char('w' | 'W') if !shift => TabAction::Close,
         KeyCode::BackTab => TabAction::Previous,
@@ -287,7 +265,6 @@ pub(crate) enum TabAction {
     Select(usize),
     MoveLeft,
     MoveRight,
-    /// A finished drag: (from, to) as indexes in the final order.
     Move(usize, usize),
 }
 

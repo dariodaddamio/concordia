@@ -1,7 +1,5 @@
 use super::*;
 
-/// Releases are identified by the backend. Never infer duplicates from processing time:
-/// queued, distinct presses can be drained together after a large paste or slow frame.
 pub(super) fn should_accept_key(key: &KeyEvent) -> bool {
     if matches!(key.kind, KeyEventKind::Release) {
         return false;
@@ -9,7 +7,6 @@ pub(super) fn should_accept_key(key: &KeyEvent) -> bool {
     if key.kind == KeyEventKind::Repeat && key.code == KeyCode::Enter {
         return false;
     }
-    // Enter also arrives as Char('\r') / '\n' on some hosts — ignore those chars.
     if matches!(key.code, KeyCode::Char('\r') | KeyCode::Char('\n')) {
         return false;
     }
@@ -94,7 +91,6 @@ pub(super) fn dispatch_key_burst(
         );
         return false;
     }
-    // File drops can arrive as a whole unframed burst of character keys.
     if !burst.text && burst.keys.len() > 1 {
         let dropped: Option<String> = burst
             .keys
@@ -192,7 +188,6 @@ pub(super) fn handle_key(
         return false;
     }
     if app.settings_view.is_some() && app.picker.is_none() {
-        // Esc closes settings; Ctrl+C must still arm quit the same way as on the chat screen.
         let quit = key.modifiers.contains(KeyModifiers::CONTROL)
             && !key.modifiers.contains(KeyModifiers::ALT)
             && matches!(key.code, KeyCode::Char('c' | 'C'));
@@ -227,8 +222,6 @@ pub(super) fn handle_key(
         app.key_sheet_scroll = 0;
         return false;
     }
-    // Native windows distinguish auto-repeat from a fresh press. Navigation and deletion
-    // must keep moving while held; action shortcuts (send, cancel, toggles) run once.
     match key.kind {
         KeyEventKind::Release => return false,
         KeyEventKind::Repeat
@@ -351,8 +344,6 @@ pub(super) fn handle_key(
             }
             return false;
         }
-        // Keep the long-standing command-history affordance when `/doctor` was just submitted.
-        // Once the user has typed or selected a row, the doctor picker owns navigation normally.
         if picker.kind == PickerKind::Doctor
             && app.editor.text().is_empty()
             && app.history.last().is_some_and(|line| line == "/doctor")
@@ -496,7 +487,6 @@ pub(super) fn handle_key(
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down
                 if picker.kind == PickerKind::Usage =>
             {
-                // The usage page is a grid of cards: move the way the arrow points.
                 let n = picker.filtered().len();
                 if n > 0 {
                     let cols = picker.usage_cols.max(1);
@@ -557,8 +547,6 @@ pub(super) fn handle_key(
                     picker.state.select(Some(n - 1));
                 }
                 if picker.kind == PickerKind::Usage {
-                    // Keep the current provider card selected and page within its complete
-                    // provider-reported bucket list.
                     picker.state.select(Some(0));
                     picker.usage_scroll = usize::MAX;
                 }
@@ -580,8 +568,6 @@ pub(super) fn handle_key(
                 picker.filter.push(c);
                 picker.select_clamp();
             }
-            // Like Esc: close the picker. It must not quit the app (and lose the draft), which
-            // would contradict the press-twice rule for exiting.
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.dismiss_picker();
             }
@@ -708,8 +694,6 @@ pub(super) fn handle_key(
             activity::ModalAction::PreviousCard => app.navigate_activity_card(true),
             activity::ModalAction::NextCard => app.navigate_activity_card(false),
             activity::ModalAction::Paste => app.paste_clipboard(),
-            // Modal owns every other key; editing, undo, queue actions and cancellation do not
-            // fall through to the prompt or turn handlers.
             activity::ModalAction::Consumed => {}
         }
         return false;
@@ -721,7 +705,6 @@ pub(super) fn handle_key(
         app.workspace.focused = None;
         return false;
     }
-    // Tab chords must win whenever the chat has focus, even with a file pane open.
     if app.workspace.focused.is_none() {
         match tabs::action_for(key) {
             tabs::TabAction::Unhandled => {}
@@ -750,11 +733,9 @@ pub(super) fn handle_key(
         return false;
     }
 
-    // `@chat` completion list (own mode; the slash palette below is unchanged).
     if chatref::handle_key(app, &key) {
         return false;
     }
-    // Slash-command suggestions take the navigation keys while they are showing.
     let entries = app.palette_entries();
     if !entries.is_empty() && !ctrl && !alt {
         app.palette.clamp(entries.len());
@@ -772,7 +753,6 @@ pub(super) fn handle_key(
                 app.complete_palette(chosen);
                 return false;
             }
-            // Enter completes a partial command; once it is exactly the chosen one, it runs.
             KeyCode::Enter if app.editor.text() != chosen.command => {
                 app.complete_palette(chosen);
                 return false;
@@ -785,7 +765,6 @@ pub(super) fn handle_key(
         }
     }
 
-    // Anything that edits the prompt drops a transcript selection (like a normal document).
     let edits = matches!(
         key.code,
         KeyCode::Backspace | KeyCode::Delete | KeyCode::Enter | KeyCode::Tab
@@ -793,14 +772,10 @@ pub(super) fn handle_key(
     if edits {
         app.view.clear_selection();
         app.hist_pos = None;
-        // Tab/Enter are handled by the palette above; any other edit reopens and re-ranks it.
         app.palette.reset();
     }
 
     match key.code {
-        // Copy when something is selected (Windows Terminal convention); otherwise Ctrl+C keeps
-        // its meaning: cancel the running turn, or quit when idle. Ctrl+Shift+C always copies
-        // (falling back to the last reply) on hosts that deliver it to the app.
         KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'c') => {
             if let Some(i) = app.activity.detail {
                 if let Some(text) = app
@@ -830,8 +805,6 @@ pub(super) fn handle_key(
                 false
             }
         }
-        // Ctrl+Z undo; Ctrl+Shift+Z and Ctrl+Y redo (hosts report Shift as the modifier or as an
-        // uppercase letter).
         KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'z') => {
             if shift || c == 'Z' {
                 app.editor.redo();
@@ -859,7 +832,6 @@ pub(super) fn handle_key(
             app.editor.select_all();
             false
         }
-        // Ctrl+J / Alt+Enter / Shift+Enter: newline without sending.
         KeyCode::Char(c) if ctrl && !alt && c.eq_ignore_ascii_case(&'j') => {
             app.editor.insert_char('\n');
             false
@@ -882,7 +854,6 @@ pub(super) fn handle_key(
             }
             false
         }
-        // Shift+Tab (palette closed): cycle the permission mode.
         KeyCode::BackTab => {
             app.cycle_mode();
             false
@@ -943,7 +914,6 @@ pub(super) fn handle_key(
             app.editor.end(tw, shift);
             false
         }
-        // Up on the first prompt row (and Down on the last, while browsing) walks sent prompts.
         KeyCode::Up => {
             if !shift
                 && !ctrl
@@ -983,14 +953,11 @@ pub(super) fn handle_key(
             app.view.scroll_down(n);
             false
         }
-        // AltGr arrives as Ctrl+Alt on Windows; those chars are real input.
         KeyCode::Char(c) if !ctrl || alt => {
             app.editor.insert_char(c);
             false
         }
         KeyCode::Esc => {
-            // Esc never quits (an accidental press must not lose a draft): it clears a
-            // selection, or interrupts a running turn. Exit is /exit or Ctrl+C twice.
             if let Some(job) = &app.job {
                 job.cancel();
                 app.flash("cancelling...");
@@ -1005,8 +972,6 @@ pub(super) fn handle_key(
     }
 }
 
-/// Prompt text index under screen cell `(x, y)`; coordinates outside the box clamp to its edge
-/// so a drag that leaves the prompt keeps extending the selection.
 fn input_index_at(app: &App, x: u16, y: u16) -> usize {
     let r = app.areas.input;
     let rel_y = (y.saturating_sub(r.y) as usize).min(r.height.saturating_sub(1) as usize);
@@ -1091,7 +1056,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
             .header_dropdown
             .is_some_and(|rect| contains(rect, m.column, m.row))
     {
-        // The closing click is consumed so it does not also act on what is underneath.
         app.dismiss_picker();
         return;
     }
@@ -1179,8 +1143,8 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
     if m.kind == MouseEventKind::Up(MouseButton::Left)
         && std::mem::take(&mut app.header_provider_pressed)
     {
-        if provider_hit {
-            app.open_provider_picker();
+        if let Some(chip) = app.areas.header_provider.filter(|_| provider_hit) {
+            app.toggle_header_dropdown(PickerKind::Provider, chip);
         }
         return;
     }
@@ -1400,7 +1364,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
         } else if at >= offset + size {
             app.view.scroll_down(app.view.page());
         } else {
-            // Remember where on the thumb the grab landed, in eighths of a cell.
             app.drag = Drag::Scrollbar((at - offset) as u16);
         }
         return;
@@ -1500,7 +1463,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
             app.file_click = None;
             match app.drag {
                 Drag::Transcript => {
-                    // Dragging past the top/bottom edge scrolls while extending the selection.
                     if y < t.y {
                         app.view.scroll_up(1);
                     } else if y >= t.y + t.height {
@@ -1574,7 +1536,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
             app.drag = Drag::None;
         }
-        // Right click: copy the selection, or paste when there is none (Windows Terminal style).
         MouseEventKind::Down(MouseButton::Right) => {
             if app.has_selection() {
                 app.copy(false);

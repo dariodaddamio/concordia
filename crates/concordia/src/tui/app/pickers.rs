@@ -24,10 +24,8 @@ impl App {
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
         if let Some(picker) = self.picker.as_mut() {
             picker.title = format!("{command} · This panel lets you {does}.");
-            // /harness owns its footer from the live catalog (empty → N new · Esc only).
             if command != "/harness" {
                 self.footer_left = if undo.starts_with("Esc") {
-                    // An undo that is only Esc would repeat the cancel key.
                     "↑↓ choose · Enter apply · Esc cancel".into()
                 } else {
                     format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}")
@@ -42,7 +40,6 @@ impl App {
 
     pub(in crate::tui) fn open_resume_picker(&mut self) {
         self.refresh_store_warning();
-        // Open immediately with a muted loading row; the session scan runs off the UI thread.
         self.show_picker(
             PickerKind::Resume,
             "chats".into(),
@@ -98,7 +95,6 @@ impl App {
             }
         };
         self.picker_load = None;
-        // Esc while loading closes the picker and discards this late result.
         if generation != self.picker_load_generation {
             return false;
         }
@@ -334,7 +330,13 @@ impl App {
             .iter()
             .position(|r| r.id == format!("trust:{}", self.trust.as_str()))
             .unwrap_or(0);
-        self.show_picker_at(PickerKind::Trust, "permissions".into(), rows, false, idx);
+        self.show_picker_at(
+            PickerKind::Trust,
+            "permissions · all providers".into(),
+            rows,
+            false,
+            idx,
+        );
     }
     pub(in crate::tui) fn refresh_account_continuity(&mut self) {
         let prior_home = self
@@ -384,7 +386,6 @@ impl App {
         self.refresh_store_warning();
         let ready = accounts_with_auth(&self.state_root);
         let duplicates = crate::accounts::duplicate_groups(&self.state_root);
-        // Same UsageFetcher snapshot path and background refresh as `/usage`.
         let accounts: Vec<_> = ready
             .iter()
             .filter_map(|a| {
@@ -418,7 +419,6 @@ impl App {
             }
             rows.push(PickerRow {
                 id: format!("use:{}", a.account),
-                // Same cached snapshot `/usage` shows; heading matches the header chip.
                 label,
                 detail,
             });
@@ -635,7 +635,6 @@ impl App {
                             || same_account_allowed
                     })
                     .map(move |model| {
-                        // Availability is per model: a provider can limit one model's pool only.
                         let observation = a.home_path.as_ref().and_then(|home| {
                             crate::usage::peek_cached_usage_for_model(
                                 &state_root,
@@ -862,7 +861,6 @@ impl App {
                 if crate::accounts::normalize_account_id(&self.account)
                     == crate::accounts::normalize_account_id(id)
                 {
-                    // The account in use is gone: move to another so the next turn has a home.
                     match accounts_with_auth(&self.state_root).into_iter().next() {
                         Some(next) => {
                             if select_account(&self.state_root, &next.account).is_ok() {
@@ -1002,31 +1000,47 @@ impl App {
     }
 
     pub(in crate::tui) fn open_provider_picker(&mut self) {
-        let rows = crate::accounts::setup_accounts(&self.state_root)
-            .into_iter()
-            .filter_map(|account| {
-                let home = account.home_path?;
+        let signed_in = crate::accounts::accounts_with_auth(&self.state_root);
+        let mut rows = Vec::new();
+        let mut offered = std::collections::HashSet::new();
+        for account in crate::accounts::setup_accounts(&self.state_root) {
+            let Some(home) = account.home_path else {
+                continue;
+            };
+            let connected = signed_in.iter().any(|a| a.account == account.account);
+            let provider_has_login = signed_in.iter().any(|a| a.provider == account.provider);
+            if !connected
+                && !account.custom
+                && (provider_has_login || !offered.insert(account.provider))
+            {
+                continue;
+            }
+            let id = format!("provider:{}", account.account);
+            let (tone, detail) = if connected {
                 let snap = self
                     .usage_fetcher
                     .snapshot(account.provider, &account.account, &home);
-                Some(PickerRow {
-                    id: format!("provider:{}", account.account),
-                    label: format!(
-                        "{} · {}",
-                        account.provider.as_str(),
-                        self.named_account(account.provider, &account.account)
-                    ),
-                    detail: if crate::accounts::accounts_with_auth(&self.state_root)
-                        .iter()
-                        .any(|signed_in| signed_in.account == account.account)
-                    {
-                        snap.used_left_text()
-                    } else {
-                        "not connected · native login available".into()
-                    },
-                })
-            })
-            .collect();
+                (crate::usage::usage_tone(&snap), snap.used_left_text())
+            } else {
+                (
+                    UsageTone::Mute,
+                    "not connected · native login available".into(),
+                )
+            };
+            self.picker_tones.insert(id.clone(), tone);
+            let name = self.named_account(account.provider, &account.account);
+            let current = account.account == self.account;
+            rows.push(PickerRow {
+                id,
+                label: format!(
+                    "{} · {}{}",
+                    account.provider.as_str(),
+                    name,
+                    if current { " · current" } else { "" }
+                ),
+                detail,
+            });
+        }
         self.show_picker(
             PickerKind::Provider,
             "providers and accounts".into(),
@@ -1035,8 +1049,6 @@ impl App {
         );
     }
 
-    /// Header chip click: the same model or effort picker, drawn under the chip.
-    /// A second click on the chip that opened it closes it.
     pub(in crate::tui) fn toggle_header_dropdown(&mut self, kind: PickerKind, chip: Rect) {
         let open = self.header_dropdown.is_some_and(|(open, _)| open == kind)
             && self
@@ -1050,6 +1062,7 @@ impl App {
         match kind {
             PickerKind::Model => self.open_model_picker(),
             PickerKind::Effort => self.open_effort_picker(),
+            PickerKind::Provider => self.open_provider_picker(),
             _ => return,
         }
         if self
@@ -1280,7 +1293,6 @@ impl App {
     }
     pub(in crate::tui) fn open_doctor(&mut self) {
         self.doctor = None;
-        // Open immediately with a muted checking row; doctor work runs off the UI thread.
         self.show_picker(
             PickerKind::Doctor,
             "doctor".into(),
@@ -1491,7 +1503,6 @@ impl App {
             self.session_ui.memory_screen = None;
         }
         tokens::close(&mut self.token_reads);
-        // Only the update screen owns a job: its check, or the update it started.
         if self
             .picker
             .as_ref()
@@ -1513,7 +1524,6 @@ impl App {
             .as_ref()
             .is_some_and(|picker| matches!(picker.kind, PickerKind::Resume | PickerKind::Doctor))
         {
-            // Invalidate so a late worker result cannot reopen or refill after Esc.
             self.picker_load_generation = self.picker_load_generation.wrapping_add(1);
             self.picker_load = None;
         }
@@ -1542,7 +1552,6 @@ impl App {
         }
         #[cfg(not(test))]
         {
-            // Explorer is intentionally visible: this is the requested URL window.
             let _ = crate::process_ui::visible_command("explorer.exe")
                 .arg(url)
                 .spawn();
@@ -1752,7 +1761,6 @@ impl App {
         }
         let effort_model = self.effort_model.take();
         let role_editing = self.role_editing.clone();
-        // Dismissing clears the header dropdown anchor; a follow-up choice reuses it.
         let header_anchor = self.header_dropdown;
         self.dismiss_picker();
         if matches!(kind, PickerKind::Model | PickerKind::Effort) {
@@ -2192,7 +2200,6 @@ impl App {
                 }
             }
             PickerKind::Model => {
-                // A model chosen from the header dropdown asks for its effort in the same place.
                 let anchor = header_anchor
                     .filter(|(kind, _)| *kind == PickerKind::Model)
                     .map(|(_, chip)| chip);
@@ -2303,7 +2310,6 @@ impl App {
     }
 }
 
-/// Build `/resume` title and rows off the UI thread (session scan + diagnostics).
 fn build_resume_picker_payload(state_root: &Path, cwd: &Path) -> (String, Vec<PickerRow>) {
     let sessions = list_recent_sessions(state_root, 40);
     let tasks = crate::store::list_tasks(state_root);

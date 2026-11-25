@@ -1,7 +1,3 @@
-//! Real turns on every provider with its cheapest model. Ignored by default; run with
-//! `CONCORDIA_LIVE=1 cargo test -p concordia --test live_providers -- --ignored --test-threads=1`.
-//! Optional filters: `CONCORDIA_LIVE_PROVIDERS=cursor,codex,claude`. Homes default to the
-//! personal `~/.cursor`, `~/.codex` and `~/.claude`; override with `CONCORDIA_LIVE_<PROVIDER>_HOME`.
 use concordia::{
     native_input::Mode,
     provider::{
@@ -99,8 +95,6 @@ struct Seen {
     diffs: Vec<String>,
 }
 
-/// Runs one turn, answering questions with their first option and permissions with the first
-/// offered option.
 async fn turn(
     provider: ProviderKind,
     home: &Path,
@@ -127,8 +121,6 @@ async fn turn(
                     | NativeInteraction::CodexQuestions(questions) => {
                         seen.questions += 1;
                         let picks = vec![0; questions.len()];
-                        // Turns run with an owner, so answers must name it (respond() ignores
-                        // owned requests and the turn would wait forever).
                         let owner = request.owner().cloned().expect("owned interaction");
                         request
                             .respond_owned(&owner, request.single_choices(&picks).expect("answer"))

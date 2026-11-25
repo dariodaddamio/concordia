@@ -1,14 +1,3 @@
-//! Process stats for the footer and `concordia doctor`: memory and CPU of Concordia itself and of
-//! the provider processes it started (whole process trees).
-//!
-//! Sampling is Win32 (`GetProcessMemoryInfo`, `GetProcessTimes`, `CreateToolhelp32Snapshot`),
-//! declared directly so no dependency is added. A background thread samples every
-//! [`INTERVAL`] and publishes the last [`Stats`]; the UI thread only reads it. The thread exists
-//! only while stats are switched on (`[ui] stats = true` or `/stats`). Provider turns and
-//! delegated workers register their pid with [`register`]; the guard unregisters on drop.
-//!
-//! The functions below the platform layer are pure so the arithmetic is tested without a clock.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -16,7 +5,6 @@ use std::time::{Duration, Instant};
 
 pub const INTERVAL: Duration = Duration::from_secs(2);
 
-/// Snapshot of host capacity for the resource governor.
 pub fn machine_resources(
     _workspace: &std::path::Path,
 ) -> crate::resource_governor::MachineResources {
@@ -25,7 +13,6 @@ pub fn machine_resources(
     }
 }
 
-/// One published reading. Memory is working set in bytes; CPU is percent of the whole machine.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Stats {
     pub self_mem: u64,
@@ -33,15 +20,11 @@ pub struct Stats {
     pub agents_mem: u64,
     pub agents_cpu: f64,
     pub agents_count: usize,
-    /// False until the first sample lands.
     pub ready: bool,
 }
 
-// ---- registry of provider pids ------------------------------------------------------------
-
 static AGENT_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 
-/// Keeps a provider pid in the registry until dropped.
 #[derive(Debug)]
 pub struct PidGuard(u32);
 
@@ -55,7 +38,6 @@ impl Drop for PidGuard {
     }
 }
 
-/// Register a running provider process (pid 0 is ignored). Hold the guard while it runs.
 pub fn register(pid: u32) -> PidGuard {
     if pid != 0 {
         if let Ok(mut v) = AGENT_PIDS.lock() {
@@ -69,9 +51,6 @@ pub fn registered() -> Vec<u32> {
     AGENT_PIDS.lock().map(|v| v.clone()).unwrap_or_default()
 }
 
-// ---- pure helpers -------------------------------------------------------------------------
-
-/// CPU percent of the whole machine: `cpu_100ns` of process time over `wall`, on `ncpu` cores.
 pub fn cpu_percent(cpu_100ns: u64, wall: Duration, ncpu: u32) -> f64 {
     let wall_100ns = wall.as_nanos() as f64 / 100.0;
     if wall_100ns <= 0.0 || ncpu == 0 {
@@ -80,7 +59,6 @@ pub fn cpu_percent(cpu_100ns: u64, wall: Duration, ncpu: u32) -> f64 {
     (cpu_100ns as f64 / (wall_100ns * f64::from(ncpu)) * 100.0).clamp(0.0, 100.0)
 }
 
-/// `41 MB`, `1.2 GB`.
 pub fn format_mem(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
     let mb = bytes as f64 / MB;
@@ -95,7 +73,6 @@ fn format_cpu(pct: f64) -> String {
     format!("{}%", pct.round() as u64)
 }
 
-/// Footer text: Concordia's own figures, and the agents segment when any run.
 pub fn footer_parts(s: &Stats) -> (String, Option<String>) {
     let own = format!(
         "mem {} - cpu {}",
@@ -113,7 +90,6 @@ pub fn footer_parts(s: &Stats) -> (String, Option<String>) {
     (own, agents)
 }
 
-/// `roots` and every descendant, from `(pid, parent_pid)` pairs. Safe against pid reuse loops.
 pub fn tree_pids(roots: &[u32], procs: &[(u32, u32)]) -> Vec<u32> {
     let mut seen: HashSet<u32> = roots.iter().copied().collect();
     let mut out: Vec<u32> = roots.to_vec();
@@ -129,8 +105,6 @@ pub fn tree_pids(roots: &[u32], procs: &[(u32, u32)]) -> Vec<u32> {
     }
     out
 }
-
-// ---- Win32 --------------------------------------------------------------------------------
 
 #[cfg(windows)]
 mod sys {
@@ -201,17 +175,13 @@ mod sys {
     const TH32CS_SNAPPROCESS: u32 = 2;
     const INVALID: isize = -1;
 
-    /// An open process handle, closed on drop. The pseudo handle of the current process is not
-    /// closed.
     struct Proc(Handle, bool);
 
     impl Proc {
         fn open(pid: u32) -> Option<Proc> {
             if pid == std::process::id() {
-                // SAFETY: GetCurrentProcess has no preconditions.
                 return Some(Proc(unsafe { GetCurrentProcess() }, false));
             }
-            // SAFETY: plain FFI call; a null result is handled.
             let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
             (!h.is_null()).then_some(Proc(h, true))
         }
@@ -220,20 +190,16 @@ mod sys {
     impl Drop for Proc {
         fn drop(&mut self) {
             if self.1 {
-                // SAFETY: the handle came from OpenProcess and is closed once.
                 unsafe { CloseHandle(self.0) };
             }
         }
     }
 
     pub fn ncpu() -> u32 {
-        // SAFETY: 0xFFFF is ALL_PROCESSOR_GROUPS.
         unsafe { GetActiveProcessorCount(0xFFFF) }.max(1)
     }
-    /// Working set in bytes.
     pub fn working_set(pid: u32) -> Option<u64> {
         let p = Proc::open(pid)?;
-        // SAFETY: the struct is zeroed, correctly sized and `cb` says so.
         unsafe {
             let mut c: MemCounters = std::mem::zeroed();
             c.cb = std::mem::size_of::<MemCounters>() as u32;
@@ -241,7 +207,6 @@ mod sys {
         }
     }
 
-    /// Kernel plus user time, in 100 ns ticks.
     pub fn cpu_ticks(pid: u32) -> Option<u64> {
         let p = Proc::open(pid)?;
         let (mut c, mut e, mut k, mut u) = (
@@ -250,15 +215,12 @@ mod sys {
             FileTime::default(),
             FileTime::default(),
         );
-        // SAFETY: four valid out pointers.
         let ok = unsafe { GetProcessTimes(p.0, &mut c, &mut e, &mut k, &mut u) };
         (ok != 0).then(|| k.ticks() + u.ticks())
     }
 
-    /// Every process as `(pid, parent_pid)`.
     pub fn process_list() -> Vec<(u32, u32)> {
         let mut out = Vec::new();
-        // SAFETY: snapshot handle is checked and closed; entry is zeroed with `size` set.
         unsafe {
             let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snap.is_null() || snap as isize == INVALID {
@@ -293,17 +255,14 @@ mod sys {
     }
 }
 
-/// Every process as `(pid, parent_pid)`. Used by the updater to ignore ancestor Cargo hosts.
 pub fn process_pairs() -> Vec<(u32, u32)> {
     sys::process_list()
 }
 
-/// Working set of this process in bytes (`concordia doctor`).
 pub fn self_memory_bytes() -> Option<u64> {
     sys::working_set(std::process::id())
 }
 
-/// Working set of `pid` and its descendants, with the number of processes found.
 pub fn tree_memory_bytes(roots: &[u32]) -> (u64, usize) {
     let pids = tree_pids(roots, &sys::process_list());
     let mut total = 0;
@@ -317,9 +276,6 @@ pub fn tree_memory_bytes(roots: &[u32]) -> (u64, usize) {
     (total, n)
 }
 
-// ---- sampler ------------------------------------------------------------------------------
-
-/// Keeps the previous CPU times so each sample reports the delta over its interval.
 pub struct Sampler {
     ncpu: u32,
     last: Option<Instant>,
@@ -343,8 +299,6 @@ impl Sampler {
         }
     }
 
-    /// Sample this process and the trees of `roots`. The first call has no interval, so its CPU
-    /// figures are 0.
     pub fn sample(&mut self, roots: &[u32]) -> Stats {
         let now = Instant::now();
         let wall = self.last.map(|t| now - t);
@@ -371,7 +325,6 @@ impl Sampler {
                 agents_mem += m;
             }
             if let Some(t) = sys::cpu_ticks(*p) {
-                // A process that appeared since the last sample ran for at most one interval.
                 let before = self
                     .prev_agents
                     .get(p)
@@ -394,14 +347,12 @@ impl Sampler {
     }
 }
 
-/// A running sampler thread and what it last published. Dropping it stops the thread.
 pub struct StatsHandle {
     latest: Arc<Mutex<Stats>>,
     stop: Arc<AtomicBool>,
 }
 
 impl StatsHandle {
-    /// Start sampling every [`INTERVAL`] on a background thread.
     pub fn start() -> StatsHandle {
         let latest = Arc::new(Mutex::new(Stats::default()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -415,7 +366,6 @@ impl StatsHandle {
                     if let Ok(mut g) = l.lock() {
                         *g = stats;
                     }
-                    // Sleep in short steps so a switch-off is noticed quickly.
                     let until = Instant::now() + INTERVAL;
                     while Instant::now() < until && !s.load(Ordering::Relaxed) {
                         std::thread::sleep(Duration::from_millis(100));
@@ -426,7 +376,6 @@ impl StatsHandle {
         StatsHandle { latest, stop }
     }
 
-    /// A handle with a fixed reading and no thread (tests).
     pub fn fixed(stats: Stats) -> StatsHandle {
         StatsHandle {
             latest: Arc::new(Mutex::new(stats)),
@@ -434,7 +383,6 @@ impl StatsHandle {
         }
     }
 
-    /// The last sample (default, not ready, before the first lands).
     pub fn latest(&self) -> Stats {
         self.latest.lock().map(|g| *g).unwrap_or_default()
     }
@@ -452,13 +400,11 @@ mod tests {
 
     #[test]
     fn cpu_percent_is_normalised_by_cores() {
-        // One full core for 2 s on 4 cores is 25 %.
         let one_core_2s = 2 * 10_000_000;
         let p = cpu_percent(one_core_2s, Duration::from_secs(2), 4);
         assert!((p - 25.0).abs() < 0.01, "{p}");
         assert_eq!(cpu_percent(5, Duration::ZERO, 4), 0.0);
         assert_eq!(cpu_percent(5, Duration::from_secs(1), 0), 0.0);
-        // Never above 100 even with a skewed clock.
         assert_eq!(cpu_percent(u64::MAX / 4, Duration::from_secs(1), 1), 100.0);
     }
 
@@ -495,7 +441,6 @@ mod tests {
 
     #[test]
     fn registry_guard_unregisters_on_drop() {
-        // Pids no real process uses in this test, so parallel tests do not interfere.
         let a = register(4_000_001);
         let b = register(4_000_002);
         let _zero = register(0);
@@ -516,7 +461,6 @@ mod tests {
         let mut s = Sampler::new();
         let first = s.sample(&[]);
         assert!(first.ready && first.self_mem > 0 && first.agents_count == 0);
-        // Burn a little CPU so the second sample has a non-negative, bounded figure.
         let t = Instant::now();
         let mut x = 0u64;
         while t.elapsed() < Duration::from_millis(60) {

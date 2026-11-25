@@ -1,4 +1,3 @@
-//! Versioned, body-free journal records. Native source text is hydrated only in memory.
 use super::{cap_chars, EventCard, EventUsage, ThreadEvent};
 use crate::native_memory::references::{hydrate_text, CaptureScope, Reference};
 use crate::native_memory::Binding;

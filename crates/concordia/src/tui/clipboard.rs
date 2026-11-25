@@ -1,16 +1,8 @@
-//! Native Windows text clipboard. No subprocess or shell startup on copy/cut/paste.
-//! The bounded helper runner is retained for the asynchronous image/file pickers.
-//!
-//! Under `cfg(test)` an in-memory slot stands in, so tests never touch the user's clipboard.
-
 use std::process::Command;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
-/// Run `cmd` (optionally feeding it `input` on stdin) and return its stdout, giving up and
-/// killing it after `timeout`. Stdin is written and stdout read on their own threads so a
-/// full pipe on either side cannot deadlock the wait.
 pub fn run_with_timeout(
     cmd: Command,
     input: Option<&[u8]>,
@@ -36,7 +28,6 @@ thread_local! {
     pub(super) static FAIL_WRITES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Clipboard text without trimming or discarding line endings.
 #[cfg(test)]
 pub fn get_text() -> Result<String, String> {
     Ok(TEST_CLIPBOARD.with(|c| c.borrow().clone()))
@@ -60,7 +51,6 @@ mod system {
     use std::process::Command;
     use std::time::Duration;
 
-    /// How long the UI will wait for the clipboard helper.
     const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(8);
 
     fn powershell(script: &str) -> Command {
@@ -69,7 +59,6 @@ mod system {
         cmd
     }
 
-    /// Clipboard text without trimming or discarding line endings.
     pub fn get_text() -> Result<String, String> {
         let out = run_with_timeout(
             powershell("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write((Get-Clipboard -Raw))"),
@@ -121,7 +110,6 @@ mod native {
     struct Open;
     impl Drop for Open {
         fn drop(&mut self) {
-            // SAFETY: only constructed after this thread opens the clipboard.
             unsafe {
                 CloseClipboard();
             }
@@ -130,7 +118,6 @@ mod native {
     struct Owner(windows_sys::Win32::Foundation::HWND);
     impl Drop for Owner {
         fn drop(&mut self) {
-            // SAFETY: the hidden message-only window belongs to this call/thread.
             unsafe {
                 DestroyWindow(self.0);
             }
@@ -138,7 +125,6 @@ mod native {
     }
     fn open(owner: windows_sys::Win32::Foundation::HWND) -> Result<Open, String> {
         for attempt in 0..4 {
-            // SAFETY: owner is null for a read, or a live window on this thread.
             if unsafe { OpenClipboard(owner) } != 0 {
                 return Ok(Open);
             }
@@ -149,13 +135,9 @@ mod native {
         Err("clipboard is busy; try again".into())
     }
     pub fn has_attachment() -> bool {
-        // CF_BITMAP, CF_DIB, CF_DIBV5 and Explorer file drops. The import helper
-        // validates file types and bounds after an explicit paste action.
         let bitmap_or_files = [2, 8, 17, 15]
             .into_iter()
             .any(|format| unsafe { IsClipboardFormatAvailable(format) != 0 });
-        // Browsers and image editors can expose only the registered PNG format rather
-        // than CF_BITMAP/DIB. Registering the name obtains its id; it changes no contents.
         let png = unsafe {
             RegisterClipboardFormatW([b'P' as u16, b'N' as u16, b'G' as u16, 0].as_ptr())
         };
@@ -190,8 +172,6 @@ mod native {
         if bytes > MAX_BYTES {
             return Err("clipboard text exceeds 16 MiB".into());
         }
-        // SAFETY: STATIC is a system window class; the window is never shown. A real
-        // owner is required: EmptyClipboard with a null owner prevents SetClipboardData.
         unsafe {
             let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
             let hwnd = CreateWindowExW(
@@ -228,7 +208,6 @@ mod native {
                 GlobalFree(data);
                 return Err("clipboard write failed; selection retained".into());
             }
-            // Windows now owns data; do not free it.
             Ok(())
         }
     }
@@ -246,8 +225,6 @@ mod tests {
 
     #[test]
     fn a_normal_helper_returns_its_output() {
-        // Allow slower Windows CI PowerShell startup. This case checks
-        // stdout transport; the wedged-helper test separately verifies prompt cancellation.
         let out =
             run_with_timeout(ps("Write-Output hello"), None, Duration::from_secs(60)).unwrap();
         assert_eq!(String::from_utf8_lossy(&out).trim(), "hello");
@@ -255,7 +232,7 @@ mod tests {
 
     #[test]
     fn stdin_reaches_the_helper_even_for_a_large_payload() {
-        let big = "x".repeat(300_000); // larger than a pipe buffer in both directions
+        let big = "x".repeat(300_000);
         let out = run_with_timeout(
             ps("[Console]::In.ReadToEnd().Length"),
             Some(big.as_bytes()),

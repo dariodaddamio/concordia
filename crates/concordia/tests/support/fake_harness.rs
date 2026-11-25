@@ -1,16 +1,3 @@
-//! Stand-in for a user's harness adapter in tests. Never installed or released.
-//!
-//! First argument selects the behavior:
-//! - `connect <provider> <home> <project>`: record the call in `<home>/harness-connected`
-//!   (exit 3 with a message when `FAKE_HARNESS_FAIL=1`).
-//! - `verify <provider> <home> <project>`: print a probe log line and a JSON report. The report
-//!   depends on `FAKE_HARNESS_VERIFY`: `denied` (default), `forged` (wrong policy revision),
-//!   `unsupported` (not a denial).
-//! - `manifest`: print `FAKE_HARNESS_MANIFEST`.
-//! - `echo-args`: print each argument on its own line.
-//! - `hang`: sleep for a minute. `tree-hang <marker>` spawns a sleeping child.
-//! - `env-check`: print selected environment values. `flood`: print about 300 KB.
-
 use sha2::{Digest, Sha256};
 
 fn revision(project: &str) -> String {

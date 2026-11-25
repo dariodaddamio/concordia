@@ -1,4 +1,3 @@
-//! Bounded image/file capture on an explicit paste. Never reads clipboard text.
 use image::ImageEncoder;
 use std::{io, mem, path::PathBuf, ptr::null_mut, time::Duration};
 use windows_sys::Win32::{
@@ -55,7 +54,6 @@ impl Drop for Dc {
 
 fn open() -> Result<Clipboard, String> {
     for attempt in 0..8 {
-        // SAFETY: a null owner opens the clipboard for reading only.
         if unsafe { OpenClipboard(null_mut()) } != 0 {
             return Ok(Clipboard);
         }
@@ -68,7 +66,6 @@ fn open() -> Result<Clipboard, String> {
 
 pub(super) fn read() -> Result<Capture, String> {
     let clipboard = open()?;
-    // RegisterClipboardFormat only obtains the format id; it changes no clipboard contents.
     let png = unsafe { RegisterClipboardFormatW([80u16, 78, 71, 0].as_ptr()) };
     let mut png_error = None;
     if png != 0 && unsafe { IsClipboardFormatAvailable(png) } != 0 {
@@ -77,8 +74,6 @@ pub(super) fn read() -> Result<Capture, String> {
             Err(error) => png_error = Some(error),
         }
     }
-    // Windows synthesizes CF_BITMAP from CF_DIB/CF_DIBV5 when necessary. This is a
-    // borrowed clipboard handle: neither this function nor the encoder deletes it.
     let bitmap = unsafe { GetClipboardData(BITMAP_FORMAT) };
     if !bitmap.is_null() {
         return encode_bitmap(bitmap, || drop(clipboard)).map(Capture::Image);
@@ -109,7 +104,6 @@ pub(super) fn read() -> Result<Capture, String> {
             }
             paths.push(PathBuf::from(path));
         }
-        // The CF_HDROP belongs to the clipboard: do not call DragFinish on it.
         return Ok(Capture::Files(paths));
     }
     match png_error {
@@ -140,8 +134,6 @@ fn copy_png(format: u32) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
-/// Copy borrowed GDI pixels, then release any clipboard guard before compression.
-/// The callback also lets an isolated probe use its own bitmap without opening a clipboard.
 pub(super) fn encode_bitmap(bitmap: HBITMAP, release: impl FnOnce()) -> Result<Vec<u8>, String> {
     let pixels = bitmap_pixels(bitmap);
     release();
@@ -210,7 +202,6 @@ fn bitmap_pixels(bitmap: HBITMAP) -> Result<(u32, u32, Vec<u8>), String> {
         return Err("Clipboard bitmap conversion is unavailable".into());
     }
     let _dc = Dc(dc);
-    // Do not select or delete this borrowed HBITMAP. GetDIBits copies its pixels into our buffer.
     if unsafe {
         GetDIBits(
             dc,

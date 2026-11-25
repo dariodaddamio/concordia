@@ -1,4 +1,3 @@
-//! Explicit per-account context policy. Native measurements are never inferred from billing.
 use crate::{native_memory::Binding, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -89,8 +88,6 @@ pub fn load(root: &Path, binding: &Binding) -> Result<Policy, String> {
     Ok(saved.policy)
 }
 
-/// Persist the retained rollover setting for synthetic and UI configuration paths.
-/// Compaction overrides are provider-owned and no longer configurable here.
 pub fn set(root: &Path, binding: &Binding, command: &str) -> Result<String, String> {
     let mut policy = load(root, binding)?;
     let args: Vec<_> = command.split_whitespace().collect();
@@ -136,7 +133,6 @@ pub struct Measurement {
     pub window: u64,
 }
 
-/// An observation is evidence for one exact source snapshot, never an account-wide cache.
 #[derive(Debug, Clone, Serialize)]
 pub struct Observation {
     pub binding: Binding,
@@ -151,7 +147,6 @@ pub struct Observation {
     pub invalidation_reason: Option<String>,
 }
 
-/// A native control response has connection/request provenance, rather than a file identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlEvidence {
     pub connection_id: String,

@@ -1,17 +1,3 @@
-//! Stand-in for the codex/claude/agent CLIs so the real turn runner can be exercised end to end
-//! without a provider or a subscription. Behavior is chosen by `FAKE_PROVIDER_MODE`:
-//!
-//! - `stream`: print the JSONL file named by `FAKE_PROVIDER_STREAM`, exit 0.
-//! - `hang`:   write our pid to `FAKE_PROVIDER_PID`, print a session line, then sleep.
-//! - `silent-hang`: write our pid to `FAKE_PROVIDER_PID`, then sleep without output.
-//! - `fail`:   print to stderr and exit 3.
-//! - app-server fixtures: answerable Codex question/approval requests from
-//!   `appserver-fixture.json`, including an optional question-then-approval sequence.
-//!
-//! In every mode, if `FAKE_PROVIDER_OUT` is set we record what we received: one `ARG:<hex>` line
-//! per argument (hex so newlines and quotes survive), the isolating env vars, our cwd, and the
-//! length of anything piped on stdin.
-
 use std::io::{Read, Write};
 
 fn visible_prompt(prompt: &str) -> String {
@@ -162,8 +148,6 @@ fn fake_acp() {
             | "session/set_config_option" => serde_json::json!({}),
             "session/prompt" => {
                 if value["id"] == 9001 {
-                    // The standing-context resend is deliberately a separate wire request. It
-                    // must be acknowledged, but it must not start another fake turn.
                     emit(
                         serde_json::json!({"jsonrpc":"2.0","id":value["id"],"result":{"stopReason":"end_turn"}}),
                     );
@@ -352,7 +336,6 @@ fn fake_appserver() {
                 json!({"thread":{"id":thread},"cwd":root,"approvalPolicy":value["params"]["approvalPolicy"],"approvalsReviewer":"user"})
             }
             "thread/fork" => {
-                // A fork returns a new thread and leaves the original as it was.
                 let forked = format!("{thread}-fork");
                 append_history(&forked, "user", "(forked)");
                 thread = forked;
@@ -392,9 +375,6 @@ fn fake_appserver() {
                     .unwrap_or_default();
                 append_history(&thread, "user", &prompt);
 
-                // Deliberately arrive before the turn/start response: the client must buffer.
-                // Question fixtures do not start a command. Permission fixtures keep
-                // command lifetime distinct and complete it only after a native answer.
                 if fixture["question"] != true {
                     emit(
                         json!({"method":"item/started","params":{"threadId":thread,"turnId":"native-turn","item":{"id":"command-1","type":"commandExecution","command":"synthetic command","cwd":root,"status":"inProgress"}}}),
@@ -778,7 +758,6 @@ fn main() {
         }
     }
 
-    // Full-TUI journeys use this mode. Capability/usage probes never count as model turns.
     if std::env::var("FAKE_PROVIDER_MODE").as_deref() == Ok("interaction") {
         if args.iter().any(|a| a == "--version") {
             println!("fake-cli 1.0.0");
@@ -825,7 +804,6 @@ fn main() {
         let _ = std::fs::write(out, rec);
     }
 
-    // `agent create-chat`: print what FAKE_PROVIDER_CHAT_OUT says (a chat id by default).
     if args.first().map(String::as_str) == Some("create-chat") {
         if std::env::var("FAKE_PROVIDER_CHAT_FAIL").is_ok() {
             eprintln!("fake provider: create-chat failed");
@@ -870,8 +848,6 @@ fn main() {
                     fn GetStdHandle(kind: u32) -> *mut c_void;
                     fn CloseHandle(handle: *mut c_void) -> i32;
                 }
-                // SAFETY: this fake intentionally closes its own stdout so the runner sees
-                // EOF while the process remains alive. No further output uses that handle.
                 unsafe {
                     CloseHandle(GetStdHandle(-11_i32 as u32));
                 }
@@ -910,8 +886,6 @@ fn main() {
             }
             std::thread::sleep(std::time::Duration::from_secs(120));
         }
-        // Megabytes of stderr before and after normal output: deadlocks a runner that never
-        // drains the pipe (the OS pipe buffer is only ~64 KB).
         "flood" | "stderr-flood-no-newline" => {
             let mut stderr = std::io::stderr();
             if mode == "stderr-flood-no-newline" {
@@ -930,7 +904,6 @@ fn main() {
             }
             let _ = writeln!(stderr, "flood line final");
         }
-        // Invalid UTF-8 mid-stream, then a normal stream: the turn must survive the bad bytes.
         "badutf8" => {
             let _ = stdout.write_all(b"\xff\xfe not utf8 \xc3\x28\n");
             if let Ok(path) = std::env::var("FAKE_PROVIDER_STREAM") {
@@ -941,7 +914,6 @@ fn main() {
             }
             let _ = stdout.flush();
         }
-        // A 3 MB line with no newline until the end, then a normal stream.
         "longline" => {
             let chunk = vec![b'x'; 64 * 1024];
             for _ in 0..48 {
@@ -1101,9 +1073,6 @@ fn interaction(args: &[String]) {
     if prompt.contains("[compaction]") {
         journal("compaction");
     }
-    // `[bulk N]`: a long synthetic transcript for render timing journeys. The fixture emits
-    // bounded text batches so the test measures transcript layout rather than provider pipe
-    // backpressure.
     if let Some(count) = prompt
         .split("[bulk ")
         .nth(1)
@@ -1325,7 +1294,6 @@ fn interaction(args: &[String]) {
         eprintln!("fake provider: deliberate interaction failure");
         std::process::exit(3);
     }
-    // Keep the raw provider prompt in the journal, but echo the user's text in the reply.
     let visible_prompt = visible_prompt(&prompt);
     let reply = if visible_prompt.trim() == "[mermaid]" {
         "```mermaid\nflowchart LR\n A[Prompt] --> B[Provider]\n```".into()

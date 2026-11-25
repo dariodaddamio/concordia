@@ -1,4 +1,3 @@
-//! Test-only protection against accidentally using a user's real state.
 use std::path::{Path, PathBuf};
 
 fn enabled() -> bool {
@@ -18,7 +17,6 @@ fn configured_root(variable: &str, label: &str) -> PathBuf {
         })
 }
 
-/// Isolated home used for provider path defaults while tests are running.
 pub fn test_home() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     if !enabled() {
@@ -38,7 +36,6 @@ pub fn test_home() -> PathBuf {
     .clone()
 }
 
-/// Isolated Concordia state root used when no explicit state directory was supplied.
 pub fn test_state_root() -> PathBuf {
     static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     if !enabled() {

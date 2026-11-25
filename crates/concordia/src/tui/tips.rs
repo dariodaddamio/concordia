@@ -1,6 +1,3 @@
-//! One short tip per launch, shown dimmed while the transcript is only the welcome line and while
-//! the prompt has sat idle and empty for a while. A static list: no I/O, no threads.
-
 pub const TIPS: &[&str] = &[
     "Shift+Tab cycles plan, ask and edit; use /mode full with confirmation.",
     "/usage all shows the limits of every account at a glance.",
@@ -12,12 +9,9 @@ pub const TIPS: &[&str] = &[
     "Start a line with / to see the slash commands and their descriptions.",
 ];
 
-/// Idle ticks (200 ms each) of an empty prompt before a tip appears mid-session: 20 s.
 pub const IDLE_TICKS: u64 = 100;
 
-/// Index of this launch's tip: a pure function of the seed.
 pub fn pick(seed: u64) -> usize {
-    // splitmix-style scramble so consecutive seeds (pids, nearby clock values) differ.
     let mut z = seed.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
@@ -77,7 +71,6 @@ pub fn contextual_tip(
     tip_for(seed)
 }
 
-/// Launch seed from the clock and pid. Read once at startup.
 pub fn launch_seed() -> u64 {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -86,7 +79,6 @@ pub fn launch_seed() -> u64 {
     t ^ (u64::from(std::process::id()) << 20)
 }
 
-/// `ui.tips` in config.toml; `CONCORDIA_TIPS=0` turns it off regardless.
 pub fn enabled(preference: bool) -> bool {
     preference && std::env::var("CONCORDIA_TIPS").map_or(true, |v| v.trim() != "0")
 }

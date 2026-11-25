@@ -1,18 +1,3 @@
-//! Screenshot generator and draw benchmark (test-only).
-//!
-//! Renders the real `draw_ui` on a ratatui `TestBackend` with synthetic state and converts the
-//! cell buffer into a standalone SVG. Regenerate after any UI change:
-//!
-//! ```text
-//! cargo test -p concordia --lib screenshots -- --ignored
-//! ```
-//!
-//! The ignored screenshot test compares generated SVG to `docs/img/*.svg`. Set
-//! `CONCORDIA_REGENERATE_SCREENSHOTS=1` to update the committed images. The ignored
-//! `bench_draw_ui` test prints a `DRAW_UI_BENCH` line that `scripts/metrics.ps1` collects.
-//! Everything here is synthetic: no provider CLI runs and no real account, path or name appears
-//! in the output.
-
 use super::*;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -28,8 +13,6 @@ const FONT: &str = "Cascadia Mono, Consolas, monospace";
 
 #[path = "demo_gifs.rs"]
 mod demo_gifs;
-
-// ---------------------------------------------------------------- buffer -> SVG
 
 const ANSI16: [&str; 16] = [
     "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
@@ -56,7 +39,6 @@ fn indexed_hex(i: u8) -> String {
     }
 }
 
-/// `None` means the terminal default.
 fn color_hex(c: Color) -> Option<String> {
     Some(match c {
         Color::Reset => return None,
@@ -156,7 +138,6 @@ fn resolve_cells(buf: &Buffer) -> Vec<Vec<SvgCell>> {
     rows
 }
 
-/// Converts a rendered buffer into a standalone SVG with window chrome.
 pub(super) fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
     let cols = buf.area.width as u32;
     let nrows = buf.area.height as u32;
@@ -191,7 +172,6 @@ pub(super) fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
         xml_escape(title)
     ));
     let rows = resolve_cells(buf);
-    // Backgrounds: merge adjacent cells with the same fill.
     for (y, row) in rows.iter().enumerate() {
         let mut i = 0;
         while i < row.len() {
@@ -215,7 +195,6 @@ pub(super) fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
             i = j;
         }
     }
-    // Text: one <text> per run of same-style cells that starts on ink.
     s.push_str(&format!(
         "<g font-family=\"{FONT}\" font-size=\"15\" xml:space=\"preserve\">\n"
     ));
@@ -269,8 +248,6 @@ pub(super) fn buffer_to_svg(buf: &Buffer, title: &str) -> String {
     ));
     s
 }
-
-// ---------------------------------------------------------------- scenes
 
 struct Shot {
     app: App,
@@ -437,7 +414,6 @@ fn snap(windows: &[(&str, f64, &str)]) -> crate::usage::UsageSnapshot {
 fn usage() -> String {
     let mut s = Shot::new(W, H);
     s.conversation();
-    // Rows come from the real picker_row formatter; the numbers are synthetic.
     let entries = [
         (
             "codex-3",
@@ -518,9 +494,6 @@ fn waiting() -> String {
     s.svg("concordia \u{2014} working")
 }
 
-// ---------------------------------------------------------------- validation
-
-/// Minimal well-formedness check: balanced tags, no stray `<` or bare `&`, one root.
 fn check_xml(doc: &str) -> Result<(), String> {
     let b: Vec<char> = doc.chars().collect();
     let mut stack: Vec<String> = Vec::new();
@@ -636,8 +609,6 @@ fn xterm_palette_matches_known_entries() {
     assert_eq!(indexed_hex(114), "#87d787");
 }
 
-/// Replaces build stamps such as `2026-11-12s` and normalizes line endings, so neither a stamp
-/// bump nor a CRLF checkout fails the comparison.
 fn mask_stamps(svg: &str) -> String {
     let svg = svg.replace("\r\n", "\n");
     let svg = svg.as_str();
@@ -666,8 +637,6 @@ fn mask_stamps(svg: &str) -> String {
     out
 }
 
-/// Compares docs/img/*.svg without writing the checkout. Set CONCORDIA_REGENERATE_SCREENSHOTS=1
-/// to intentionally replace the committed images.
 #[test]
 #[ignore]
 fn write_screenshots() {
@@ -702,8 +671,6 @@ fn write_screenshots() {
     }
 }
 
-/// Times `draw_ui` over 500 frames of the busy transcript. Prints one `DRAW_UI_BENCH` line.
-/// Run: cargo test --release -p concordia --lib screenshots::bench_draw_ui -- --ignored --nocapture
 #[test]
 #[ignore]
 fn bench_draw_ui() {

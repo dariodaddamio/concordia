@@ -1,4 +1,3 @@
-//! One UI and event loop, backed by a console or Concordia's own native input surface.
 use ratatui::backend::{Backend, ClearType, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
@@ -38,7 +37,6 @@ impl DisplayBackend {
             window.set_test_state(focused_tab, overlays);
         }
     }
-    /// Test-only frame cost; a no-op outside the test-controlled native window.
     pub fn note_draw(&mut self, elapsed: std::time::Duration) {
         #[cfg(windows)]
         if let Self::Window(window) = self {

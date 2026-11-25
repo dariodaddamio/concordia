@@ -1,6 +1,3 @@
-//! Focused tests for explicit queue resume. The root module wires this test module alongside
-//! `queue_controls` during integration.
-
 use super::editor::Editor;
 use super::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

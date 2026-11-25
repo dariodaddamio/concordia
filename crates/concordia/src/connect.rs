@@ -1,10 +1,3 @@
-//! Account connect: give a provider a fresh concordia-owned home and open its native login.
-//!
-//! Rules (AGENTS.md / PLAN): never write to the user's existing `.codex` / `.codex-2` / `.claude`
-//! homes, never read or ask for credentials ourselves, never interpolate paths into a shell
-//! script. The login command is a constant per provider; the isolated home travels through the
-//! child's environment (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`) exactly as it does for chat turns.
-
 use crate::accounts::{is_logged_in, list_all_accounts};
 use crate::store::{upsert_stored_account, ProviderKind, StoredAccount};
 use anyhow::{Context, Result};
@@ -13,7 +6,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Where concordia-owned account homes live: `<state_root>/homes/<account id>`.
 pub fn homes_dir(state_root: &Path) -> PathBuf {
     state_root.join("homes")
 }
@@ -23,7 +15,6 @@ pub struct Slot {
     pub id: String,
     pub label: String,
     pub home: PathBuf,
-    /// An earlier concordia-owned slot that never finished login, reused instead of piling up.
     pub reused: bool,
 }
 
@@ -37,12 +28,10 @@ fn capitalized(p: ProviderKind) -> &'static str {
     }
 }
 
-/// Choose the account slot for a new connection. Pure over disk state; creates nothing.
 pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
     let accounts = list_all_accounts(state_root);
     let homes = homes_dir(state_root);
 
-    // Reuse an abandoned concordia-owned slot (created earlier, login never completed).
     let mut abandoned: Vec<_> = accounts
         .iter()
         .filter(|a| a.custom && a.provider == provider)
@@ -77,7 +66,6 @@ pub fn pick_slot(state_root: &Path, provider: ProviderKind) -> Slot {
     }
 }
 
-/// A fully specified login launch. `script` is a constant; the home is only in `env`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginPlan {
     pub provider: ProviderKind,
@@ -86,9 +74,6 @@ pub struct LoginPlan {
     pub bin: &'static str,
 }
 
-/// The provider's documented Windows install command, shown before Concordia can run it.
-/// Concordia never downloads a provider binary itself; this is only a user-confirmed handoff
-/// to the provider's own installer or package manager.
 pub fn official_install_command(provider: ProviderKind) -> Option<&'static str> {
     match provider {
         ProviderKind::Codex => Some("npm install -g @openai/codex"),
@@ -98,9 +83,6 @@ pub fn official_install_command(provider: ProviderKind) -> Option<&'static str> 
     }
 }
 
-/// Open the provider's official installer in a visible PowerShell window.
-/// A successful spawn only means the user has control of the installer window; it does not
-/// claim that installation or version compatibility succeeded.
 pub fn install_provider(provider: ProviderKind) -> Result<(), String> {
     let command = official_install_command(provider).ok_or_else(|| {
         format!(
@@ -108,9 +90,6 @@ pub fn install_provider(provider: ProviderKind) -> Result<(), String> {
             capitalized(provider)
         )
     })?;
-    // `CONCORDIA_INSTALLER_SHELL` swaps the program `start` opens so the spawn path can be
-    // exercised without running a real installer.
-    // Honoured only in a test-control window, so a stray variable cannot redirect a real install.
     let shell = std::env::var_os("CONCORDIA_TEST_CONTROL")
         .and_then(|_| crate::provider::bin_override("CONCORDIA_INSTALLER_SHELL"))
         .unwrap_or_else(|| "powershell.exe".into());
@@ -121,10 +100,6 @@ pub fn install_provider(provider: ProviderKind) -> Result<(), String> {
     .map_err(|error| format!("could not open the installer window: {error}"))
 }
 
-/// The process that opens a visible console running `command` in PowerShell.
-/// PowerShell started directly with null stdio had nothing to show or read and exited at once,
-/// so `cmd /c start` gives it a real console. Every argument is a fixed string from the
-/// install/login mapping; none comes from user input. The hidden `cmd` only launches the window.
 fn console_command(title: &str, shell: &str, command: &str) -> Command {
     let mut process = crate::process_ui::command("cmd.exe");
     process.args([
@@ -143,8 +118,6 @@ fn console_command(title: &str, shell: &str, command: &str) -> Command {
     process
 }
 
-/// Run the `start` launcher. `start` reports success for a missing program, so the shell is
-/// resolved first and a missing one is refused with nothing opened.
 fn open_console(mut launcher: Command, shell: &str) -> Result<(), String> {
     which::which(shell).map_err(|_| format!("{shell} was not found"))?;
     launcher
@@ -162,7 +135,6 @@ fn open_console(mut launcher: Command, shell: &str) -> Result<(), String> {
         })
 }
 
-/// Plan the native login. `has_bin` reports whether a CLI is on PATH.
 pub fn plan_login(
     provider: ProviderKind,
     home: Option<&Path>,
@@ -199,8 +171,6 @@ pub fn plan_login(
     })
 }
 
-/// The process to spawn for a plan: a new visible PowerShell console with the isolated-home
-/// environment, which `start` passes on to the console it opens.
 pub fn login_command(plan: &LoginPlan) -> Command {
     let mut cmd = console_command("Concordia login", "powershell.exe", plan.script);
     for (k, v) in &plan.env {
@@ -214,7 +184,6 @@ fn launch_login(plan: &LoginPlan) -> Result<(), String> {
         .map_err(|e| format!("could not open a login window: {e}"))
 }
 
-/// Command a user can paste to log in by hand when the window could not be opened.
 pub fn manual_login_hint(plan: &LoginPlan) -> String {
     let env: String = plan
         .env
@@ -224,14 +193,10 @@ pub fn manual_login_hint(plan: &LoginPlan) -> String {
     format!("{env}{}", plan.script)
 }
 
-/// How an account can be taken out of Concordia.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoveMode {
-    /// Unregister it **and delete its login folder**. Only for homes Concordia created.
     DeleteData,
-    /// Unregister it but leave every file where it is.
     Unregister,
-    /// Hide it from Concordia. For homes Concordia does not own: nothing is touched.
     Hide,
 }
 
@@ -241,14 +206,11 @@ pub struct Removable {
     pub provider: ProviderKind,
     pub label: String,
     pub home: Option<PathBuf>,
-    /// Created by Concordia, under its own homes folder.
     pub owned: bool,
-    /// Registered in Concordia's store (as opposed to discovered on disk).
     pub stored: bool,
 }
 
 impl Removable {
-    /// The choices that are safe for this account, most thorough first.
     pub fn modes(&self) -> Vec<RemoveMode> {
         if self.owned {
             vec![RemoveMode::DeleteData, RemoveMode::Unregister]
@@ -275,11 +237,9 @@ fn is_owned_home(state_root: &Path, home: &Path) -> bool {
     h.parent() == Some(homes.as_path())
 }
 
-/// Every account the user can remove, with what removing it would do.
 pub fn removable(state_root: &Path) -> Vec<Removable> {
     list_all_accounts(state_root)
         .into_iter()
-        // A built-in slot whose home does not exist or is not signed in is not an account yet.
         .filter(|a| {
             a.custom
                 || a.home_path
@@ -303,8 +263,6 @@ pub fn removable(state_root: &Path) -> Vec<Removable> {
         .collect()
 }
 
-/// Remove an account. `DeleteData` is refused unless the home is inside Concordia's own homes
-/// folder (after resolving links), so a stray path in the store can never delete a user's files.
 pub fn remove_account(state_root: &Path, id: &str, mode: RemoveMode) -> Result<String> {
     let want = crate::accounts::normalize_account_id(id);
     let acct = removable(state_root)
@@ -374,7 +332,6 @@ fn has_bin_on_path(name: &str) -> bool {
     which::which(name).is_ok()
 }
 
-/// Whether the provider's CLI is missing from PATH, by the same lookup `add_account` uses.
 pub fn cli_missing(provider: ProviderKind) -> bool {
     match provider {
         ProviderKind::Cursor => !(has_bin_on_path("agent") || has_bin_on_path("cursor-agent")),
@@ -391,19 +348,15 @@ pub struct AddResult {
     pub provider: ProviderKind,
     pub label: String,
     pub home: PathBuf,
-    /// Lines for the transcript.
     pub message: Vec<String>,
-    /// Whether the TUI should watch this home for the login to complete.
     pub watch: bool,
 }
 
-/// Side effects injected so tests can observe a launch without opening windows.
 pub struct Effects<'a> {
     pub has_bin: &'a dyn Fn(&str) -> bool,
     pub launch: &'a dyn Fn(&LoginPlan) -> Result<(), String>,
 }
 
-/// Connect a new account for `provider` using the real PATH and a real login window.
 pub fn add_account(state_root: &Path, provider: ProviderKind) -> Result<AddResult> {
     add_account_with(
         state_root,
@@ -420,14 +373,12 @@ pub fn add_account_with(
     provider: ProviderKind,
     fx: &Effects<'_>,
 ) -> Result<AddResult> {
-    // A missing Cursor CLI is reported before any account slot is touched, so setup can be offered.
     if provider == ProviderKind::Cursor && !((fx.has_bin)("agent") || (fx.has_bin)("cursor-agent"))
     {
         return Err(anyhow::anyhow!(
             "agent not found on PATH — install the Cursor CLI, then try again"
         ));
     }
-    // The first Cursor account is the CLI's own global login; extra ones are key files.
     if provider == ProviderKind::Cursor {
         if let Some(main) = crate::accounts::builtin_accounts()
             .into_iter()
@@ -457,7 +408,6 @@ pub fn add_account_with(
         return add_cursor_key_slot(state_root, slot);
     }
 
-    // Plan first: a missing CLI must not leave an empty slot behind.
     let plan = plan_login(provider, Some(&slot.home), fx.has_bin).map_err(anyhow::Error::msg)?;
     register_slot(state_root, provider, &slot)?;
     finish_login(fx, plan, slot.id, slot.label, slot.home, slot.reused)
@@ -477,7 +427,6 @@ fn register_slot(state_root: &Path, provider: ProviderKind, slot: &Slot) -> Resu
             },
         )?;
     }
-    // Awareness block / MCP entry for Concordia-created homes (skips everything else).
     let _ = crate::integration::refresh(state_root, &crate::update::resolve_active_exe());
     Ok(())
 }
@@ -667,12 +616,10 @@ mod tests {
         assert!(r.home.is_dir());
         assert!(r.home.starts_with(homes_dir(sb.state())));
 
-        // Registered, so /use can see it once logged in.
         let acct = get_account(sb.state(), "codex-1").unwrap();
         assert!(acct.custom);
         assert_eq!(acct.home_path.as_deref(), Some(r.home.as_path()));
 
-        // Exactly one launch; the isolated home is passed via env only.
         assert_eq!(launched.len(), 1);
         assert_eq!(launched[0].script, "codex login");
         assert_eq!(
@@ -683,7 +630,6 @@ mod tests {
             )]
         );
 
-        // The user's own homes were not created or touched.
         assert!(!sb.base().join(".codex").exists());
         assert!(!sb.base().join(".codex-2").exists());
     }
@@ -713,7 +659,6 @@ mod tests {
     fn an_abandoned_slot_is_reused_instead_of_piling_up() {
         let sb = Sandbox::new();
         let first = run(&sb, ProviderKind::Codex, &all_bins).0.unwrap();
-        // Login never completes; adding again reuses the pending slot.
         let (again, launched) = run(&sb, ProviderKind::Codex, &all_bins);
         let again = again.unwrap();
         assert_eq!(again.account, first.account);
@@ -776,7 +721,6 @@ mod tests {
         let text = r.message.join("\n");
         assert!(text.contains("concordia-api-key"), "{text}");
         assert!(r.home.is_dir());
-        // The key file is the user's to create; concordia must not invent one.
         assert!(!r.home.join("concordia-api-key").exists());
     }
 
@@ -869,8 +813,6 @@ mod tests {
             "[broken"
         );
     }
-
-    // ---- removal and duplicates -------------------------------------------------------------
 
     use crate::test_support::codex_login;
 
@@ -968,7 +910,6 @@ mod tests {
         let sb = Sandbox::new();
         let homes = homes_dir(sb.state());
         fs::create_dir_all(&homes).unwrap();
-        // `homes\codex-7\..` resolves to the homes folder itself; it must not count as owned.
         let sneaky = homes.join("codex-7").join("..");
         fs::create_dir_all(homes.join("codex-7")).unwrap();
         register(&sb, "codex-7", &sneaky);
@@ -1004,7 +945,6 @@ mod tests {
             ["codex", "codex-3"],
             "built-in first, the added slot second"
         );
-        // The added slot is the duplicate of the original, not the other way round.
         assert_eq!(
             crate::accounts::duplicate_of(sb.state(), "codex-3")
                 .unwrap()
@@ -1026,7 +966,6 @@ mod tests {
         let two = homes_dir(sb.state()).join("codex-3");
         codex_login(&two, "two@example.com");
         register(&sb, "codex-3", &two);
-        // A slot that is still waiting for its login has no identity.
         let empty = homes_dir(sb.state()).join("codex-4");
         fs::create_dir_all(&empty).unwrap();
         register(&sb, "codex-4", &empty);

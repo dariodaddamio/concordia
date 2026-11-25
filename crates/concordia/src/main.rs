@@ -78,8 +78,6 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Mcp,
     },
     CommandSpec {
-        // Started by providers (Cursor ACP) as the concordia-ask MCP server; without this entry
-        // the subcommand was rejected and the ask-the-user tool never reached the provider.
         name: "ask-mcp",
         aliases: &[],
         args: "",
@@ -178,7 +176,6 @@ async fn run_default_chat() -> Result<()> {
 async fn main() -> Result<()> {
     let result = run().await;
     if let Err(error) = &result {
-        // A window started from a shortcut has no console, so stderr alone loses this.
         concordia::logging::init(&default_store_root());
         concordia::logging::error(&format!("exit after error: {error:#}"));
     }
@@ -277,7 +274,6 @@ async fn run() -> Result<()> {
         }
         Command::Version => {
             println!("{}", version_line());
-            // Read-only: reporting a version must never repoint the install at this exe.
             if let Ok(exe) = std::env::current_exe() {
                 println!("exe: {}", exe.display());
             }

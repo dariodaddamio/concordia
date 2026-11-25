@@ -1,11 +1,3 @@
-//! Account limits: what is left of each provider's rolling windows.
-//!
-//! Codex reports its limits in its own session files. Claude answers `claude -p "/usage"`
-//! locally (no model call) but takes seconds, so it is fetched on a background thread and cached
-//! (see [`UsageFetcher`]). Cursor's CLI has no usage command; its interactive `/usage` screen is
-//! read in a pseudo-console (see `cursor_usage`) the same way, and where that fails the account
-//! just says the limits are not shown.
-
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -17,31 +9,23 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-/// How long a fetched Claude reading is trusted before it is refreshed in the background.
 pub const USAGE_TTL_SECS: u64 = 120;
 pub const CREDIT_DASHBOARD_URL: &str = "https://chatgpt.com/settings/usage";
-/// Supported native read-only RPC; exposed for isolated process integration checks.
 pub async fn read_codex_limits(bin: &str, home: &Path) -> Result<String, String> {
     crate::usage_codex::fetch_with(bin, home).await
 }
-/// A hung `claude -p "/usage"` is killed (with its process tree) after this long.
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {
-    /// Short name: `5h`, `7d`, `7d Opus`.
     pub label: String,
     pub used_pct: f64,
-    /// When the window resets, already human-readable (`3h`, `Oct 21, 9am`).
     pub resets: Option<String>,
-    /// The provider's own name for an extra limit bucket, such as a separate allowance for one
-    /// model. `None` for the account's main limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<String>,
 }
 
 impl UsageWindow {
-    /// The label people read: the bucket name, when there is one, then the window.
     pub fn name(&self) -> String {
         match &self.bucket {
             Some(bucket) => format!("{bucket} {}", self.label),
@@ -49,7 +33,6 @@ impl UsageWindow {
         }
     }
 
-    /// The reading predates the window's reset, so its percentage no longer applies.
     fn expired(&self) -> bool {
         self.expired_at(local_now())
     }
@@ -60,7 +43,6 @@ impl UsageWindow {
             .unwrap_or_else(|| self.expired())
     }
 
-    /// Deterministic clock seam for UI rendering tests: `(month, day, hour, minute)` local time.
     pub(crate) fn expired_for_ui_at(&self, now: (u32, u32, u32, u32)) -> bool {
         self.expired_at(Some(WallTime {
             month: now.0,
@@ -91,7 +73,6 @@ impl UsageWindow {
         self.left_pct().round() as i64
     }
 
-    /// `5h 59% left (41% used)`
     fn used_left(&self) -> String {
         if self.expired() {
             return format!(
@@ -131,11 +112,8 @@ impl UsageWindow {
 #[derive(Debug, Clone)]
 pub struct UsageSnapshot {
     pub credits: Option<Credits>,
-    /// Subscription tier reported by the provider, never inferred from account names.
     pub plan: Option<String>,
-    /// Short, for the footer: `5h 59% left · 7d 41% left`.
     pub summary: String,
-    /// Multi-line, one line per window with a text bar.
     pub detail: String,
     pub primary_pct: Option<f64>,
     pub weekly_pct: Option<f64>,
@@ -144,7 +122,6 @@ pub struct UsageSnapshot {
 }
 
 impl UsageSnapshot {
-    /// A snapshot with no numbers, only an explanation.
     pub fn no_data(summary: impl Into<String>, detail: impl Into<String>) -> Self {
         UsageSnapshot {
             credits: None,
@@ -158,8 +135,6 @@ impl UsageSnapshot {
         }
     }
 
-    /// Full `used / left` text for picker rows:
-    /// `5h 41% used / 59% left · 7d 59% used / 41% left · resets 3h`.
     pub fn used_left_text(&self) -> String {
         if self.windows.is_empty() {
             return self.summary.clone();
@@ -206,8 +181,6 @@ impl UsageSnapshot {
     }
 
     fn max_used(&self) -> Option<f64> {
-        // An extra bucket running out limits one model, not the account, so it does not set the
-        // account's tone.
         self.windows
             .iter()
             .filter(|window| !window.expired() && window.bucket.is_none())
@@ -220,8 +193,6 @@ impl UsageSnapshot {
     }
 }
 
-/// How a reset reads in a sentence: `resets in 3h 20m`, `resets Nov 6, 9am`, `reset since last
-/// read`. Wall-clock resets are measured against the local time now.
 pub fn reset_phrase(r: &str) -> String {
     reset_phrase_at(r, local_now())
 }
@@ -257,8 +228,6 @@ fn reset_phrase_at(r: &str, now: Option<WallTime>) -> String {
     }
 }
 
-/// A moment on the local wall clock, as providers print resets (`Oct 29, 4:19am`). No year: a
-/// reset is never months away, so the nearest year is the right one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WallTime {
     month: u32,
@@ -271,7 +240,6 @@ const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// `Oct 29, 4:19am`, `Oct 29 4am`, `Oct 29`, or a bare `4:19am` (today, which needs `now`).
 fn parse_wall(text: &str, now: Option<WallTime>) -> Option<WallTime> {
     let text = text.trim().trim_end_matches(" local");
     let (date, time) = match text.split_once(',') {
@@ -304,7 +272,6 @@ fn parse_wall(text: &str, now: Option<WallTime>) -> Option<WallTime> {
     })
 }
 
-/// `4:19am` or `9pm` as 24-hour `(hour, minute)`.
 fn parse_clock(time: &str) -> Option<(u32, u32)> {
     let lower = time.trim().to_ascii_lowercase();
     let (clock, pm) = match (lower.strip_suffix("am"), lower.strip_suffix("pm")) {
@@ -322,7 +289,6 @@ fn parse_clock(time: &str) -> Option<(u32, u32)> {
     Some((hour % 12 + if pm { 12 } else { 0 }, minute))
 }
 
-/// `Nov 6, 9am` or `Oct 29, 4:19pm`.
 fn format_wall(w: WallTime) -> String {
     let (hour, suffix) = match w.hour {
         0 => (12, "am"),
@@ -345,7 +311,6 @@ pub(crate) fn local_time_label() -> String {
         .unwrap_or_else(|| format!("Unix {}", unix_now()))
 }
 
-/// Signed minutes from `now` to `then`, taking whichever year puts them closest.
 fn minutes_until(now: WallTime, then: WallTime) -> i64 {
     const DAYS_BEFORE: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
     const YEAR: i64 = 365 * 24 * 60;
@@ -366,7 +331,6 @@ fn minutes_until(now: WallTime, then: WallTime) -> i64 {
 
 #[cfg(test)]
 thread_local! {
-    /// The clock tests run against; unset means no wall-clock ageing, as before.
     static TEST_NOW: std::cell::Cell<Option<WallTime>> = const { std::cell::Cell::new(None) };
 }
 
@@ -399,7 +363,6 @@ fn system_now() -> Option<WallTime> {
         fn GetLocalTime(time: *mut SystemTime);
     }
     let mut t = SystemTime::default();
-    // Fills the documented Win32 SYSTEMTIME layout; it cannot fail.
     unsafe { GetLocalTime(&mut t) };
     Some(WallTime {
         month: t.month.into(),
@@ -443,7 +406,6 @@ fn window_lines(windows: &[UsageWindow]) -> Vec<String> {
         .collect()
 }
 
-/// Build the footer summary and the multi-line detail from the windows.
 fn snapshot_from_windows(
     windows: Vec<UsageWindow>,
     limit_kind: Option<String>,
@@ -459,7 +421,6 @@ fn snapshot_from_windows(
         parts.push(format!("LIMIT · {kind}"));
     }
     for w in &windows {
-        // The footer summary covers the main limits; extra buckets are listed in the detail.
         if w.bucket.is_some() && windows.iter().any(|w| w.bucket.is_none()) {
             continue;
         }
@@ -516,23 +477,18 @@ struct CodexRateLimits {
     plan_type: Option<String>,
     #[serde(alias = "limitId")]
     limit_id: Option<String>,
-    /// The provider's display name for this bucket (`limitName`).
     #[serde(default, alias = "limitName")]
     limit_name: Option<String>,
-    /// The model a model-specific bucket applies to (`normalModelSlug`).
     #[serde(default, alias = "normalModelSlug")]
     normal_model_slug: Option<String>,
     #[serde(alias = "rateLimitReachedType")]
     rate_limit_reached_type: Option<String>,
     credits: Option<Credits>,
-    /// Every other bucket the provider reported beside the main `codex` one
-    /// (`rateLimitsByLimitId`), in limit-id order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     extra: Vec<CodexRateLimits>,
 }
 
 impl CodexRateLimits {
-    /// The name shown for an extra bucket: the provider's name, else its model, else its id.
     fn bucket_name(&self) -> String {
         [&self.limit_name, &self.normal_model_slug, &self.limit_id]
             .into_iter()
@@ -623,7 +579,6 @@ pub struct UsageRow {
     pub tone: UsageTone,
 }
 
-/// Current account first, then other ready accounts.
 pub fn usage_rows_for_accounts(
     fetcher: &mut UsageFetcher,
     accounts: &[(String, crate::store::ProviderKind, std::path::PathBuf)],
@@ -645,7 +600,6 @@ pub fn usage_rows_for_accounts(
     rows
 }
 
-/// One picker row (`/use`, `/usage all`): name, icon, full used / left text.
 pub fn picker_row(
     id: &str,
     provider: crate::store::ProviderKind,
@@ -680,7 +634,6 @@ pub fn picker_row(
     }
 }
 
-/// Keep public account metadata above each account's vertical limits.
 pub fn profiled_picker_row(
     id: &str,
     provider: crate::store::ProviderKind,
@@ -689,8 +642,6 @@ pub fn profiled_picker_row(
 ) -> UsageRow {
     let mut row = picker_row(id, provider, snap);
     if !snap.windows.is_empty() {
-        // The card already contains every provider-reported bucket. Keep diagnostic detail out
-        // of the bucket scroll range so End lands on the final bucket rather than a note below it.
         row.detail.clear();
     }
     let email = identity.login.as_deref().filter(|s| s.contains('@'));
@@ -732,7 +683,6 @@ pub fn profiled_picker_row(
         Some(credits) if credits.has_credits == Some(false) => {
             Some("Credits: none available".into())
         }
-        // "not reported" / "balance not reported" stay off the card.
         _ => None,
     };
     if let Some(credits) = credits.as_deref() {
@@ -775,10 +725,6 @@ pub enum UsageTone {
     Mute,
 }
 
-// ---- Claude: `claude -p "/usage"`, fetched off the UI thread and cached --------------------
-
-/// Parse the output of `claude -p "/usage"`. Tolerant: only `Current ...: N% used` lines count,
-/// everything else is ignored, and unrecognised text gives `None`.
 pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
     let mut windows = Vec::new();
     for raw in text.lines() {
@@ -832,10 +778,6 @@ pub fn parse_claude_usage(text: &str) -> Option<UsageSnapshot> {
     ))
 }
 
-/// Parse the screen text of Cursor's interactive `/usage`. Tolerant: ANSI is stripped, the plan
-/// and reset date come from `Usage • <Plan> ... Resets <date>`, and only the rows
-/// Included / Auto / API / On-Demand with `N% used` become windows. `Disabled` on-demand and the
-/// plan go into the note. Unrecognised text gives `None`.
 pub fn parse_cursor_usage(text: &str) -> Option<UsageSnapshot> {
     let (windows, note) = parse_cursor_windows(text)?;
     let mut snapshot = snapshot_from_windows(
@@ -899,7 +841,6 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
             let Ok(used_pct) = digits.parse::<f64>() else {
                 continue;
             };
-            // A redrawn screen repeats rows: the last reading wins.
             windows.retain(|w| w.label != label);
             windows.push(UsageWindow {
                 label,
@@ -927,9 +868,6 @@ fn parse_cursor_windows(text: &str) -> Option<(Vec<UsageWindow>, String)> {
     Some((windows, note.join(", ")))
 }
 
-/// `(label, text after it)` for a usage-table row. Known rows get their canonical spelling; any
-/// other row that reports a percentage keeps the name Cursor printed (a per-model or temporary
-/// allowance), taken from the text before the first wide gap.
 fn cursor_row(line: &str) -> Option<(String, &str)> {
     for (name, label) in [
         ("included", "Included"),
@@ -974,7 +912,6 @@ fn claude_label(name: &str) -> String {
     name.to_string()
 }
 
-/// `Oct 15, 9:10pm (America/Phoenix)` -> `Oct 15, 9:10pm`.
 fn strip_tz(s: &str) -> String {
     match s.rfind('(') {
         Some(i) if s.ends_with(')') => s[..i].trim().to_string(),
@@ -1020,13 +957,9 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Run `<bin> -p /usage --no-session-persistence` with `CLAUDE_CONFIG_DIR=<home>`: no window, stdin closed, and the whole
-/// process tree killed after `timeout`. The `.cmd` shim case is handled by `Command` itself; the
-/// arguments are fixed and shell-safe.
 pub fn run_claude_usage(bin: &str, home: &Path, timeout: Duration) -> Result<String, String> {
     use std::process::Stdio;
     let mut cmd = crate::process_ui::command(bin);
-    // A usage read must not leave a native session behind (it showed as "untitled session").
     cmd.args(["-p", "/usage", "--no-session-persistence"])
         .env("CLAUDE_CONFIG_DIR", home)
         .stdin(Stdio::null())
@@ -1095,10 +1028,8 @@ impl UsageIdentity {
 struct CachedUsage {
     fetched_at: u64,
     windows: Vec<UsageWindow>,
-    /// Retain credits, exact reset timestamps and limit state across asynchronous refreshes.
     #[serde(default)]
     codex_limits: Option<CodexRateLimits>,
-    /// Plan and similar, shown after the windows (Cursor).
     #[serde(default)]
     note: String,
     identity: UsageIdentity,
@@ -1120,7 +1051,6 @@ pub struct CachedUsageView {
     pub windows: Vec<String>,
 }
 
-/// Exact account/provider/home cache only: no directory scan, provider launch or refresh.
 pub fn cached_usage_view(
     root: &Path,
     provider: crate::store::ProviderKind,
@@ -1135,7 +1065,6 @@ pub fn cached_usage_view(
     })
 }
 
-/// Local, identity-bound cache inspection only. Never constructs a fetcher or starts a provider.
 pub fn peek_cached_usage(
     root: &Path,
     provider: crate::store::ProviderKind,
@@ -1145,10 +1074,6 @@ pub fn peek_cached_usage(
     peek_cached_usage_for_model(root, provider, account, home, None)
 }
 
-/// [`peek_cached_usage`] for one model. Cursor reports separate pools: Auto and Composer models
-/// draw on `Auto`, every other model on `API`, so the other pool running out does not limit this
-/// model. A Codex extra bucket limits only the model it names; without a model, only the
-/// account's main windows count.
 pub fn peek_cached_usage_for_model(
     root: &Path,
     provider: crate::store::ProviderKind,
@@ -1200,7 +1125,6 @@ pub fn peek_cached_usage_for_model(
             .iter()
             .find(|window| !window.expired())
             .map(|window| window.left_pct()),
-        // The reset that matters is the one of the window that ran out, when one did.
         reset: windows
             .iter()
             .find(|window| !window.expired() && window.used_pct >= 100.0)
@@ -1288,7 +1212,6 @@ pub(crate) fn fixture_cached_usage(
     );
 }
 
-/// Produces the raw `/usage` text for a Claude config dir. Swapped for a fake in tests.
 pub type UsageRunner = Arc<dyn Fn(&Path) -> Result<String, String> + Send + Sync>;
 
 fn default_runner() -> UsageRunner {
@@ -1308,7 +1231,6 @@ struct Entry {
     pending: bool,
     error: Option<String>,
     last_attempt: u64,
-    /// A turn used some of the limits since this was read: re-check soon.
     dirty: bool,
 }
 
@@ -1317,7 +1239,6 @@ struct Fetched {
     result: Result<CachedUsage, String>,
 }
 
-/// Per-account Claude limits: cached on disk, refreshed on a worker thread, never blocking.
 pub struct UsageFetcher {
     state_root: PathBuf,
     runner: UsageRunner,
@@ -1346,7 +1267,6 @@ impl UsageFetcher {
         }
     }
 
-    /// Replace how Cursor's `/usage` text is obtained (tests).
     pub fn with_cursor_runner(mut self, runner: UsageRunner) -> Self {
         self.cursor_runner = runner;
         self
@@ -1356,7 +1276,6 @@ impl UsageFetcher {
         self
     }
 
-    /// Cached limits for an account, with a background refresh when missing or stale.
     pub fn snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
@@ -1366,7 +1285,6 @@ impl UsageFetcher {
         self.fetched_snapshot(provider, account, home, false)
     }
 
-    /// Like [`snapshot`](Self::snapshot), but refreshes even a fresh cache (`/usage`).
     pub fn snapshot_refresh(
         &mut self,
         provider: crate::store::ProviderKind,
@@ -1376,7 +1294,6 @@ impl UsageFetcher {
         self.fetched_snapshot(provider, account, home, true)
     }
 
-    /// All providers share identity, freshness and refresh scheduling here.
     fn fetched_snapshot(
         &mut self,
         provider: crate::store::ProviderKind,
@@ -1421,8 +1338,6 @@ impl UsageFetcher {
             (None, true, _) | (None, false, None) => Err(None),
             (None, false, Some(err)) => Err(Some(err.clone())),
         };
-        // A settled reading keeps its age note while a background refresh runs; do not append
-        // "cached; refreshing". Surface refresh failure only after the refresh actually failed.
         let cache_state = if e.pending {
             None
         } else if e.error.is_some() {
@@ -1460,7 +1375,6 @@ impl UsageFetcher {
                 if codex {
                     snap.plan = (!c.note.is_empty()).then_some(c.note);
                 }
-                // A reading that is a few minutes old says so right in the footer.
                 if age >= USAGE_TTL_SECS && !snap.windows.is_empty() {
                     snap.summary
                         .push_str(&format!(" \u{b7} {} old", format_age_minutes(age / 60)));
@@ -1503,7 +1417,6 @@ impl UsageFetcher {
             }
             Err(None) if cursor => cursor_waiting(),
             Err(None) => claude_waiting(),
-            // Cursor has no fallback command: any failure is the plain "not shown" message.
             Err(Some(_)) if cursor => cursor_usage(),
             Err(Some(err)) => UsageSnapshot::no_data(
                 "limits unavailable",
@@ -1515,8 +1428,6 @@ impl UsageFetcher {
         }
     }
 
-    /// A turn just used some of this account's limits: the next read re-checks in the background
-    /// (the old numbers stay on screen, with their age, until the new ones land).
     pub fn invalidate(&mut self, account: &str) {
         for e in self
             .entries
@@ -1564,7 +1475,6 @@ impl UsageFetcher {
             });
             if cursor {
                 if let Err(e) = &result {
-                    // Event only: never the screen text.
                     crate::logging::info(&format!("cursor usage unavailable: {e}"));
                 }
             }
@@ -1575,7 +1485,6 @@ impl UsageFetcher {
         });
     }
 
-    /// Collect finished background fetches. True when any account's limits changed.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(f) = self.rx.try_recv() {
@@ -1695,16 +1604,13 @@ fn read_session_rate_limits(codex_home: &Path) -> Option<(UsageSnapshot, SystemT
 fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    // Rate-limit events arrive at turn ends — read a trailing window for large rollouts.
     const TAIL: u64 = 512 * 1024;
     if len > TAIL {
         file.seek(SeekFrom::Start(len - TAIL)).ok()?;
     }
     let mut bytes = Vec::new();
     file.take(TAIL).read_to_end(&mut bytes).ok()?;
-    // A trailing read may start inside a multibyte character on the discarded first line.
     let buf = String::from_utf8_lossy(&bytes);
-    // Drop partial first line when we seeked mid-file.
     let text = if len > TAIL {
         buf.split_once('\n').map(|(_, rest)| rest).unwrap_or(&buf)
     } else {
@@ -1712,8 +1618,6 @@ fn scan_file_for_rate_limits(path: &Path) -> Option<CodexRateLimits> {
     };
     let mut last_any: Option<CodexRateLimits> = None;
     let mut last_pct: Option<CodexRateLimits> = None;
-    // Model-specific buckets arrive as their own events; the latest of each is kept beside the
-    // main `codex` bucket.
     let mut extra = std::collections::BTreeMap::<String, CodexRateLimits>::new();
     for line in text.lines() {
         if !line.contains("rate_limits") {
@@ -1779,14 +1683,11 @@ fn has_percents(u: &CodexRateLimits) -> bool {
         || u.secondary.as_ref().and_then(|s| s.used_percent).is_some()
 }
 
-/// The windows of one Codex bucket; `bucket` names an extra bucket.
 fn codex_windows(u: &CodexRateLimits, bucket: Option<&str>) -> Vec<UsageWindow> {
     let mut windows = Vec::new();
     for (w, fallback) in [(&u.primary, "5h"), (&u.secondary, "7d")] {
         if let Some(w) = w {
             if let Some(pct) = w.used_percent {
-                // The numbers are from the last chat. If the window has reset since, the old
-                // percentage no longer applies.
                 windows.push(UsageWindow {
                     label: w
                         .window_minutes
@@ -1940,13 +1841,11 @@ fn local_reset_time(seconds: i64) -> Option<String> {
     };
     let mut utc = LocalTime::default();
     let mut local = LocalTime::default();
-    // Both structs use the documented Win32 SYSTEMTIME/FILETIME layouts. A null zone selects OS local time.
     if unsafe { FileTimeToSystemTime(&file, &mut utc) } == 0
         || unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) } == 0
     {
         return None;
     }
-    // The same wall-clock form Claude prints, so every provider's reset reads and ages alike.
     Some(format_wall(WallTime {
         month: local.month.into(),
         day: local.day.into(),
@@ -1960,7 +1859,6 @@ fn local_reset_time(_seconds: i64) -> Option<String> {
     None
 }
 
-/// Warn only about observed low capacity; reset/unknown values are never inferred available.
 pub fn low_limit_warning(
     snapshot: &UsageSnapshot,
     provider: crate::store::ProviderKind,
@@ -2032,12 +1930,10 @@ mod tests {
         ] {
             assert_eq!(reset_phrase_at(reset, now), phrase, "{reset}");
         }
-        // Near the new year the nearest year decides.
         assert_eq!(
             reset_phrase_at("Jan 1, 1am", Some(wall(12, 31, 23, 0))),
             "resets in 2h"
         );
-        // Codex's timestamps are written in the same form as Claude's text.
         assert_eq!(format_wall(wall(10, 30, 17, 17)), "Oct 30, 5:17pm");
         assert_eq!(format_wall(wall(11, 6, 0, 0)), "Nov 6, 12am");
     }
@@ -2312,7 +2208,6 @@ mod tests {
         assert!(UsageIdentity::new(ProviderKind::Claude, "claude-2", &home)
             .cache_path(root.path())
             .is_file());
-        // A new fetcher (restart) shows the cached value immediately and does not refetch.
         let failing: UsageRunner = Arc::new(|_| Err("must not run".into()));
         let mut g = UsageFetcher::with_runner(root.path().to_path_buf(), failing);
         let cached = g.snapshot(ProviderKind::Claude, "claude-2", &home);
@@ -2350,7 +2245,6 @@ mod tests {
         ];
         let rows = usage_rows_for_accounts(&mut f, &accounts, "codex");
         assert_eq!(rows[0].id, "codex");
-        // Still checking: never a stale or invented number.
         assert!(rows[1].label.contains("checking limits"));
         assert_eq!(rows[1].tone, UsageTone::Mute);
     }
@@ -2407,7 +2301,6 @@ mod tests {
         ] {
             assert!(parse_cursor_usage(junk).is_none(), "{junk:?}");
         }
-        // A row word inside prose is not a row.
         assert!(parse_cursor_usage("Automatic 50% used").is_none());
     }
 
@@ -2429,7 +2322,6 @@ mod tests {
         assert!(UsageIdentity::new(ProviderKind::Cursor, "cursor", &home)
             .cache_path(root.path())
             .is_file());
-        // After a restart the cache answers; a failing runner is not even called.
         let bad: UsageRunner = Arc::new(|_| Err("must not run".into()));
         let mut g = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
         assert!(g
@@ -2442,14 +2334,12 @@ mod tests {
                 .as_deref(),
             Some("Pro")
         );
-        // No cache + failure (timeout, login, layout): the old plain message.
         let bad: UsageRunner = Arc::new(|_| Err("timed out after 15s".into()));
         let mut h = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(bad);
         h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
         wait_for(&mut h);
         let s = h.snapshot(ProviderKind::Cursor, "cursor-new", &home);
         assert_eq!(s.summary, "not shown by Cursor CLI");
-        // Unparseable text is a failure too.
         let junk: UsageRunner = Arc::new(|_| Ok("garbage".into()));
         let mut j = UsageFetcher::new(root.path().to_path_buf()).with_cursor_runner(junk);
         j.snapshot(ProviderKind::Cursor, "cursor-junk", &home);
@@ -2461,7 +2351,6 @@ mod tests {
         );
     }
 
-    /// Runs a fake `claude` script (never the real CLI) through the real launcher.
     #[test]
     fn real_runner_runs_a_fake_script_with_the_config_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -2624,7 +2513,7 @@ mod tests {
         f.snapshot(ProviderKind::Claude, "same-account", &home_a);
         started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         f.snapshot(ProviderKind::Claude, "same-account", &home_b);
-        wait_for(&mut f); // Home B finishes while A remains deliberately blocked.
+        wait_for(&mut f);
         let selected = f.snapshot(ProviderKind::Claude, "same-account", &home_b);
         assert!(
             selected.summary.contains("5h 58% left"),
@@ -2649,7 +2538,6 @@ mod tests {
             .cache_path(root.path());
         assert!(cache_b.is_file());
 
-        // A restart reuses only the matching provider/account/home cache.
         let must_not_run: UsageRunner =
             Arc::new(|_| Err("fresh bound cache should be used".into()));
         let mut restarted = UsageFetcher::with_runner(root.path().to_path_buf(), must_not_run)

@@ -1,4 +1,3 @@
-//! One bounded background Git operation, tied to the requesting conversation.
 use super::*;
 use crate::managed_workspaces as managed;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,8 +31,6 @@ fn review(
     Ok(format!("Managed workspace review: {:?} / {:?}\nOwner: {}\nWorktree: {}\nBase: {}\nOwner head: {} ({})\nWorker head: {}\nUnique worker commits: {}\nChanged paths:\n{}\nPath object identities (old/new/path):\n{}\nOwner status:\n{}\nWorker status:\n{}\nConflicts:\n{}\nWorker/result references:\n{}\nReference hash: {}\nRepository-configured checks (not run by Concordia):\n{}\nReservations:\n{}\nBlockers:\n{}\nReceipt: {}\nExact integration action: /worktree {action} {id} {}\nReview the provider's change view and the user's Git/editor before accepting. PR readiness remains in the user's Git workflow. No action is automatic. External Git/processes remain outside cooperative scheduler enforcement.",preview.action,preview.state,preview.record.owner.display(),preview.record.execution.display(),preview.record.base,preview.owner_head,preview.owner_branch,preview.worker_head,preview.unique_commits,preview.changes.join("\n"),preview.path_objects.join("\n"),preview.owner_status,preview.worker_status,preview.conflicts.join("\n"),preview.references.join("\n"),preview.reference_hash,configured_checks,preview.reservations.join("\n"),preview.blockers.join("\n"),preview.receipt,preview.receipt))
 }
 
-/// Render the lifecycle owner's success record: exact heads, reference identity, the
-/// repository-configured checks (never run by Concordia) and PR guidance.
 fn finished_summary(action: &str, id: &str, json: &str, owner: &Path) -> String {
     let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
     let field = |name: &str| {
@@ -80,7 +77,6 @@ fn repository_checks(owner: &Path) -> String {
             .display()
             .to_string();
         for (index, line) in lines.iter().enumerate() {
-            // Workflow steps are written both as `run: cmd` and as the list item `- run: cmd`.
             let trimmed = line.trim_start();
             let Some(value) = trimmed
                 .strip_prefix("- run:")
@@ -91,7 +87,6 @@ fn repository_checks(owner: &Path) -> String {
             let value = value.trim();
             let indent = line.len() - trimmed.len();
             if matches!(value, "|" | ">" | "|-" | ">-") {
-                // Block scalar: every following line indented deeper than the `run` key.
                 for next in lines[index + 1..].iter().take(16) {
                     let body = next.trim();
                     let deeper = next.len() - next.trim_start().len() > indent;

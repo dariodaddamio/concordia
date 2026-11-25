@@ -1,34 +1,20 @@
-//! A small markdown renderer for assistant replies: headings, bullets, numbered lists, quotes,
-//! rules, fenced code, and inline `code`, **bold** and *italic*. It produces plain text plus style
-//! runs, so selection and copy keep working on exactly what is on screen.
-//!
-//! Pipe tables adapt to the available width; link labels retain explicit destinations.
-
 use ratatui::style::{Color, Modifier, Style};
 
 #[path = "markdown_tables.rs"]
 mod tables;
 
-/// One rendered source line (before wrapping).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdLine {
     pub text: String,
-    /// `(start, end, style)` in chars of `text`, applied over `base`.
     pub runs: Vec<(usize, usize, Style)>,
-    /// Columns of left indent for every row of this line.
     pub indent: usize,
-    /// Extra indent for wrapped continuation rows (list and quote hanging indents).
     pub hang: usize,
     pub base: Style,
-    /// Rendered character ranges and their explicit local-file or HTTP(S) destinations.
     pub links: Vec<(usize, usize, String)>,
-    /// Decorative char ranges (quote bars, table borders) that selection and copy skip.
     pub decor: Vec<(usize, usize)>,
 }
 
 fn code_style() -> Style {
-    // Semantic roles (docs/design-system.md): code is `purple` text on the `panel` surface, so it
-    // stays distinct from prose and from accent links in every theme.
     Style::default().fg(Color::Magenta).bg(Color::DarkGray)
 }
 
@@ -48,7 +34,6 @@ fn plain(text: String) -> MdLine {
     }
 }
 
-/// Render `text` into display lines.
 #[cfg(test)]
 pub fn render(text: &str) -> Vec<MdLine> {
     render_width(text, 100)
@@ -176,8 +161,6 @@ fn render_prose(line: &str) -> MdLine {
     line
 }
 
-/// Compact reported reasoning without cutting through Markdown markers or link destinations.
-/// The original text remains available in the expanded transcript and activity review.
 pub fn thinking_preview(raw: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -215,7 +198,6 @@ fn render_prose_inner(line: &str) -> MdLine {
     let lead = line.len() - trimmed.len();
     let indent = (lead / 2) * 2;
 
-    // Rule.
     let rule: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
     if rule.len() >= 3
         && (rule.chars().all(|c| c == '-')
@@ -228,7 +210,6 @@ fn render_prose_inner(line: &str) -> MdLine {
         };
     }
 
-    // Heading.
     let hashes = trimmed.chars().take_while(|c| *c == '#').count();
     if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(' ') {
         let (text, runs) = inline(trimmed[hashes..].trim());
@@ -245,7 +226,6 @@ fn render_prose_inner(line: &str) -> MdLine {
         };
     }
 
-    // Quote.
     if let Some(rest) = trimmed.strip_prefix('>') {
         let (text, runs) = inline(rest.strip_prefix(' ').unwrap_or(rest));
         let mut shifted: Vec<_> = runs
@@ -262,12 +242,10 @@ fn render_prose_inner(line: &str) -> MdLine {
                 .fg(Color::Gray)
                 .add_modifier(Modifier::ITALIC),
             links: Vec::new(),
-            // The quote bar is decoration; the quoted words stay copyable.
             decor: vec![(0, 2)],
         };
     }
 
-    // Bullet.
     for marker in ["- ", "* ", "+ "] {
         if let Some(rest) = trimmed.strip_prefix(marker) {
             let (text, runs) = inline(rest);
@@ -288,7 +266,6 @@ fn render_prose_inner(line: &str) -> MdLine {
         }
     }
 
-    // Numbered list: keep the number as typed.
     let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
     if (1..=3).contains(&digits) {
         let after = &trimmed[digits..];
@@ -351,7 +328,6 @@ fn format_links(line: &mut MdLine) {
     for link in crate::file_links::markdown_links(&line.text) {
         let start = line.text[..link.syntax.start].chars().count();
         let end = line.text[..link.syntax.end].chars().count();
-        // Inline code remains literal, and unsupported URL schemes remain visible.
         if line
             .runs
             .iter()
@@ -409,7 +385,6 @@ fn format_links(line: &mut MdLine) {
     line.text = text;
 }
 
-/// Inline `code`, **bold** and *italic*. Markers are removed; style runs index the result.
 pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
     let chars: Vec<char> = s.chars().collect();
     let bytes: Vec<usize> = s
@@ -428,7 +403,6 @@ pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
     };
     while i < chars.len() {
         let c = chars[i];
-        // Parse styles in a label, never in the explicit destination itself.
         while links
             .peek()
             .is_some_and(|link| link.syntax.start < bytes[i])
@@ -460,7 +434,6 @@ pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
                 continue;
             }
         }
-        // `code`
         if c == '`' {
             if let Some(end) = find(i + 1, &['`']) {
                 if end > i + 1 {
@@ -474,7 +447,6 @@ pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
                 }
             }
         }
-        // **bold**
         if c == '*' && chars.get(i + 1) == Some(&'*') {
             if let Some(end) = find(i + 2, &['*', '*']) {
                 if end > i + 2 {
@@ -497,7 +469,6 @@ pub fn inline(s: &str) -> (String, Vec<(usize, usize, Style)>) {
                 }
             }
         }
-        // *italic* (not a bullet, not "a * b")
         if c == '*'
             && chars
                 .get(i + 1)
@@ -687,7 +658,6 @@ mod tests {
         let n = &render("12. twelfth")[0];
         assert_eq!(n.text, "12. twelfth");
         assert_eq!(n.hang, 4);
-        // A plain sentence starting with a number is not a list.
         assert_eq!(texts("2024 was a year"), ["2024 was a year"]);
     }
 

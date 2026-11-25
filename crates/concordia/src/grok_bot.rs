@@ -1,8 +1,3 @@
-//! The narrow two-way bridge for cloud-hosted Grok Bot routines.
-//!
-//! Routine metadata is local state; webhook keys and callback tokens are Windows Credential
-//! Manager secrets. The callback listener intentionally has no chat, memory, or provider tools.
-
 use crate::agent_records::{update_agent, AgentRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

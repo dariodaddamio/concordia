@@ -1,4 +1,3 @@
-//! Explicit owner-bound worker review. Opening/closing this view never switches the main run.
 use super::*;
 
 pub(super) struct Review {
@@ -77,7 +76,6 @@ fn choose(app: &mut App, option: usize) {
         app.deleg.input = Some(review);
         return;
     }
-    // Validate live ownership at every step, including before moving between questions.
     if !app.deleg.d.get(review.job).is_some_and(|job| {
         job.native_inputs()
             .iter()

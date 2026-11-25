@@ -1,4 +1,3 @@
-//! An opt-in local transport probe. Fake processes only; not an inference benchmark.
 use concordia::provider::{run_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use std::time::Instant;
@@ -56,7 +55,6 @@ async fn fake_process_transport_latency() {
     };
     let mut direct = Vec::new();
     let mut wrapped = Vec::new();
-    // Alternate measurements so neither path gets every warm-cache advantage.
     for _ in 0..12 {
         let start = Instant::now();
         let mut cmd = tokio::process::Command::new(fake);

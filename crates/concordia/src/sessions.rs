@@ -1,6 +1,3 @@
-//! Resume picker — list Codex / Claude / Cursor sessions from account homes.
-//! Never uses resume --last; callers bind an explicit session id.
-
 use crate::accounts::list_all_accounts;
 use crate::store::ProviderKind;
 use serde_json::Value;
@@ -12,8 +9,6 @@ use std::time::UNIX_EPOCH;
 const MAX_DISCOVERY_ENTRIES: usize = 20_000;
 const MAX_DISCOVERED_FILES: usize = 5_000;
 const MAX_DISCOVERED_ACCOUNTS: usize = 32;
-// Native Codex setup (tools, instructions and environment) can exceed 100 KiB
-// before the first user request. Keep reads bounded without hiding those chats.
 const MAX_SUMMARY_BYTES: u64 = 1024 * 1024;
 const MAX_SUMMARY_LINE_BYTES: usize = 256 * 1024;
 const MAX_SUMMARY_LINES: usize = 200;
@@ -25,7 +20,6 @@ struct Discovery {
     entries_scanned: usize,
 }
 
-/// Reuse one account-home walk across many exact session lookups (doctor / resume).
 #[derive(Default)]
 struct DiscoveryCache {
     by_home: std::collections::HashMap<(ProviderKind, PathBuf), Discovery>,
@@ -84,7 +78,6 @@ fn read_summary_lines(file: File, max_lines: usize, first_line_bytes: usize) -> 
     lines
 }
 
-/// Ignore large setup/attachment fields while extracting only exact session metadata.
 #[derive(serde::Deserialize)]
 struct IdentityRecord {
     #[serde(rename = "type")]
@@ -142,7 +135,6 @@ pub struct SessionSummary {
     pub cwd: Option<String>,
     pub preview: Option<String>,
     pub modified_ms: u128,
-    /// Real provider user turns; metadata, setup and command records do not count.
     pub user_messages: usize,
 }
 
@@ -215,13 +207,11 @@ impl ChatDiagnostic {
     }
 }
 
-/// Diagnose durable task chats without changing provider files or Concordia state.
 pub fn diagnose_task(root: &Path, task: &crate::store::TaskRecord) -> ChatDiagnostic {
     let mut cache = DiscoveryCache::default();
     diagnose_task_cached(root, task, &mut cache)
 }
 
-/// Diagnose many tasks while walking each account home at most once.
 pub fn diagnose_tasks(root: &Path, tasks: &[crate::store::TaskRecord]) -> Vec<ChatDiagnostic> {
     let mut cache = DiscoveryCache::default();
     tasks
@@ -319,8 +309,6 @@ pub fn unopenable_tasks(root: &Path) -> Vec<ChatDiagnostic> {
         .collect()
 }
 
-/// Rows for the durable task view. The latest session is shown inline; the full chain is kept in
-/// the task record and can be inspected without changing provider-native history.
 pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow> {
     tasks
         .iter()
@@ -342,8 +330,6 @@ pub fn tasks_to_picker_rows(tasks: &[crate::store::TaskRecord]) -> Vec<PickerRow
         .collect()
 }
 
-/// Current native sessions without a task ledger entry remain directly selectable.
-/// This view never fabricates durable tasks or rewrites provider-owned files.
 pub fn native_session_picker_rows(sessions: &[SessionSummary]) -> Vec<PickerRow> {
     sessions
         .iter()
@@ -374,7 +360,6 @@ pub fn format_relative_time(modified_ms: u128, now_ms: u128) -> String {
         return format!("{}d ago", (d / 86_400_000).max(1));
     }
     let secs = (modified_ms / 1000) as i64;
-    // YYYY-MM-DD approximation via unix days is fine for old rows
     format!("t{secs}")
 }
 
@@ -492,7 +477,6 @@ fn session_id_from_filename(path: &Path) -> String {
 }
 
 fn extract_uuid(s: &str) -> Option<String> {
-    // 8-4-4-4-12 hex
     for (i, _) in s.char_indices() {
         let Some(slice) = s.get(i..i.saturating_add(36)) else {
             continue;
@@ -565,8 +549,6 @@ fn discover_cursor(home: &Path, file_limit: usize, entry_limit: usize) -> Discov
     let mut found = Vec::new();
     let mut visited = 0;
     let mut truncated = false;
-    // Chats run through Cursor's ACP server live in `acp-sessions/<id>/`, beside the
-    // `chats/<project>/<id>/` folders of print-mode and editor chats, in the same format.
     if let Ok(sessions) = fs::read_dir(home.join("acp-sessions")) {
         for chat in sessions.flatten() {
             visited += 1;
@@ -708,7 +690,6 @@ fn summarize_codex_with_child(
                 }
             }
         }
-        // Home/landing only need 0 / 1 / 2 / 3+; stop once the bucket is known.
         if user_messages >= 3 && preview.is_some() {
             break;
         }
@@ -757,7 +738,6 @@ fn summarize_claude(account: &str, path: &Path, modified_ms: u128) -> Option<Ses
                 }
             }
         }
-        // Home/landing only need 0 / 1 / 2 / 3+; stop once the bucket is known.
         if user_messages >= 3 && preview.is_some() {
             break;
         }
@@ -818,7 +798,6 @@ pub fn decode_claude_project_cwd(session_path: &Path) -> Option<String> {
     if encoded.is_empty() || encoded.contains('.') {
         return None;
     }
-    // C--Users-alex-dev → C:\Users\alex\dev
     let bytes = encoded.as_bytes();
     if bytes.len() >= 4 && bytes[1] == b'-' && bytes[2] == b'-' {
         let drive = encoded.chars().next()?;
@@ -883,8 +862,6 @@ fn summarize_cursor(account: &str, dir: &Path, modified_ms: u128) -> Option<Sess
     })
 }
 
-/// Native transcript locations are discovered from registered account homes, never constructed
-/// from a caller-provided session path. Cursor records currently contain metadata only.
 pub struct NativeRecordScan {
     pub records: Vec<(SessionSummary, PathBuf)>,
     pub truncated: bool,
@@ -1002,8 +979,6 @@ fn scan_native_records(
             ) {
                 record.0.preview = Some(title);
             }
-            // Home's limit counts user chats, not empty artifacts that will be
-            // discarded afterward. Exact source lookup still includes both.
             if !include_child_agents && record.0.user_messages == 0 {
                 continue;
             }
@@ -1013,8 +988,6 @@ fn scan_native_records(
     NativeRecordScan { records, truncated }
 }
 
-/// Native artifacts whose complete bounded content contains no real user turn.
-/// These are report candidates only; provider-owned files are never deleted here.
 pub fn list_empty_native_records(
     state_root: &Path,
     limit: usize,
@@ -1028,8 +1001,6 @@ pub fn list_empty_native_records(
         .collect()
 }
 
-/// Summary absence is not deletion proof. Retain every incomplete, unrecognized or
-/// meaningful record; a bounded prefix must never authorize removal of a whole chat.
 fn definitely_empty_native_record(provider: ProviderKind, path: &Path) -> bool {
     fn complete_json(path: &Path) -> Option<Vec<u8>> {
         let metadata = fs::symlink_metadata(path).ok()?;
@@ -1126,9 +1097,6 @@ fn definitely_empty_native_record(provider: ProviderKind, path: &Path) -> bool {
     })
 }
 
-/// Report empty native artifacts without racing a provider-owned writer.
-/// The historical command spelling is retained; deletion requires provider-owned quiescence
-/// that Concordia cannot establish through the supported source-reading interfaces.
 pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
     let rows = list_empty_native_records(state_root, MAX_SUMMARIZED_RECORDS);
     let mut out = if rows.is_empty() {
@@ -1149,8 +1117,6 @@ pub fn prune_empty_cli(state_root: &Path) -> Result<String, (String, i32)> {
     Ok(out)
 }
 
-/// Find one native session by exact id inside one registered account home. If the bounded scan
-/// cannot prove the result is unique/absent, return an explicit incomplete-scan error.
 pub fn find_native_record(
     state_root: &Path,
     account: &str,
@@ -1224,8 +1190,6 @@ fn find_native_record_cached(
                         .take(MAX_SUMMARY_BYTES)
                         .read_to_end(&mut header)
                         .map_err(|error| error.to_string())?;
-                    // Absence may be an oversized attachment record validated by the capture
-                    // reader; a contradictory explicit identity can never be accepted.
                     identity_matches(account_def.provider, &header, session_id)?;
                 }
                 if let Some(title) = crate::session_titles::get(
@@ -1637,9 +1601,6 @@ mod tests {
         .unwrap();
         assert_eq!(found.0.preview.as_deref(), Some("Saved automatic title"));
         assert_eq!(fs::read_to_string(&path).unwrap(), native);
-        // Native agents can inherit the entire parent's opening history while
-        // living in the same sessions directory. Home must list user threads,
-        // while exact source lookup must still find the child's original file.
         let child = home.join("sessions/rollout-child.jsonl");
         fs::write(&child, concat!(
             "{\"type\":\"session_meta\",\"payload\":{\"id\":\"synthetic-child\",\"thread_source\":\"subagent\",\"source\":{\"subagent\":{}},\"parent_thread_id\":\"synthetic-session\"}}\n",

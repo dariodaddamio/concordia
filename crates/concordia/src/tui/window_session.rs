@@ -1,4 +1,3 @@
-//! Window-owned tab layout and bounded display snapshots. Native sources remain authoritative.
 use super::super::session_ui::HISTORY_OMITTED as OMITTED_NOTICE;
 use super::*;
 use serde::{Deserialize, Serialize};
@@ -167,7 +166,6 @@ fn owner(root: &Path, workspace: &Path) -> io::Result<(Owner, Option<Window>)> {
                 Some(saved),
             ));
         }
-        // Do not silently substitute an older Home window for the newest saved tabs.
         return Err(io::Error::other(
             "saved tab layout is unreadable or unsupported; original preserved",
         ));
@@ -247,9 +245,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                     app.push_system(OMITTED_NOTICE);
                 }
                 if same_conversation {
-                    // The saved transcript usually holds the recovered request as it was sent and
-                    // the notices of earlier restarts; add only lines it does not have yet (the
-                    // checkpoint can be newer than the snapshot).
                     let last_request = app
                         .messages
                         .iter()
@@ -278,7 +273,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                     );
                 }
                 app.view.scroll = saved.scroll;
-                // The request checkpoint can be newer than the periodic window snapshot.
                 if !app.keep.turn_recovery_notice && same_conversation {
                     app.native_sources = saved.sources;
                 }
@@ -354,8 +348,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
                     }
                     duplicate_records.push(saved.recovery);
                     owner.retained.push(original);
-                    // Original layout, checkpoint, draft, queue and display snapshot remain
-                    // untouched. Dropping this temporary App releases its recovery lease.
                 } else if let Err(error) = tab.acquire_chat_ownership() {
                     duplicate_records.push(format!("{} ({error})", saved.recovery));
                     owner.retained.push(original);
@@ -401,8 +393,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
             let mut app = App::new(root.into(), cwd.into());
             app.refresh_binding();
             app.restore_state();
-            // Pre-layout builds saved unfinished source bindings. Restore that exact history,
-            // keeping the request paused, instead of showing an empty Home recovery screen.
             let session = app.native_sources.last().cloned();
             if let Some(source) = session {
                 let registered=get_account(root,&source.account).is_some_and(|account|
@@ -449,7 +439,6 @@ pub(super) fn open(root: &Path, cwd: &Path, native: bool) -> (Option<Owner>, tab
     }
 }
 
-/// A fresh recovery record must not auto-claim a blocked conversation again.
 fn fresh_home(root: &Path, cwd: &Path, native: bool, notice: &str) -> RunTab {
     let mut app = super::new_tab_app(root, cwd, native);
     landing::open_home_tab(&mut app);
@@ -465,7 +454,6 @@ fn fresh_home(root: &Path, cwd: &Path, native: bool, notice: &str) -> RunTab {
     tab
 }
 
-/// Compare owned conversation/native targets, not the focused tab or latest file.
 fn same_target(left: &App, right: &App) -> bool {
     if left.deleg.d.conversation_id() == right.deleg.d.conversation_id() {
         return true;
@@ -526,7 +514,6 @@ fn append_orphan_requests(
             remaining.push(choice);
             continue;
         }
-        // Work from a tab the user closed stays on disk and is not reopened or offered.
         if super::super::recovery::is_dismissed(&recovery_root, &choice) {
             continue;
         }
@@ -660,7 +647,6 @@ impl SavedTab {
             messages.push(SavedLine::capture(message));
         }
         messages.reverse();
-        // Live text has not yet become a message when the window is closed mid-turn.
         if !app.live_text.is_empty() && used.saturating_add(app.live_text.len()) <= budget {
             messages.push(SavedLine {
                 role: "assistant".into(),

@@ -1,10 +1,3 @@
-//! Connect any user harness to the providers Concordia launches.
-//!
-//! A harness is any tool a user wants wired into a provider's isolated home (hooks, rules,
-//! skills). It describes itself with a small manifest of argv commands; Concordia never assumes
-//! a particular harness exists. Commands run without a shell, so placeholders and arguments are
-//! never interpreted as shell syntax.
-
 pub mod adapter;
 pub mod catalog;
 pub mod command;
@@ -26,11 +19,8 @@ const PLACEHOLDERS: [&str; 3] = ["{provider}", "{home}", "{project}"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderCommands {
-    /// Wires the harness into one provider home. Required.
     pub connect: Vec<String>,
-    /// Proves, with a real attempt, that the harness blocks what it claims to block. Optional.
     pub verify: Option<Vec<String>>,
-    /// Environment variable names explicitly allowed through to adapter commands.
     pub env: Vec<String>,
 }
 
@@ -45,7 +35,6 @@ pub struct Tool {
 pub struct Manifest {
     pub name: String,
     pub version: Option<String>,
-    /// Directory the manifest came from; relative programs and the skill resolve against it.
     pub dir: PathBuf,
     pub skill: Option<PathBuf>,
     pub pinned_decisions: Vec<String>,
@@ -53,7 +42,6 @@ pub struct Manifest {
     pub tools: Vec<Tool>,
 }
 
-/// How a command ended. Output beyond the runner's finite budget is an explicit failure.
 #[derive(Debug, Clone, Default)]
 pub struct RunOutcome {
     pub exit: Option<i32>,
@@ -62,7 +50,6 @@ pub struct RunOutcome {
     pub timed_out: bool,
 }
 
-/// What a command's placeholders expand to.
 pub struct Context<'a> {
     pub provider: ProviderKind,
     pub home: Option<&'a Path>,
@@ -130,7 +117,6 @@ fn valid_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Parse and validate a manifest. Errors are short and name the field to fix.
 pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
     let root: Value =
         serde_json::from_str(text).map_err(|e| format!("manifest is not valid JSON: {e}"))?;
@@ -314,8 +300,6 @@ pub fn parse_manifest(text: &str, dir: &Path) -> Result<Manifest, String> {
     })
 }
 
-/// Substitute placeholders. A command that needs `{home}` for an account with no isolated home
-/// is refused instead of guessing a directory.
 pub fn expand(argv: &[String], ctx: &Context<'_>) -> Result<Vec<String>, String> {
     argv.iter()
         .map(|arg| {
@@ -350,7 +334,6 @@ pub fn expand(argv: &[String], ctx: &Context<'_>) -> Result<Vec<String>, String>
         .collect()
 }
 
-/// A program with a path separator is relative to the manifest; a bare name is looked up on PATH.
 pub fn resolve_program(program: &str, dir: &Path) -> PathBuf {
     let path = Path::new(program);
     if path.is_absolute() || !(program.contains('/') || program.contains('\\')) {

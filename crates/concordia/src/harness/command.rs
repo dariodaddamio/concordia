@@ -1,6 +1,3 @@
-//! The `/harness` command: connect, verify, status, disconnect and skill, as plain functions
-//! that return the lines to show. Running processes is injected, so every path is testable.
-
 use super::connections::{self, Entry, Identity};
 use super::verify::{self, Verdict};
 use super::{expand, parse_manifest, resolve_program, Context, Manifest, RunOutcome};
@@ -9,11 +6,9 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Embedded so the skill installs from the installed executable, with no source checkout.
 const SKILL: &str = include_str!("../../../../skills/concordia-harness-connect/SKILL.md");
 const SKILL_NAME: &str = "concordia-harness-connect";
 const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
-/// Marks a connection whose manifest comes from a program, not a file.
 const COMMAND_PREFIX: &str = "command:";
 
 type Run<'a> = &'a dyn Fn(&[String]) -> RunOutcome;
@@ -22,13 +17,11 @@ fn run_adapter(run: Run<'_>, env: &[String], argv: &[String]) -> RunOutcome {
     super::run::with_extra_env(env, || run(argv))
 }
 
-/// Where the command runs: the current pane's account and project.
 pub struct Session<'a> {
     pub store: &'a Path,
     pub cwd: &'a Path,
     pub provider: ProviderKind,
     pub home: Option<&'a Path>,
-    /// Every registered account, for `--all`.
     pub accounts: Vec<(ProviderKind, Option<PathBuf>)>,
 }
 
@@ -82,9 +75,6 @@ pub fn help_lines() -> Vec<String> {
     .collect()
 }
 
-/// Explain setup choices before any command can mutate receipts, links or provider homes.
-/// Discovery is deliberately shallow and bounded: a guided command is an entry point, not a
-/// filesystem indexer.
 pub fn guided_lines(session: &Session<'_>, subcommand: &str) -> Vec<String> {
     let mut lines = match subcommand {
         "connect" => vec![
@@ -187,7 +177,6 @@ fn detected_skills(session: &Session<'_>, lines: &mut Vec<String>) {
     }
 }
 
-/// Split on spaces, keeping a "quoted path" together.
 fn split_args(arg: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -231,8 +220,6 @@ fn load_manifest(target: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, Strin
             manifest,
         });
     }
-    // Habena has a Concordia-owned adapter contract. Other programs retain the generic
-    // external `concordia-manifest` integration.
     if super::adapter::is_harness_program(target) {
         let (manifest, text) = super::adapter::build(target, cwd, run)?;
         return Ok(Loaded {
@@ -241,7 +228,6 @@ fn load_manifest(target: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, Strin
             manifest,
         });
     }
-    // A bare program name: ask the program for its manifest.
     let outcome = run(&[target.to_string(), "concordia-manifest".to_string()]);
     if outcome.timed_out || outcome.exit != Some(0) {
         return Err(format!(
@@ -289,7 +275,6 @@ fn entry_for(ctx: &Context<'_>, connect_ok: bool, note: String) -> Entry {
     }
 }
 
-/// Run the manifest's connect command for one provider and home, and record the result.
 pub fn connect_in(
     store: &Path,
     manifest: &Manifest,
@@ -362,7 +347,6 @@ pub fn connect_in(
     entry
 }
 
-/// Run the manifest's verify command; a receipt is written only for a real, matching denial.
 pub fn verify_in(
     store: &Path,
     manifest: &Manifest,
@@ -427,8 +411,6 @@ pub fn verify_in(
     verdict
 }
 
-/// Reviewed reconnect: the saved binding and manifest revision must still be the one shown to
-/// the user immediately before the adapter is called.
 pub fn reconnect_reviewed(
     store: &Path,
     target: &connections::ActionTarget,
@@ -461,7 +443,6 @@ pub fn reconnect_reviewed(
     ))
 }
 
-/// Reviewed verification with the same revision/binding guard as reconnect.
 pub fn verify_reviewed(
     store: &Path,
     target: &connections::ActionTarget,
@@ -779,9 +760,6 @@ pub(super) fn reload(stored: &str, cwd: &Path, run: Run<'_>) -> Result<Loaded, S
     }
 }
 
-/// Load a reviewed manifest without executing a connect/verify action. F10 uses this after the
-/// user confirms a target; command-backed manifests are refreshed through their declared
-/// read-only manifest query.
 pub fn load_manifest_for_action(
     stored: &str,
     cwd: &Path,
@@ -791,9 +769,6 @@ pub fn load_manifest_for_action(
     Ok((loaded.manifest, loaded.sha))
 }
 
-/// Read an explicitly selected local manifest for F10. This deliberately rejects bare programs
-/// and command-backed manifests: entering a path is discovery only, and adapter execution waits
-/// for the separate reviewed connect confirmation.
 pub fn load_local_manifest_for_action(
     selection: &str,
     cwd: &Path,
@@ -848,8 +823,6 @@ pub fn load_local_manifest_for_action(
     ))
 }
 
-/// Reviewed first connection for F10. Unlike reconnect, this target is not yet in the receipt
-/// store; the manifest revision is checked immediately before the declared connect argv runs.
 pub fn connect_new_reviewed(
     store: &Path,
     target: &connections::ActionTarget,
@@ -889,7 +862,6 @@ pub fn connect_new_reviewed(
     ))
 }
 
-/// Delete every receipt that `name` wrote. Receipts from other harnesses are left alone.
 fn withdraw_receipts(store: &Path, name: &str) -> usize {
     let Ok(projects) = fs::read_dir(store.join("enforcement")) else {
         return 0;
@@ -965,8 +937,6 @@ pub fn disconnect_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
     }
 }
 
-/// Commit a reviewed disconnect after rechecking the immutable catalog target.
-/// The caller supplies confirmation separately; this function performs no implicit prompt.
 pub fn disconnect_reviewed(
     store: &Path,
     target: &connections::ActionTarget,
@@ -983,7 +953,6 @@ pub fn disconnect_reviewed(
     }
 }
 
-/// Install the connect skill as one folder under the account's home. No other file is touched.
 fn skill_cmd(session: &Session<'_>, args: &[String]) -> Vec<String> {
     targets(session, !args.iter().any(|arg| arg == "--current"))
         .into_iter()
@@ -1115,7 +1084,6 @@ pub fn tools_cmd(session: &Session<'_>, args: &[String], run: Run<'_>) -> Vec<St
     out
 }
 
-/// Handle `/harness <arg>` and return the lines to show.
 pub fn dispatch(session: &Session<'_>, arg: &str, run: Run<'_>) -> Vec<String> {
     dispatch_cancellable(
         session,
@@ -1750,7 +1718,6 @@ mod tests {
             "verify mine claude --current",
             &|_: &[String]| proof.clone(),
         );
-        // A receipt written by some other harness for another provider must survive.
         let root = enforcement::project_root(w.project.path()).unwrap();
         let slot = enforcement::slot(w.store.path(), &root);
         fs::write(

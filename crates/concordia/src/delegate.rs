@@ -1,13 +1,3 @@
-//! Delegation ("Firstmate"): one account is the orchestrator; configured accounts can run as
-//! workers, each doing one background turn that the user started and can stop.
-//!
-//! Safety model (see docs/delegation.md): user-initiated, bounded context, no recursion (worker
-//! output is never parsed for further delegation), a fresh native session per delegate, no
-//! credential movement (each worker runs the unmodified CLI in its own home), and tools and
-//! approvals are never transferred. Worker output is untrusted data and is never executed.
-//!
-//! This module has no UI: `tui/workers.rs` renders it and wires the commands.
-
 use crate::accounts::{display_account_name, get_account, normalize_account_id, AccountDef};
 use crate::context::{plan_continuity_capped, ContinuityRequest, PackMessage};
 use crate::provider::stream_cards::{format_card_line, upsert_card, CardStatus, StreamCard};
@@ -21,9 +11,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-// Compatibility seam for lanes whose provider crate predates the typed terminal outcome.
-// The integrated provider supplies an inherent method with the same name, which takes
-// precedence; this fallback intentionally exposes only success/cancel/unknown.
 trait TerminalOutcomeLabel {
     fn terminal_outcome_label(&self) -> &'static str;
 }
@@ -55,33 +42,18 @@ pub mod schedule;
 #[path = "delegate_workspaces.rs"]
 mod workspaces;
 
-/// Bound one result-collection prompt independently of the configured worker count.
 pub const MAX_COLLECT_RESULTS: usize = 3;
-/// Jobs waiting behind a busy worker (per worker).
 pub const MAX_QUEUED_PER_WORKER: usize = 2;
-/// Orchestrator messages offered to a worker as context.
 pub const PACK_MESSAGES: usize = 6;
-/// Character budget of that context (the pack header is extra).
 pub const PACK_CHARS: usize = 3000;
-/// A worker result is cut to this many characters when sent to the orchestrator.
 pub const RESULT_SEND_CHARS: usize = 6000;
-/// Result characters echoed into the transcript (the viewer shows all of it).
 pub const RESULT_SHOW_CHARS: usize = 2500;
 pub const TASK_MAX_CHARS: usize = 2000;
-/// Finished jobs kept for `/delegate use` and the viewer.
 pub const KEEP_FINISHED: usize = 8;
-/// Protocol proposals waiting for the user's yes or no.
 pub const MAX_PENDING_CONFIRMS: usize = 3;
 
 pub use crate::text_safe::fence_untrusted;
 
-// ---------------------------------------------------------------------------------------------
-// Roles (persisted in store settings)
-// ---------------------------------------------------------------------------------------------
-
-/// The trust mode a worker runs with: the requested child mode, capped at the user's mode.
-/// `Inherit` selects the user's mode, and the explicit security ordering ensures a worker can
-/// never receive more capability than the person who started it.
 pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
     let want = match child {
         ChildTrust::Inherit => user,
@@ -96,14 +68,6 @@ pub fn worker_trust(user: TrustMode, child: ChildTrust) -> TrustMode {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Context for a worker
-// ---------------------------------------------------------------------------------------------
-
-/// Bounded context for a worker: the last few orchestrator messages through the continuity
-/// planner (no session id is ever passed, so the worker always starts a fresh native session and
-/// nothing of the orchestrator's tools or approvals is transferred). Returns the prompt prefix
-/// and a short description for the transcript.
 pub fn build_worker_context(
     orch_provider: ProviderKind,
     orch_home: Option<&str>,
@@ -140,10 +104,6 @@ pub fn build_worker_context(
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Jobs
-// ---------------------------------------------------------------------------------------------
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkerState {
     Queued,
@@ -166,7 +126,6 @@ impl WorkerState {
         )
     }
 
-    /// Holds the worker (a process exists or is about to).
     pub fn is_running(self) -> bool {
         matches!(
             self,
@@ -193,11 +152,9 @@ impl WorkerState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Origin {
     User,
-    /// Proposed by an orchestrator reply and approved by the user.
     Protocol,
 }
 
-/// Everything needed to run the turn, captured when the user delegates.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSpec {
     #[serde(default)]
@@ -213,7 +170,6 @@ pub struct JobSpec {
     pub trust: TrustMode,
 }
 
-/// Exact native task projections. No conversation text is serialized here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskReferences {
@@ -234,7 +190,6 @@ enum TaskProjection {
 pub struct Job {
     input: input::State,
     pub run_id: String,
-    /// Exact MCP record associated with this worker, when launched from a proposal.
     pub mcp_agent_id: Option<String>,
     pub conversation_id: String,
     pub source_id: Option<String>,
@@ -249,7 +204,6 @@ pub struct Job {
     attempts: Vec<String>,
     attempt_records: Vec<Attempt>,
     pub model: Option<String>,
-    /// A result is only collected once unless explicitly selected again with /delegate use.
     pub collected: bool,
     pub id: u32,
     pub account: String,
@@ -260,7 +214,6 @@ pub struct Job {
     pub created: Instant,
     pub started: Option<Instant>,
     pub finished: Option<Instant>,
-    /// Latest tool / thinking / text line, shown in the strip.
     pub snippet: String,
     pub cards: Vec<StreamCard>,
     pub text: String,
@@ -271,7 +224,6 @@ pub struct Job {
     pub trust: TrustMode,
     cancel: Option<Arc<RunningTurn>>,
     cancel_requested: bool,
-    /// The finished job has been reported by `poll` (result block posted).
     announced: bool,
     spec: JobSpec,
 }
@@ -396,8 +348,6 @@ pub struct Submit {
     pub spec: JobSpec,
 }
 
-/// Keep event backpressure bounded without preventing cancellation of a provider
-/// whose startup/progress event has not yet reached the UI.
 async fn forward_worker_event(
     tx: &mpsc::Sender<Event>,
     event: Event,
@@ -479,7 +429,6 @@ impl Delegates {
         self.conversation_id = conversation.into();
         Ok(())
     }
-    /// Explicit owner identity for metadata proposals; never inferred from focused UI state.
     pub fn conversation_id(&self) -> &str {
         &self.conversation_id
     }
@@ -501,7 +450,6 @@ impl Delegates {
         self.jobs.iter_mut().find(|j| j.id == id)
     }
 
-    /// The job currently holding this worker, if any.
     pub fn running_for(&self, account: &str) -> Option<&Job> {
         self.jobs
             .iter()
@@ -528,12 +476,10 @@ impl Delegates {
             .find(|j| j.account == account && j.state.is_finished())
     }
 
-    /// Queue or start a job. Refuses when the worker already has a full queue.
     pub fn submit(&mut self, s: Submit, now: Instant) -> Result<u32, String> {
         self.submit_after(s, now, &[])
     }
 
-    /// Explicit submission authorizes this task with these exact prerequisite runs.
     pub fn submit_after(&mut self, s: Submit, now: Instant, after: &[u32]) -> Result<u32, String> {
         self.submit_scoped(s, now, after, &[])
     }
@@ -559,7 +505,6 @@ impl Delegates {
         self.submit_workspace_bound(s, now, after, declarations, managed, None)
     }
 
-    /// MCP requests are bound and persisted before launch can schedule provider work.
     pub(crate) fn submit_mcp(
         &mut self,
         s: Submit,
@@ -736,7 +681,6 @@ impl Delegates {
         Ok(id)
     }
 
-    /// Spawn the turn for a queued job (needs a tokio runtime).
     fn launch(&mut self, id: u32, now: Instant) {
         if self
             .get(id)
@@ -836,7 +780,6 @@ impl Delegates {
             self.persist_recovery();
             return;
         }
-        // Recheck registrations/models after asynchronous source verification.
         if let Err(error) = self.dependency_sources(id) {
             self.pause_dependency_job(id, error, now);
             return;
@@ -1017,7 +960,6 @@ impl Delegates {
                 home_path: spec.home.as_deref(),
                 model: spec.model.as_deref(),
                 effort: spec.effort.as_deref(),
-                // Always a fresh native session: never `resume --last`, never a foreign id.
                 native_session_id: None,
                 trust: spec.trust,
                 context_prefix: Some(&standing_prefix),
@@ -1100,9 +1042,6 @@ impl Delegates {
                     }
                     Some(h) = hs_rx.recv() => {
                         running = Some(h.clone());
-                        // A workspace is "invoked" only after the provider transport
-                        // hands us its owned child handle. Preparation and planning
-                        // failures must remain safely releasable.
                         scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
                         forward_worker_event(&tx, Event::Started(id, h), &preparation_cancel, running.as_deref()).await;
                     }
@@ -1148,8 +1087,6 @@ impl Delegates {
                         crate::native_memory::Binding::new(provider, &account, &home, &session)?;
                     let page = crate::native_memory::index_bound(&root, &binding)?;
                     let reference = if reference_storage && completed {
-                        // Worker ProviderTurnRequest above explicitly requests a new native session.
-                        // This exact returned session is therefore eligible for a fresh scope.
                         crate::native_memory::references::fresh_scope(&root, &binding)
                             .and_then(|scope| {
                                 let projection = composer_projection
@@ -1183,10 +1120,7 @@ impl Delegates {
         });
     }
 
-    /// Apply pending events; returns the ids of jobs that finished since the last call.
     pub fn poll(&mut self, now: Instant) -> Vec<u32> {
-        // MCP cancellation is an intent written by the public server.  Only this owner loop
-        // touches the live process, so a stale client cannot kill an unrelated worker.
         if let Some(root) = self.recovery.as_ref().map(|r| r.state_root.clone()) {
             let controls: Vec<(u32, String)> = self
                 .jobs
@@ -1272,10 +1206,6 @@ impl Delegates {
                         self.recovery.as_ref().map(|r| r.state_root.clone()),
                         self.get(id).and_then(|job| job.mcp_agent_id.clone()),
                     ) {
-                        // A cancellation intent is an owner-loop fact even when the provider
-                        // process is torn down before it can return a typed terminal outcome.
-                        // Preserve that authoritative lifecycle result instead of publishing an
-                        // unknown/failed projection for a deliberately cancelled child.
                         let reason = if cancelled {
                             "cancelled"
                         } else {
@@ -1358,7 +1288,6 @@ impl Delegates {
         for job in &mut self.jobs {
             job.refresh_native_input();
         }
-        // Start the next queued job of every worker that just became free.
         let ready: Vec<u32> = self
             .jobs
             .iter()
@@ -1418,7 +1347,6 @@ impl Delegates {
         });
     }
 
-    /// Cancel one job: a queued one is dropped, a running one has its whole process tree killed.
     pub fn cancel(&mut self, id: u32, now: Instant) -> bool {
         let Some(j) = self.get_mut(id) else {
             return false;
@@ -1446,7 +1374,6 @@ impl Delegates {
         cancelled
     }
 
-    /// Cancel everything of one worker (running and queued). Returns how many jobs were hit.
     pub fn cancel_account(&mut self, account: &str, now: Instant) -> usize {
         let ids: Vec<u32> = self
             .jobs
@@ -1469,7 +1396,6 @@ impl Delegates {
         }
     }
 
-    /// Rows for the strip: active jobs (oldest first), then recently finished (newest first).
     pub fn visible(&self, now: Instant, recent: Duration) -> Vec<&Job> {
         let mut active: Vec<&Job> = self
             .jobs
@@ -1513,7 +1439,6 @@ impl Delegates {
     pub fn test_native_input(&mut self, id: u32, request: crate::provider::turn::NativeRequest) {
         self.accept_native_input(id, Box::new(request));
     }
-    /// A job already in `state`, started `secs` ago, without running anything.
     pub fn push_test_job(
         &mut self,
         account: &str,
@@ -1716,8 +1641,6 @@ fn apply_outcome(j: &mut Job, out: TurnOutcome, now: Instant) {
     if j.session_id.is_none() {
         j.session_id = out.session_id.clone();
     }
-    // The final provider snapshot is authoritative for every card, including
-    // cards that streamed earlier and cards first observed only at completion.
     for c in out.cards.iter().cloned() {
         upsert_card(&mut j.cards, c);
     }
@@ -1759,10 +1682,6 @@ fn apply_outcome(j: &mut Job, out: TurnOutcome, now: Instant) {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Text the transcript shows
-// ---------------------------------------------------------------------------------------------
-
 pub fn fmt_elapsed(d: Duration) -> String {
     let s = d.as_secs();
     if s >= 3600 {
@@ -1774,7 +1693,6 @@ pub fn fmt_elapsed(d: Duration) -> String {
     }
 }
 
-/// The labelled block posted to the orchestrator transcript when a worker finishes.
 pub fn result_block(j: &Job, orchestrator_label: &str) -> String {
     let secs = fmt_elapsed(j.elapsed(j.finished.unwrap_or_else(Instant::now)));
     let head = format!(
@@ -1828,8 +1746,6 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The prompt that hands a worker result to the orchestrator. Only ever built from an explicit
-/// user action (`/delegate use`).
 pub fn use_prompt(j: &Job) -> String {
     use_prompt_capped(j, RESULT_SEND_CHARS)
 }
@@ -1854,10 +1770,6 @@ pub fn use_prompt_capped(j: &Job, max: usize) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------------------------
-// Optional approval-gated protocol
-// ---------------------------------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DelegateBlock {
     pub to: String,
@@ -1866,8 +1778,6 @@ pub struct DelegateBlock {
 
 pub const PROTOCOL_FENCE: &str = "concordia-delegate";
 
-/// Fenced ```concordia-delegate blocks in an orchestrator reply (at most MAX_PENDING_CONFIRMS;
-/// malformed ones are ignored). Only ever fed the orchestrator's own reply, never a worker's.
 pub fn extract_delegate_blocks(reply: &str) -> Vec<DelegateBlock> {
     let mut out = Vec::new();
     let mut body: Option<String> = None;
@@ -1903,8 +1813,6 @@ fn parse_block(json: &str) -> Option<DelegateBlock> {
     block_from(v.get("to")?.as_str()?, v.get("task")?.as_str()?)
 }
 
-/// A normalised proposal from a worker id and a task (the fenced block and the MCP `delegate`
-/// proposal files share this). None when either is empty.
 pub fn block_from(to: &str, task: &str) -> Option<DelegateBlock> {
     let (to, task) = (to.trim(), task.trim());
     if to.is_empty() || task.is_empty() {
@@ -1916,7 +1824,6 @@ pub fn block_from(to: &str, task: &str) -> Option<DelegateBlock> {
     })
 }
 
-/// Ready-to-paste text that teaches an orchestrator the block format (`/delegate help`).
 pub fn protocol_snippet() -> String {
     [
         "When a self-contained subtask is better done by a worker, end your reply with one block:",

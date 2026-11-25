@@ -1,7 +1,3 @@
-//! The icon set for tabs and tool cards. Every glyph is one cell wide and is drawn by Consolas
-//! or the Segoe UI Symbol fallback in the native window; the shortcuts screen and the docs list
-//! the same set from here.
-
 use crate::provider::stream_cards::ToolKind;
 use crate::store::ProviderKind;
 use ratatui::style::Color;
@@ -26,7 +22,6 @@ pub(super) fn provider_name(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// What a tab shows next to its provider glyph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TabStatus {
     Idle,
@@ -46,7 +41,6 @@ impl TabStatus {
         TabStatus::Failed,
     ];
 
-    /// `tick` advances the running animation; every other status is still.
     pub(super) fn icon(self, tick: u64) -> &'static str {
         match self {
             Self::Idle => " ",
@@ -78,7 +72,6 @@ impl TabStatus {
     }
 }
 
-/// Rows of (glyph, meaning) for the shortcuts screen and docs.
 pub(super) fn legend() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     vec![
         (
@@ -124,7 +117,6 @@ pub(super) fn legend() -> Vec<(&'static str, Vec<(String, &'static str)>)> {
     ]
 }
 
-/// Every glyph in the set, for width and font coverage checks.
 #[cfg(test)]
 pub(super) fn all_glyphs() -> Vec<String> {
     legend()

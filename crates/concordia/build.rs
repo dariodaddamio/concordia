@@ -1,5 +1,3 @@
-//! Embed the same Concordia mark used by the owned window in the Windows executable.
-//! The resource compiler ships with the Windows SDK; no build crate is required.
 use std::{
     env,
     ffi::OsString,
@@ -55,8 +53,6 @@ fn resource_compiler() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// The commit this binary was built from, plus the UTC build time when the tree had
-/// uncommitted changes, so two builds of the same hand-written stamp can be told apart.
 fn build_revision(manifest: &Path) -> String {
     let git = |args: &[&str]| {
         Command::new("git")
@@ -94,7 +90,6 @@ fn main() {
         "cargo:rustc-env=CONCORDIA_BUILD_REV={}",
         build_revision(&manifest_dir)
     );
-    // Source edits and commits both change the revision.
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/index");
@@ -173,7 +168,7 @@ fn main() {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        command.creation_flags(0x08000000);
     }
     let status = command
         .current_dir(manifest.join("assets"))

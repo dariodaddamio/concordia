@@ -1,7 +1,3 @@
-//! Prompt queue, undo keys, and draft/history persistence through the real key handlers,
-//! rendered with `TestBackend`. Turns are simulated: a prompt that would start a provider turn
-//! lands on `rx`, and `finish` plays the fake provider's reply into `on_turn_done`.
-
 use super::*;
 use crate::provider::turn::TurnOutcome;
 use ratatui::backend::TestBackend;
@@ -33,7 +29,6 @@ impl H {
         hn
     }
 
-    /// A new process over the same state directory.
     fn relaunch(&mut self) {
         let (w, h) = (
             self.term.size().unwrap().width,
@@ -70,19 +65,16 @@ impl H {
         }
     }
 
-    /// Type and press Enter.
     fn send(&mut self, s: &str) {
         self.type_str(s);
         self.press(KeyCode::Enter);
     }
 
-    /// Type and press Tab.
     fn queue(&mut self, s: &str) {
         self.type_str(s);
         self.press(KeyCode::Tab);
     }
 
-    /// Prompts handed to the provider so far.
     fn sent(&mut self) -> Vec<String> {
         let mut v = Vec::new();
         while let Ok(p) = self.rx.try_recv() {
@@ -155,18 +147,14 @@ fn queue_json(root: &Path) -> Option<String> {
     (!data.queue.is_empty()).then(|| serde_json::to_string(&data.queue).unwrap())
 }
 
-// ---- Tab ---------------------------------------------------------------------------------
-
 #[test]
 fn tab_queues_only_while_busy_or_when_the_queue_is_not_empty() {
     let mut h = H::new(80, 24);
-    // idle, empty queue: Tab still completes slash commands and never queues
     h.type_str("/up");
     h.press(KeyCode::Tab);
     assert_eq!(h.app.editor.text(), "/update");
     assert!(h.app.queue.items.is_empty());
     h.app.editor.clear();
-    // idle, plain text, empty queue: nothing to queue behind
     h.queue("hello");
     assert!(h.app.queue.items.is_empty());
     assert_eq!(h.app.editor.text(), "hello");
@@ -178,19 +166,15 @@ fn tab_queues_only_while_busy_or_when_the_queue_is_not_empty() {
     h.queue("second");
     assert_eq!(h.items(), vec!["second"]);
     assert_eq!(h.app.editor.text(), "", "the prompt box is free again");
-    // a slash prompt is never queued: Tab completes it
     h.type_str("/up");
     h.press(KeyCode::Tab);
     assert_eq!(h.items(), vec!["second"]);
     assert_eq!(h.app.editor.text(), "/update");
     h.app.editor.clear();
-    // with a non-empty queue, Tab queues even when idle
     h.app.busy = false;
     h.queue("third");
     assert_eq!(h.items(), vec!["second", "third"]);
 }
-
-// ---- layout ------------------------------------------------------------------------------
 
 #[test]
 fn panel_sits_directly_above_the_prompt_at_every_width() {
@@ -212,7 +196,6 @@ fn panel_sits_directly_above_the_prompt_at_every_width() {
             "w={w}: {:?}",
             scr[r1 + 2]
         );
-        // the prompt box top border follows the panel immediately
         assert!(scr[r1 + 3].contains('\u{256d}'), "w={w}: {:?}", scr[r1 + 3]);
         assert!(scr.iter().all(|l| l.chars().count() <= w as usize));
     }
@@ -245,8 +228,6 @@ fn a_tiny_terminal_never_panics_and_keeps_the_prompt() {
     assert!(h.row_with("Starting").is_some());
 }
 
-// ---- panel keys --------------------------------------------------------------------------
-
 fn three_queued() -> H {
     let mut h = H::new(100, 24);
     h.send("go");
@@ -264,7 +245,7 @@ fn up_with_an_empty_draft_focuses_the_panel_and_arrows_select() {
     assert_eq!(h.app.queue.sel, 2);
     h.press(KeyCode::Up);
     h.press(KeyCode::Up);
-    h.press(KeyCode::Up); // clamps at the first row
+    h.press(KeyCode::Up);
     assert_eq!(h.app.queue.sel, 0);
     h.press(KeyCode::Down);
     assert_eq!(h.app.queue.sel, 1);
@@ -296,7 +277,6 @@ fn up_walks_history_when_the_queue_is_empty_or_the_draft_is_not() {
     h.press(KeyCode::Up);
     assert_eq!(h.app.editor.text(), "earlier");
     assert!(!h.app.queue.focused);
-    // a non-empty draft never focuses the panel
     let mut h = three_queued();
     h.type_str("typing");
     h.press(KeyCode::Up);
@@ -306,12 +286,12 @@ fn up_walks_history_when_the_queue_is_empty_or_the_draft_is_not() {
 #[test]
 fn alt_arrows_reorder_and_delete_removes() {
     let mut h = three_queued();
-    h.press(KeyCode::Up); // selects "three"
+    h.press(KeyCode::Up);
     h.key(KeyCode::Up, KeyModifiers::ALT);
     assert_eq!(h.items(), vec!["one", "three", "two"]);
     assert_eq!(h.app.queue.sel, 1);
     h.key(KeyCode::Up, KeyModifiers::ALT);
-    h.key(KeyCode::Up, KeyModifiers::ALT); // already first: stays
+    h.key(KeyCode::Up, KeyModifiers::ALT);
     assert_eq!(h.items(), vec!["three", "one", "two"]);
     assert_eq!(h.app.queue.sel, 0);
     h.key(KeyCode::Down, KeyModifiers::ALT);
@@ -319,7 +299,6 @@ fn alt_arrows_reorder_and_delete_removes() {
     h.press(KeyCode::Delete);
     assert_eq!(h.items(), vec!["one", "two"]);
     assert!(h.app.queue.focused);
-    // the file follows every change
     let json = queue_json(h.root()).unwrap();
     assert!(json.contains("one") && json.contains("two") && !json.contains("three"));
     h.press(KeyCode::Delete);
@@ -336,21 +315,20 @@ fn alt_arrows_reorder_and_delete_removes() {
 fn enter_edits_in_place_enter_saves_esc_cancels() {
     let mut h = three_queued();
     h.press(KeyCode::Up);
-    h.press(KeyCode::Up); // "two"
+    h.press(KeyCode::Up);
     h.press(KeyCode::Enter);
     assert!(h.app.queue.edit.is_some());
     assert!(h.row_with("edit 2: two").is_some());
     h.type_str("!!");
-    h.press(KeyCode::Esc); // cancel
+    h.press(KeyCode::Esc);
     assert_eq!(h.items(), vec!["one", "two", "three"]);
     assert!(h.app.queue.focused && h.app.queue.edit.is_none());
     h.press(KeyCode::Enter);
     h.key(KeyCode::Backspace, KeyModifiers::CONTROL);
     h.type_str("deux");
-    h.press(KeyCode::Enter); // save
+    h.press(KeyCode::Enter);
     assert_eq!(h.items(), vec!["one", "deux", "three"]);
     assert!(queue_json(h.root()).unwrap().contains("deux"));
-    // emptying an item and saving removes it
     h.press(KeyCode::Enter);
     h.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
     h.press(KeyCode::Backspace);
@@ -362,7 +340,6 @@ fn enter_edits_in_place_enter_saves_esc_cancels() {
 fn editing_a_queued_prompt_never_touches_the_draft() {
     let mut h = three_queued();
     h.type_str("half a thought");
-    // a click on a row focuses the panel without disturbing the draft
     let row = h.row_with("queued 2: two").unwrap() as u16;
     h.mouse_down(3, row);
     assert!(h.app.queue.focused);
@@ -372,7 +349,6 @@ fn editing_a_queued_prompt_never_touches_the_draft() {
     h.press(KeyCode::Enter);
     assert_eq!(h.items(), vec!["one", "two and more", "three"]);
     assert_eq!(h.app.editor.text(), "half a thought");
-    // typing leaves the panel and goes to the draft
     h.type_str("!");
     assert!(!h.app.queue.focused);
     assert_eq!(h.app.editor.text(), "half a thought!");
@@ -415,11 +391,9 @@ fn clicking_a_row_selects_it_and_clicking_elsewhere_leaves() {
     let r1 = h.row_with("queued 1: one").unwrap() as u16;
     h.mouse_down(5, r1);
     assert_eq!(h.app.queue.sel, 0);
-    h.mouse_down(5, 2); // transcript area
+    h.mouse_down(5, 2);
     assert!(!h.app.queue.focused);
 }
-
-// ---- sending, pausing --------------------------------------------------------------------
 
 #[test]
 fn queued_prompts_are_sent_in_order_as_each_turn_finishes() {
@@ -570,9 +544,9 @@ fn sending_a_prompt_while_paused_keeps_the_queue_paused() {
         cancelled: true,
         ..Default::default()
     });
-    h.app.editor.set_text("one"); // Retrying is explicit; cancellation leaves the draft empty.
+    h.app.editor.set_text("one");
     h.sent();
-    h.press(KeyCode::Enter); // Enter sends the explicitly entered retry.
+    h.press(KeyCode::Enter);
     assert_eq!(h.sent(), vec!["one"]);
     h.finish_ok();
     assert!(h.sent().is_empty());
@@ -635,8 +609,6 @@ fn the_busy_footer_offers_tab_queue() {
     assert!(h.row_with("Tab queue").is_none());
 }
 
-// ---- persistence -------------------------------------------------------------------------
-
 #[test]
 fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     let mut h = H::new(100, 24);
@@ -647,7 +619,6 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     h.relaunch();
     assert_eq!(h.items(), vec!["two", "three\nlines"]);
     assert!(h.app.queue.paused);
-    // The in-flight request was recovered too, so its notice covers the draft and queue.
     assert!(h
         .app
         .messages
@@ -658,8 +629,6 @@ fn queue_round_trips_through_a_restart_paused_with_a_notice() {
     h.app.queue_advance(&h.tx);
     assert_eq!(h.sent(), vec!["two"]);
 }
-
-// ---- undo / redo keys --------------------------------------------------------------------
 
 #[test]
 fn ctrl_z_undoes_and_every_redo_chord_redoes() {
@@ -697,29 +666,26 @@ fn ctrl_z_right_after_a_send_brings_the_sent_text_back() {
 fn undo_does_not_leave_a_slash_palette_stuck() {
     let mut h = H::new(80, 24);
     h.type_str("/up");
-    h.press(KeyCode::Esc); // dismiss
+    h.press(KeyCode::Esc);
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
     h.type_str("/up");
     assert!(h.row_with("/update").is_some());
 }
 
-// ---- draft and history persistence -------------------------------------------------------
-
 #[test]
 fn the_draft_is_written_about_a_second_after_the_last_edit() {
     let mut h = H::new(80, 24);
     h.type_str("unsent thought");
-    h.tick(1); // sees the change
+    h.tick(1);
     h.tick(3);
     assert!(saved_draft(h.root()).is_none(), "debounced");
-    h.type_str("!"); // another edit restarts the wait
+    h.type_str("!");
     h.tick(1);
     h.tick(4);
     assert!(saved_draft(h.root()).is_none());
     h.tick(1);
     assert_eq!(saved_draft(h.root()).as_deref(), Some("unsent thought!"));
-    // emptying the box deletes the file
     h.app.editor.clear();
     h.tick(1);
     h.tick(5);
@@ -748,7 +714,6 @@ fn the_draft_is_restored_with_a_notice_and_ctrl_z_clears_it() {
         .contains("Your unsent draft and queued messages were restored.")));
     h.key(KeyCode::Char('z'), KeyModifiers::CONTROL);
     assert_eq!(h.app.editor.text(), "");
-    // restoring did not make it look edited: no rewrite until the user changes something
     h.relaunch();
     assert_eq!(h.app.editor.text(), "left over\nsecond line");
     h.tick(10);
@@ -875,7 +840,6 @@ fn history_persistence_can_be_turned_off() {
         vec!["private"],
         "in-memory history still works"
     );
-    // and a file left from an earlier run is not loaded
     std::fs::write(
         h.root().join("config.toml"),
         "[ui]\npersist_history = false\n",

@@ -1,9 +1,3 @@
-//! Concordia-owned MCP registry and per-launch projections.
-//!
-//! The registry is state owned by Concordia. Provider homes are never written. Secret-bearing
-//! values are references, not values. Provider projections use a server-bound proxy that
-//! resolves credentials only for the intended MCP process or request.
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -261,7 +255,6 @@ pub fn codex_overrides(state_root: &Path, project: &Path) -> Vec<String> {
     out
 }
 
-/// Launch only a server-bound proxy; credential values never enter the provider configuration.
 pub fn claude_config(state_root: &Path, project: &Path) -> Option<String> {
     let command = std::env::current_exe().ok()?;
     let servers = projected_servers(state_root, project)
@@ -372,8 +365,6 @@ pub struct ImportEntry {
     pub transport: Transport,
 }
 
-/// Read provider configuration without changing it. The returned entries contain only transport
-/// shape and secret references. Literal secret values are rejected instead of copied.
 pub fn import_provider_file(
     path: &Path,
     provider: &str,

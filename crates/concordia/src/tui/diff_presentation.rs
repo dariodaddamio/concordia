@@ -1,4 +1,3 @@
-//! Display metadata derived solely from the retained unified diff, never current file bytes.
 use ratatui::style::{Color, Modifier, Style};
 use std::path::PathBuf;
 
@@ -54,7 +53,6 @@ struct HighlightBudget {
     passes: usize,
 }
 
-/// Positions come from numeric hunk headers. A bare @@ retains unknown positions as dots.
 pub(super) fn present(lines: &[&str]) -> Vec<Presentation> {
     let mut result = lines
         .iter()

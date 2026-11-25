@@ -1,10 +1,3 @@
-//! Delegation in the TUI: the worker strip above the prompt (one row per active or recent worker),
-//! the transcript viewer overlay, the protocol confirm prompt, and the `/workers` and `/delegate`
-//! commands. The logic (roles, jobs, cancellation, results) lives in `crate::delegate`.
-//!
-//! Hooks in `tui/mod.rs` are deliberately tiny: a `Panel` field, `carve`/`draw` in `draw_ui`,
-//! `handle_key`/`handle_mouse` at the top of the input handlers, and `poll_delegates`.
-
 use super::text::char_width;
 use super::{contains, provider_color, App, Phase};
 use crate::accounts::{get_account, is_logged_in, normalize_account_id};
@@ -24,22 +17,17 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-/// Rows the strip may use, "+N more" included.
 const MAX_STRIP_ROWS: usize = 4;
-/// A finished worker stays in the strip this long (its result stays available regardless).
 const RECENT: Duration = Duration::from_secs(90);
 
 #[derive(Default)]
 pub(super) struct Panel {
     pub d: Delegates,
-    /// The focused worker row (Alt+Up/Down or a click). Esc cancels it; Enter opens it.
     pub selected: Option<u32>,
     viewer: Option<Viewer>,
     pub(super) input: Option<super::worker_input::Review>,
     confirms: VecDeque<Confirm>,
-    /// Screen rows from the last draw, for clicks.
     rects: Vec<(Rect, u32)>,
-    /// A prompt for the orchestrator produced by `/delegate use`, sent by `flush_delegate_prompt`.
     outbox: Option<(String, Vec<u32>)>,
     generation: u64,
     owners: std::collections::BTreeMap<u32, u64>,
@@ -74,7 +62,6 @@ struct RecoveryRead {
 struct Viewer {
     job: u32,
     scroll: usize,
-    /// Largest useful scroll, learned at draw time.
     max_scroll: usize,
 }
 
@@ -108,8 +95,6 @@ impl Panel {
 struct Confirm {
     to: String,
     task: String,
-    /// When it became the front prompt. A bare y/n only answers after `ARM_AFTER`, so type-ahead
-    /// that happens to start with y or n can never approve or decline by accident.
     since: Instant,
     goal: Option<()>,
     goal_armed: std::cell::Cell<bool>,
@@ -117,7 +102,6 @@ struct Confirm {
     goal_draft_revision: std::cell::Cell<u64>,
 }
 
-/// Ticks (about 200 ms each) between looks at `<state>/proposals`: about 2 s.
 const PROPOSAL_POLL_TICKS: u64 = 10;
 
 const ARM_AFTER: Duration = Duration::from_millis(1500);
@@ -132,8 +116,6 @@ fn phase_of(state: WorkerState) -> Option<Phase> {
     }
 }
 
-/// Spinner (width-1 glyph) and colour for a state. Live states reuse the main wait's per-phase
-/// animation and colour; the rest are static marks.
 fn icon_of(state: WorkerState, tick: u64) -> (&'static str, Color) {
     if let Some(p) = phase_of(state) {
         return (p.frame(tick), p.color());
@@ -173,13 +155,10 @@ fn one_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Rows the strip takes for `n` visible workers: none when empty, at most four with "+N more".
 pub(super) fn strip_rows(n: usize) -> usize {
     n.min(MAX_STRIP_ROWS)
 }
 
-/// Reserve the strip at the bottom of the transcript area; returns its rectangle (empty when no
-/// worker is shown). Also drops a focus on a worker that is no longer listed.
 pub(super) fn carve(transcript: &mut Rect, app: &mut App) -> Rect {
     let now = Instant::now();
     let ids: Vec<u32> = app
@@ -267,7 +246,6 @@ fn row_line(
     Line::from(spans).style(base)
 }
 
-/// Draw the strip into `strip` and the overlays (viewer, confirm) over `over`.
 pub(super) fn draw(f: &mut Frame, strip: Rect, over: Rect, app: &mut App) {
     app.deleg.rects.clear();
     let now = Instant::now();
@@ -447,7 +425,6 @@ pub(super) fn wrap_plain(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// What the viewer shows for a worker: header facts, tool cards, then the untrusted output.
 pub(super) fn viewer_text(j: &Job) -> String {
     let identity = format!(
         "run: {} · conversation: {}\nsource: {}\n",
@@ -554,7 +531,6 @@ fn draw_viewer(f: &mut Frame, over: Rect, app: &mut App, now: Instant) {
     f.render_widget(Paragraph::new(lines).block(block), over);
 }
 
-/// Keys the worker UI owns. Returns true when the key was consumed.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -601,7 +577,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         }
         return true;
     }
-    // Only chat focus may answer; read-only file typing must never approve or reject work.
     let armed = app.deleg.confirms.front().is_some_and(|c| {
         if c.goal.is_some() {
             c.goal_armed.get()
@@ -694,8 +669,6 @@ pub(super) fn handle_mouse(app: &mut App, m: &MouseEvent) -> bool {
 }
 
 impl App {
-    /// Start one worker in an explicitly created managed worktree. The worker owner generates
-    /// the run/attempt identities and persists the workspace reservation before launch.
     pub(super) fn delegate_managed_command(&mut self, argument: &str) {
         let mut parts = argument.splitn(3, char::is_whitespace);
         let Some(workspace) = parts.next().filter(|value| !value.is_empty()) else {
@@ -917,7 +890,6 @@ impl App {
             .deleg
             .selected
             .and_then(|s| ids.iter().position(|i| *i == s));
-        // Past either end the focus is released, so there is always a way back to the prompt.
         let next = match cur {
             None if delta > 0 => Some(0),
             None => Some(ids.len() - 1),
@@ -929,7 +901,6 @@ impl App {
         self.deleg.selected = next.map(|i| ids[i]);
     }
 
-    /// Apply worker events and post the result of each worker that finished.
     pub(super) fn poll_delegates(&mut self) -> bool {
         let mut changed = self.deleg.d.any_active();
         changed |= self.poll_dependency_delivery();
@@ -1052,7 +1023,6 @@ impl App {
         self.deleg.d.cancel_all(Instant::now());
     }
 
-    /// Send the prompt `/delegate use` prepared (a user action) to the orchestrator.
     pub(super) fn flush_delegate_prompt(&mut self, turn_tx: &mpsc::UnboundedSender<String>) {
         if self.update_running()
             || self.busy
@@ -1074,7 +1044,6 @@ impl App {
         }
         let draft = self.composer_value();
         self.cancel_requested = false;
-        // Normal dispatch owns checkpoints, context, timing, quota recovery and images.
         self.run_line(p.clone(), turn_tx);
         self.restore_composer(&draft);
         if self.busy {
@@ -1087,8 +1056,6 @@ impl App {
         }
     }
 
-    /// Queue protocol proposals found in an orchestrator reply. Off unless the user opted in.
-    /// Only ever called with the orchestrator's own reply, never with a worker's output.
     pub(super) fn scan_delegation(&mut self, reply: &str) {
         if !crate::store::delegation_protocol_on(&self.state_root) || reply.is_empty() {
             return;
@@ -1096,8 +1063,6 @@ impl App {
         self.queue_proposals(extract_delegate_blocks(reply));
     }
 
-    /// One bounded proposal queue. Worker proposals require delegation mode; goal proposals
-    /// always require complete local review and explicit F7 focus before any goal mutation.
     pub(super) fn poll_proposals(&mut self) -> bool {
         if self.picker.is_some()
             || self.workspace.focused.is_some()
@@ -1471,7 +1436,6 @@ impl App {
         ))
     }
 
-    /// Handle `/workers` and `/delegate`. Returns false for every other command.
     fn delegate_stop(&mut self, acct: Option<&str>) {
         let now = Instant::now();
         let n = match acct {
@@ -1504,7 +1468,6 @@ impl App {
         });
     }
 
-    /// User action: hand a finished result to the orchestrator as (labelled, bounded) context.
     fn delegate_use(&mut self, acct: Option<&str>) {
         if self.update_running() {
             self.push_system("Worker results cannot be sent while Concordia updates. Try again after it restarts.");
@@ -1572,7 +1535,6 @@ impl App {
         format!("{account} model {model} is available for this request; worker model selection is not persisted")
     }
 
-    /// One main-agent turn for up to three newly completed results, preserving the composer.
     fn delegate_collect(&mut self) {
         if self.busy || self.update_running() || self.session_ui.loading() {
             self.push_system("wait for the current operation, then select Return in Ctrl+G");
@@ -1613,8 +1575,6 @@ impl App {
     }
 }
 
-/// Parse the compact local crew spelling `ACCOUNT:MODEL`. Account-only entries use the provider
-/// default model. The account id is deliberately opaque; only the final separator is meaningful.
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     app.deleg.viewer.is_none() && app.deleg.rects.iter().any(|(r, _)| contains(*r, x, y))
 }

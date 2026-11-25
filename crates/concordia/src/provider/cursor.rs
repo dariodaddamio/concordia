@@ -9,7 +9,6 @@ pub struct CursorTurnRequest<'a> {
     pub cwd: &'a Path,
     pub home_path: Option<&'a Path>,
     pub model: Option<&'a str>,
-    /// Cursor encodes effort in provider-owned model variant IDs; retained for contract parity.
     pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
@@ -45,7 +44,6 @@ pub fn plan_cursor_turn_with(
         "--print".into(),
         "--output-format".into(),
         "stream-json".into(),
-        // Reply text arrives as it is written instead of in one piece at the end.
         "--stream-partial-output".into(),
     ];
     if let Some(model) = req.model.map(str::trim).filter(|m| !m.is_empty()) {
@@ -56,11 +54,7 @@ pub fn plan_cursor_turn_with(
         TrustMode::Full => {
             argv.push("--force".into());
         }
-        TrustMode::Edit => {
-            // Cursor agent 2026.10.22 trust table: Plan=`--mode plan`, Ask=default,
-            // Workspace=default workspace sandbox, Full=`--force`. Its help only offers
-            // `--sandbox enabled|disabled`; Workspace must never use `disabled`.
-        }
+        TrustMode::Edit => {}
         TrustMode::Plan => {
             argv.push("--mode".into());
             argv.push("plan".into());
@@ -92,8 +86,6 @@ pub fn plan_cursor_turn_with(
     })
 }
 
-/// Authentication surfaces supported by the current native CLI. Custom OAuth homes
-/// cannot be selected with an undocumented environment variable.
 pub(crate) struct AccountAuth {
     pub env: Vec<(String, String)>,
     pub env_remove: Vec<String>,
@@ -127,7 +119,6 @@ pub(crate) fn account_auth(home: Option<&Path>) -> Result<AccountAuth> {
     })
 }
 
-/// First UUID-shaped token in `text` (a chat id), lower-cased.
 pub fn extract_uuid(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let shape = [8usize, 4, 4, 4, 12];
@@ -151,7 +142,6 @@ pub fn extract_uuid(text: &str) -> Option<String> {
             }
             pos += len;
         }
-        // Not the middle of a longer hex run.
         let bounded = (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
             && (i + total == bytes.len() || !bytes[i + total].is_ascii_alphanumeric());
         if ok && bounded {
@@ -162,8 +152,6 @@ pub fn extract_uuid(text: &str) -> Option<String> {
     None
 }
 
-/// Ask the Cursor CLI for a fresh chat id (`agent create-chat`) so the conversation can be resumed
-/// explicitly. Missing commands, timeouts or invalid output fail before a turn is dispatched.
 pub async fn create_chat(
     command: &str,
     env: &[(String, String)],

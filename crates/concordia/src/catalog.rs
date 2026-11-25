@@ -1,5 +1,3 @@
-//! Model catalogs from on-disk caches only — never invent model lists.
-
 use crate::store::ProviderKind;
 use serde_json::Value;
 use std::fs;
@@ -28,14 +26,11 @@ fn read_local_cache(home: &Path, relative: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// One model as the provider's own local metadata describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeModel {
     pub id: String,
     pub display_name: String,
-    /// Reasoning efforts the provider lists for this model, in its order.
     pub efforts: Vec<String>,
-    /// The effort the provider uses when none is chosen, when it says.
     pub default_effort: Option<String>,
 }
 
@@ -57,15 +52,12 @@ pub fn list_models(provider: ProviderKind, home: &Path) -> Vec<String> {
         .collect()
 }
 
-/// Read provider-owned model ids and their safe display names.  This deliberately selects only
-/// model fields from the Codex cache; in particular, identity metadata is never inspected.
 pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<NativeModel> {
     match provider {
         ProviderKind::Codex => list_codex_models(home),
         ProviderKind::Claude => Vec::new(),
         ProviderKind::Cursor => list_cursor_models(home),
         ProviderKind::Grok => list_grok_models(home),
-        // Configuration selects an ACP model but is not an account model list.
         ProviderKind::Opencode => {
             let _ = home;
             Vec::new()
@@ -74,16 +66,10 @@ pub fn list_model_details(provider: ProviderKind, home: &Path) -> Vec<NativeMode
 }
 
 fn list_grok_models(home: &Path) -> Vec<NativeModel> {
-    // A configured default is not a provider model catalog. Grok's current ACP
-    // integration does not expose a read-only account model-list operation, so
-    // there is no safe local fallback to display here.
     let _ = home;
     Vec::new()
 }
 
-/// Codex writes `models_cache.json` from its model endpoint for the signed-in account: `visibility:
-/// list` entries are the models this account can pick, each with `supported_reasoning_levels`
-/// (`[{effort, description}]`) and `default_reasoning_level`.
 fn list_codex_models(home: &Path) -> Vec<NativeModel> {
     let Some(raw) = read_local_cache(home, "models_cache.json") else {
         return Vec::new();
@@ -112,7 +98,6 @@ fn list_codex_models(home: &Path) -> Vec<NativeModel> {
         return Vec::new();
     }
     let Ok(models) = serde_json::from_value::<Vec<CodexModel>>(Value::Array(models)) else {
-        // Only the current provider schema is supported; unknown metadata is unavailable.
         return Vec::new();
     };
     let mut seen = std::collections::HashSet::new();

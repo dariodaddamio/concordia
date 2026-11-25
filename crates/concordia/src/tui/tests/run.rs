@@ -21,14 +21,12 @@ fn a_running_update_does_not_freeze_the_ui_and_shows_progress() {
         s.contains("updating") && s.contains("Compiling concordia") && s.contains("Esc cancels"),
         "{s}"
     );
-    // Typing, scrolling and slash commands keep working while it runs.
     h.type_str("draft text");
     assert_eq!(h.app.editor.text(), "draft text");
     h.app.editor.clear();
     h.type_str("/version");
     h.enter();
     assert!(h.transcript_text().contains("concordia 0.0.1"));
-    // Esc cancels it, and the user is told.
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.wait_for(|h| h.app.job.is_none()));
     assert!(
@@ -201,7 +199,6 @@ fn the_update_screen_wraps_bullets_under_their_text() {
         screen.contains(" · The command list has 12 commands"),
         "{screen}"
     );
-    // The wrapped half of the bullet starts under the bullet's text, not under the dot.
     let wrapped = screen
         .lines()
         .find(|l| l.contains("removed commands") || l.contains("replacement."))
@@ -219,7 +216,6 @@ fn enter_installs_only_when_the_screen_offers_an_update() {
     assert!(h.app.job.is_none() && !h.app.busy);
     assert_eq!(h.app.editor.text(), "keep my draft");
 
-    // A busy chat blocks installation and keeps the explanation on screen.
     let mut h = Harness::new(80, 30);
     update_screen(&mut h, update_preview(true, 0));
     h.app.busy = true;
@@ -614,7 +610,6 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     let mut h = Harness::new(100, 36);
     h.app.push_user("why".into());
     h.app.busy = true;
-    // Long enough that the collapsed preview hides text, so the accordion has work to do.
     let long = "x".repeat(600);
     h.app.apply_progress(TurnProgress::Thinking(format!(
         "first   idea\n\n\nsecond idea {long}"
@@ -715,8 +710,6 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     assert!(h.screen().contains("Thinking - Expand"));
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
-    // Ctrl+O expands the last collapsed item of the latest reply (the late edit card),
-    // not an earlier thinking block (F01).
     assert!(
         !h.app.activity.is_expanded(thought_index, false),
         "Ctrl+O must not reopen earlier thinking when a later card is collapsed"
@@ -749,7 +742,6 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     h.app.push_user("hi".into());
     h.app.busy = true;
     let cap = "You hit your spend cap set by the owner of your workspace.";
-    // The `error` event, then `turn.failed`, both stream in as the same message.
     h.app.apply_progress(TurnProgress::Error(cap.into()));
     h.app.apply_progress(TurnProgress::Error(cap.into()));
     h.app.finalize_turn(TurnOutcome {

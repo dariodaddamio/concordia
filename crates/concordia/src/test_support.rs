@@ -1,5 +1,3 @@
-//! Helpers shared by unit tests.
-
 use std::fs;
 use std::path::Path;
 
@@ -17,7 +15,6 @@ fn b64url(bytes: &[u8]) -> String {
     out
 }
 
-/// A Codex home signed in as `email` (the id_token carries the address, as the real CLI's does).
 pub fn codex_login(home: &Path, email: &str) {
     fs::create_dir_all(home).unwrap();
     let payload = b64url(format!(r#"{{"email":"{email}"}}"#).as_bytes());

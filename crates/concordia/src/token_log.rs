@@ -1,7 +1,3 @@
-//! Per-attempt token usage, so totals and breakdowns cost no provider
-//! call. Providers count differently: Codex's input includes the cached part, Claude's and
-//! Cursor's do not. Entries store the same three parts for every provider.
-
 use crate::provider::stream_cards::TurnUsage;
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
@@ -28,18 +24,13 @@ pub fn attempt_outcome(exit: Option<i32>, cancelled: bool, failed: bool) -> (&'s
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
-    /// Seconds since the epoch when the turn finished.
     pub at: u64,
     pub provider: String,
     pub account: String,
     pub model: Option<String>,
-    /// The folder the turn ran in.
     pub project: String,
-    /// The provider's session id, when it reported one.
     pub chat: Option<String>,
-    /// Input the provider had to read fresh.
     pub new_input: u64,
-    /// Input served from the provider's prompt cache (re-read context).
     pub cached_input: u64,
     pub output: u64,
     pub cost_usd: Option<f64>,
@@ -55,7 +46,6 @@ impl Entry {
     }
 }
 
-/// The three parts of a turn's tokens, the same way for every provider.
 pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
     let input = usage.input.unwrap_or(0);
     let cached = usage.cached.unwrap_or(0);
@@ -69,7 +59,6 @@ pub fn split(provider: ProviderKind, usage: &TurnUsage) -> (u64, u64, u64) {
     (new_input, cached, usage.output.unwrap_or(0))
 }
 
-/// Record one attributed turn.
 pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
     if entry.attribution.is_none() {
         return Err(std::io::Error::other(
@@ -79,7 +68,6 @@ pub fn record(state_root: &Path, entry: &Entry) -> std::io::Result<()> {
     events::record_once(state_root, entry)
 }
 
-/// Compatibility convenience for the first bounded page. Use `load_page` for coverage/cursors.
 pub fn load(state_root: &Path) -> Vec<Entry> {
     load_page(state_root, None)
         .map(|report| report.entries)
@@ -92,7 +80,6 @@ pub struct Totals {
     pub new_input: u64,
     pub cached_input: u64,
     pub output: u64,
-    /// Summed only over turns that reported a cost.
     pub cost_usd: Option<f64>,
     pub reported_cost_events: u64,
     pub incomplete_events: u64,
@@ -134,7 +121,6 @@ pub fn totals<'a>(entries: impl IntoIterator<Item = &'a Entry>) -> Totals {
     t
 }
 
-/// Totals per key, largest first.
 pub fn breakdown<'a>(
     entries: impl IntoIterator<Item = &'a Entry>,
     key: impl Fn(&Entry) -> String,

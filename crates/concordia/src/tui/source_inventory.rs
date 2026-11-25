@@ -1,9 +1,3 @@
-//! Bounded, evidence-labelled inventory for provider-owned skills and hooks.
-//!
-//! This module deliberately separates local configuration evidence from provider exposure.
-//! Reading a source is never treated as enabling it, and no provider trust or registration is
-//! changed here.
-
 use super::{App, PickerKind, PickerRow, ProviderKind};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -27,7 +21,6 @@ fn source_row(path: &Path, scope: &str, name: &str, evidence: &str) -> PickerRow
     )
 }
 
-/// Compact age, so the state text still fits at the default window width.
 fn age(path: &Path) -> String {
     let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified()) else {
         return "age ?".into();
@@ -44,7 +37,6 @@ fn age(path: &Path) -> String {
     }
 }
 
-/// The five states in a fixed order. `?` means no evidence either way.
 fn states(enabled: &str, exposed: &str, proven: &str, age: &str) -> String {
     format!(
         "configured · discovered · enabled {enabled} · exposed {exposed} · proven {proven} · {age}"
@@ -79,7 +71,6 @@ fn skill_rows(dir: &Path, scope: &str, rows: &mut Vec<PickerRow>, visited: &mut 
     }
 }
 
-/// One hook from a Codex `hooks/list` answer.
 struct NativeHook {
     event: String,
     source_path: String,
@@ -88,7 +79,6 @@ struct NativeHook {
     trust: String,
 }
 
-/// Answer of the read-only Codex query: `Err` when it could not be asked or answered.
 type Native = Result<Vec<NativeHook>, String>;
 
 fn norm_path(path: &str) -> String {
@@ -133,7 +123,6 @@ fn hook_row(path: &Path, scope: &str, native: Option<&Native>, rows: &mut Vec<Pi
     let age = age(path);
     let want = norm_path(&path.display().to_string());
     let line = |event: &str| match native {
-        // The native answer decides exposure and enablement for a matching hook.
         Some(Ok(list)) => {
             let hit = list
                 .iter()
@@ -159,7 +148,6 @@ fn hook_row(path: &Path, scope: &str, native: Option<&Native>, rows: &mut Vec<Pi
     }
 }
 
-/// Stops and reaps the app-server child on every path out of `codex_hooks`.
 struct Reaped(std::process::Child);
 
 impl Drop for Reaped {
@@ -169,8 +157,6 @@ impl Drop for Reaped {
     }
 }
 
-/// Ask a read-only Codex app-server which hooks it would run for `project`.
-/// Nothing is trusted, enabled or written; the child dies when this returns.
 fn codex_hooks(home: Option<&Path>, project: &Path) -> Native {
     let home = home.ok_or("selected Codex account home unavailable")?;
     let bin = crate::provider::codex::find_codex_bin()?;
@@ -257,7 +243,6 @@ fn codex_hooks(home: Option<&Path>, project: &Path) -> Native {
         .collect())
 }
 
-/// Rows for the native answer: one per hook with its enabled and trust state, or `none`.
 fn native_rows(native: &Native, rows: &mut Vec<PickerRow>) {
     match native {
         Err(why) => rows.push(row(

@@ -1,4 +1,3 @@
-//! Cooperative scheduler reservations. These are never a native filesystem sandbox.
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
@@ -195,10 +194,8 @@ pub(crate) fn same_key(left: &str, right: &str) -> bool {
         let right: Vec<u16> = right.encode_utf16().collect();
         let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len()))
         else {
-            return true; // Unknown comparison must not admit potentially overlapping writes.
+            return true;
         };
-        // Both buffers remain alive for this call. Windows uses its ordinal uppercase table,
-        // including for absent leaf names; Rust's Unicode lowercase is not path equivalence.
         matches!(
             unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) },
             0 | 2
@@ -827,7 +824,6 @@ pub fn finish(root: &Path, run: &str, attempt: &str, confirmed_exit: bool) -> Re
     })
 }
 
-/// Explicit user reconciliation permits admission again; it does not prove process ownership for retirement.
 pub fn acknowledge_stopped(root: &Path, run: &str, conversation: &str) -> Result<(), String> {
     mutate(root, |registry| {
         let reservation = registry
@@ -1024,12 +1020,6 @@ impl WorkspaceGuard<'_> {
         self.save()
     }
 
-    /// Reacquire the single released worker reservation of a managed lifecycle action.
-    /// It never creates a reservation and never rewrites a stored identity: the stored run,
-    /// conversation, attempt and request must equal the caller's exact origin record and the
-    /// reservation must be `Released`, so no live owner is displaced. Anything else is refused
-    /// before Git starts. Fresh lifecycle runs never reuse a known run id, so a released run id
-    /// cannot be reused for a different request.
     pub(crate) fn reacquire_released(&mut self, origin: &Reservation) -> Result<(), String> {
         for request in &self.requests {
             request.revalidate()?;
