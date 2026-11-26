@@ -1,5 +1,11 @@
 # Changelog
 
+### Fixed (2026-11-25e, local source)
+
+- Question cards start with the prompt and show a shortened session ID alongside it. The full ID appears below.
+- Header dropdowns clear the full width of the rows they cover.
+- Quiet-turn options open beside the notice while it is visible.
+
 ### Fixed (2026-11-25d, local source)
 
 - The footer permissions menu opens above its chip and keeps the draft visible on the left.

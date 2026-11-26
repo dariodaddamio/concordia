@@ -1,5 +1,5 @@
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const BUILD_STAMP: &str = "2026-11-25d";
+pub const BUILD_STAMP: &str = "2026-11-25e";
 pub const BUILD_REV: &str = env!("CONCORDIA_BUILD_REV");
 
 pub fn version_line() -> String {

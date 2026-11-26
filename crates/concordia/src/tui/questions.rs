@@ -1227,7 +1227,7 @@ impl Doc {
 impl State {
     fn doc(&self, inner: usize) -> Option<Doc> {
         let q = self.questions.get(self.current)?;
-        let title = if self.questions.len() > 1 {
+        let mut title = if self.questions.len() > 1 {
             format!(
                 "{} of {} · {}",
                 self.current + 1,
@@ -1237,22 +1237,28 @@ impl State {
         } else {
             q.prompt.clone()
         };
-        let title = if let Some(origin) = &self.origin {
-            format!(
-                "{} / {} · session {} · {}{}",
+        if let Some(origin) = &self.origin {
+            let session = origin.session.as_deref().unwrap_or("unreported");
+            let shortened = origin
+                .session
+                .as_ref()
+                .and_then(|id| id.char_indices().nth(8));
+            let summary = shortened.map_or_else(
+                || session.to_owned(),
+                |(end, _)| format!("{}…", &session[..end]),
+            );
+            title.push_str(&format!(
+                " · {} / {} · session {summary}",
                 origin.provider.as_str(),
                 origin.account,
-                origin.session.as_deref().unwrap_or("unreported"),
-                title,
-                if self.pending.is_empty() {
-                    String::new()
-                } else {
-                    format!(" · {} more waiting", self.pending.len())
-                }
-            )
-        } else {
-            title
-        };
+            ));
+            if !self.pending.is_empty() {
+                title.push_str(&format!(" · {} more waiting", self.pending.len()));
+            }
+            if shortened.is_some() {
+                title.push_str(&format!("\nFull session ID: {session}"));
+            }
+        }
         let multiple = self.allows_multiple();
         let mut rows = Vec::new();
         for (index, choice) in q.options.iter().enumerate() {
@@ -2310,14 +2316,25 @@ mod tests {
                 .unwrap();
             app.native_owner = Some(owner);
             app.questions.offer_native(request, true);
-            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            let mut first_content_row = 0;
             terminal
                 .draw(|frame| {
                     let mut transcript = frame.area();
                     let area = carve(&mut transcript, &mut app);
+                    first_content_row = area.y;
                     draw(frame, area, &mut app);
                 })
                 .unwrap();
+            let buffer = terminal.backend().buffer();
+            let first_row: String = (0..80)
+                .map(|x| buffer[(x, first_content_row)].symbol())
+                .collect();
+            assert!(
+                first_row.trim_start().starts_with("Choose the route"),
+                "{first_row}"
+            );
+            assert!(first_row.contains("session syntheti…"), "{first_row}");
             let screen: String = terminal
                 .backend()
                 .buffer()
@@ -2325,6 +2342,10 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect();
+            assert!(
+                screen.contains("Full session ID: synthetic-session"),
+                "{screen}"
+            );
             assert!(
                 screen.contains("Direct"),
                 "{provider:?} popup omitted first choice"

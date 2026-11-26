@@ -18,6 +18,7 @@ pub(super) fn draw_ui(f: &mut Frame, app: &mut App) {
     app.areas.header_dropdown = None;
     app.areas.trust_anchor = None;
     app.areas.run_cancel = Rect::default();
+    app.areas.idle_notice = None;
     app.areas.pinned_card = None;
     app.areas.modal_close = None;
     let (screen, rename_cursor) = draw_tab_strip(f, app);
@@ -1691,10 +1692,21 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
         }
     }
     for (row, index) in app.view.visible().enumerate() {
-        let role = app.view.rows[index]
+        let message = app.view.rows[index]
             .identity
-            .and_then(|i| app.messages.get(i))
-            .map(|m| m.role);
+            .and_then(|i| app.messages.get(i));
+        let y = inner.y + row as u16;
+        if app.idle_notice.is_some()
+            && message
+                .and_then(|m| m.meta.as_ref())
+                .is_some_and(|(_, label)| label == "__concordia_idle_notice__")
+        {
+            app.areas
+                .idle_notice
+                .get_or_insert(Rect::new(inner.x, y, inner.width, 0))
+                .height += 1;
+        }
+        let role = message.map(|m| m.role);
         if !app.no_color && matches!(role, Some(MsgRole::User | MsgRole::System)) {
             let bg = if role == Some(MsgRole::System) {
                 Color::Indexed(237)
@@ -1702,7 +1714,7 @@ fn draw_transcript(f: &mut Frame, area: Rect, app: &mut App) {
                 Color::Indexed(235)
             };
             f.buffer_mut().set_style(
-                Rect::new(inner.x, inner.y + row as u16, inner.width, 1),
+                Rect::new(inner.x, y, inner.width, 1),
                 Style::default().bg(bg),
             );
         }
@@ -2510,6 +2522,21 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         popup.height = height.min(screen.bottom().saturating_sub(popup.y));
         app.areas.header_dropdown = Some(popup);
     }
+    if let Some(notice) = app
+        .areas
+        .idle_notice
+        .filter(|_| picker.kind == PickerKind::Idle)
+    {
+        let below = area.bottom().saturating_sub(notice.bottom());
+        let above = notice.y.saturating_sub(area.y);
+        if below >= popup.height || below >= above {
+            popup.y = notice.bottom();
+            popup.height = popup.height.min(below);
+        } else {
+            popup.height = popup.height.min(above);
+            popup.y = notice.y.saturating_sub(popup.height);
+        }
+    }
     let settings_anchor = app
         .areas
         .trust_anchor
@@ -2538,17 +2565,16 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         popup.y = bottom.saturating_sub(popup.height);
         app.areas.permissions_popup = popup;
     }
-    if dropdown.is_some() {
-        let backdrop = app.areas.transcript;
-        let width = app
-            .areas
-            .permissions
-            .right()
-            .max(backdrop.right())
-            .saturating_sub(backdrop.x);
-        f.render_widget(Clear, Rect::new(backdrop.x, popup.y, width, popup.height));
-    } else if picker.kind != PickerKind::Trust {
-        f.render_widget(Clear, Rect::new(area.x, popup.y, area.width, popup.height));
+    if picker.kind != PickerKind::Trust {
+        let backdrop = if dropdown.is_some() && app.settings_view.is_some() {
+            screen
+        } else {
+            area
+        };
+        f.render_widget(
+            Clear,
+            Rect::new(backdrop.x, popup.y, backdrop.width, popup.height),
+        );
     }
     f.render_widget(Clear, popup);
     if let Some(rows) = permission_lines {

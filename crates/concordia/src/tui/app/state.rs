@@ -25,6 +25,7 @@ pub(in crate::tui) struct Areas {
     pub(in crate::tui) bottom_button: Rect,
     pub(in crate::tui) footer: Rect,
     pub(in crate::tui) run_cancel: Rect,
+    pub(in crate::tui) idle_notice: Option<Rect>,
     pub(in crate::tui) permissions: Rect,
     pub(in crate::tui) permissions_popup: Rect,
     pub(in crate::tui) trust_anchor: Option<Rect>,

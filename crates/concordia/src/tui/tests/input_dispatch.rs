@@ -698,6 +698,39 @@ fn idle_notice_key_and_click_open_options_and_cancel_cancels() {
 }
 
 #[test]
+fn idle_options_open_next_to_the_visible_notice() {
+    for above in [false, true] {
+        let mut h = Harness::new(120, 36);
+        if above {
+            for index in 0..40 {
+                h.app.push_system(format!("Earlier output {index}"));
+            }
+        }
+        h.app.busy = true;
+        h.app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Claude,
+            minutes: 1,
+            silent_for: Duration::from_secs(60),
+        });
+        h.draw();
+        if above {
+            let (x, y) = find_cell(h.term.backend().buffer(), "No output from");
+            h.click(x, y);
+        } else {
+            h.key(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        }
+        let buffer = h.term.backend().buffer();
+        let (_, notice_y) = find_cell(buffer, "No output from");
+        let (menu_x, menu_y) = find_cell(buffer, "turn is quiet");
+        if above {
+            assert_eq!(buffer[(menu_x - 2, notice_y - 1)].symbol(), "└");
+        } else {
+            assert_eq!(menu_y, notice_y + 1);
+        }
+    }
+}
+
+#[test]
 fn idle_notice_removes_only_itself() {
     let mut h = Harness::new(100, 24);
     h.app.push_system("system before");

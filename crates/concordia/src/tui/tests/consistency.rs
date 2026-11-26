@@ -13,6 +13,7 @@ fn header_dropdowns_start_on_the_current_choice() {
         let mut h = Harness::new(width, 30);
         h.app.model = "gpt-5.6-luna".into();
         h.app.effort = Some("medium".into());
+        h.app.usage_summary = "5h 77% left · 7d 39% left".into();
         h.draw();
         let header = h.screen();
         assert!(header.lines().next().unwrap().contains("GPT-5.6 Luna"));
@@ -23,10 +24,20 @@ fn header_dropdowns_start_on_the_current_choice() {
             (h.app.areas.header_effort, "effort:medium"),
         ] {
             let chip = chip.unwrap();
+            let background = h.term.backend().buffer()[(0, chip.bottom())].bg;
+            assert!(h.screen().lines().nth(1).unwrap().contains("5h 77% left"));
             h.click(chip.x, chip.y);
             let picker = h.app.picker.as_ref().unwrap();
             assert_eq!(picker.filtered()[picker.state.selected().unwrap()].id, id);
-            assert_eq!(h.app.areas.header_dropdown.unwrap().y, chip.bottom());
+            let dropdown = h.app.areas.header_dropdown.unwrap();
+            assert_eq!(dropdown.y, chip.bottom());
+            assert!(dropdown.x > 0);
+            let buffer = h.term.backend().buffer();
+            for y in dropdown.y..dropdown.bottom() {
+                for x in 0..dropdown.x {
+                    assert_ne!(buffer[(x, y)].bg, background, "{id} at ({x}, {y})");
+                }
+            }
             if picker.kind == PickerKind::Model {
                 assert!(h.screen().contains("gpt-5.6-luna"));
             }
