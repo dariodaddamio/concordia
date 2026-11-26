@@ -337,7 +337,7 @@ pub fn native_session_picker_rows(sessions: &[SessionSummary]) -> Vec<PickerRow>
             id: format!("resume:{}:{}", session.account, session.session_id),
             label: clean_preview(session.preview.as_deref(), 60),
             detail: format!(
-                "{} / {} ? native session",
+                "{} / {} · native session",
                 session.provider.as_str(),
                 session.account
             ),
