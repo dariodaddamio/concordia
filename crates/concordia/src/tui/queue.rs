@@ -465,7 +465,7 @@ pub(super) fn focus_on_up(app: &mut App) -> bool {
     }
     app.queue.focused = true;
     app.queue.sel = app.queue.items.len() - 1;
-    app.flash("queue: Enter edit \u{b7} Alt+Up/Down move \u{b7} Del remove \u{b7} Esc back");
+    app.flash("queue: Enter edit \u{b7} Alt+↑↓ move \u{b7} Del remove \u{b7} Esc back");
     true
 }
 

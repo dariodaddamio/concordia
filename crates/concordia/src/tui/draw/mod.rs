@@ -3001,7 +3001,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         )
     } else if app.activity.detail.is_some() {
         (
-            "Enter/Shift+Enter find · Alt+Up/Down card · Ctrl+C copy · Esc close",
+            "Enter/Shift+Enter find · Alt+↑↓ card · Ctrl+C copy · Esc close",
             Style::default().fg(theme::muted()),
         )
     } else if let Some(picker) = app.picker.as_ref().filter(|p| p.kind == PickerKind::Doctor) {

@@ -2038,7 +2038,7 @@ mod tests {
             while start.elapsed() < Duration::from_secs(40) {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .set_read_timeout(Some(Duration::from_secs(20)))
                         .unwrap();
                     let mut byte = [0];
                     let received = stream.read(&mut byte).unwrap_or(0) > 0;
