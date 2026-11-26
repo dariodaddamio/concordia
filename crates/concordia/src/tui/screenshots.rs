@@ -434,7 +434,7 @@ fn usage() -> String {
         (
             "cursor-1",
             ProviderKind::Cursor,
-            crate::usage::cursor_usage(),
+            crate::usage::cursor_usage(crate::cursor_usage::NOT_LOGGED_IN),
         ),
     ];
     let mut rows = Vec::new();

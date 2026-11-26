@@ -578,11 +578,13 @@ pub fn read_codex_usage(codex_home: &Path) -> UsageSnapshot {
     )
 }
 
-pub fn cursor_usage() -> UsageSnapshot {
-    UsageSnapshot::no_data(
-        NO_USAGE_DATA,
-        "Cursor's CLI has no usage command, so Concordia cannot show it. See cursor.com/dashboard/usage",
-    )
+pub fn cursor_usage(reason: &str) -> UsageSnapshot {
+    let detail = if reason == crate::cursor_usage::NOT_LOGGED_IN {
+        reason.to_string()
+    } else {
+        format!("could not read Cursor limits ({reason}); /usage tries again. See cursor.com/dashboard/usage")
+    };
+    UsageSnapshot::no_data(NO_USAGE_DATA, detail)
 }
 
 fn cursor_waiting() -> UsageSnapshot {
@@ -1498,7 +1500,7 @@ impl UsageFetcher {
             }
             Err(None) if cursor => cursor_waiting(),
             Err(None) => claude_waiting(),
-            Err(Some(_)) if cursor => cursor_usage(),
+            Err(Some(err)) if cursor => cursor_usage(&err),
             Err(Some(err)) => UsageSnapshot::no_data(
                 NO_USAGE_DATA,
                 format!(
@@ -2186,9 +2188,12 @@ mod tests {
 
     #[test]
     fn cursor_and_codex_no_data_wording() {
-        let c = cursor_usage();
+        let c = cursor_usage("timed out");
         assert_eq!(c.summary, NO_USAGE_DATA);
+        assert!(c.detail.contains("timed out"));
         assert!(c.detail.contains("cursor.com/dashboard/usage"));
+        let logged_out = cursor_usage(crate::cursor_usage::NOT_LOGGED_IN);
+        assert_eq!(logged_out.detail, crate::cursor_usage::NOT_LOGGED_IN);
         assert_eq!(usage_tone(&c), UsageTone::Mute);
         let dir = tempfile::tempdir().unwrap();
         let x = read_codex_usage(dir.path());
