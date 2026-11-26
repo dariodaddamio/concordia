@@ -699,8 +699,8 @@ fn idle_notice_key_and_click_open_options_and_cancel_cancels() {
 
 #[test]
 fn idle_options_open_next_to_the_visible_notice() {
-    for above in [false, true] {
-        let mut h = Harness::new(120, 36);
+    for (width, height, above) in [(160, 45, false), (120, 36, false), (80, 24, true)] {
+        let mut h = Harness::new(width, height);
         if above {
             for index in 0..40 {
                 h.app.push_system(format!("Earlier output {index}"));
@@ -882,6 +882,9 @@ fn typing_a_slash_previews_every_command_with_its_description() {
     h.key_up();
     let s = h.screen();
     assert!(s.contains("/export"), "{s}");
+    h.type_str("us");
+    let screen = h.screen();
+    assert!(screen.contains("commands · 2"), "{screen}");
 }
 
 #[test]

@@ -798,7 +798,11 @@ impl App {
                 let who = r
                     .home
                     .as_ref()
-                    .map(|h| format_identity_label(&inspect_provider(r.provider, h)))
+                    .map(|home| {
+                        let mut identity = inspect_provider(r.provider, home);
+                        identity.logged_in = crate::accounts::is_logged_in(r.provider, home);
+                        format_identity_label(&identity)
+                    })
                     .unwrap_or_default();
                 PickerRow {
                     id: format!("rmpick:{}", r.id),
@@ -1299,7 +1303,7 @@ impl App {
             rx,
         });
         if let Some(picker) = self.picker.as_mut() {
-            picker.title = "model · refreshing...".into();
+            picker.title = "model · refreshing…".into();
         }
         self.footer_left = "Refreshing models… · Esc close".into();
     }
@@ -1341,11 +1345,7 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, check)| {
-                let tag = match check.level {
-                    crate::doctor::Level::Ok => "ok",
-                    crate::doctor::Level::Warn => "warn",
-                    crate::doctor::Level::Fail => "FAIL",
-                };
+                let tag = check.level.tag();
                 let fix_index = doctor
                     .fixes
                     .iter()
@@ -1355,11 +1355,18 @@ impl App {
                     .get(&index)
                     .map(|s| format!(" · fixed ({s})"))
                     .unwrap_or_default();
+                let id = fix_index.map_or_else(
+                    || format!("doctor:check:{index}"),
+                    |i| format!("doctor:fix:{i}"),
+                );
+                let tone = match check.level {
+                    crate::doctor::Level::Ok => UsageTone::Ok,
+                    crate::doctor::Level::Warn => UsageTone::Warn,
+                    crate::doctor::Level::Fail => UsageTone::Bad,
+                };
+                self.picker_tones.insert(id.clone(), tone);
                 PickerRow {
-                    id: fix_index.map_or_else(
-                        || format!("doctor:check:{index}"),
-                        |i| format!("doctor:fix:{i}"),
-                    ),
+                    id,
                     label: format!("{tag}  {}{suffix}", check.name),
                     detail: fix_index.map_or_else(
                         || check.detail.clone(),
@@ -1588,11 +1595,11 @@ impl App {
 
     pub(in crate::tui) fn begin_mcp_add(&mut self) {
         let mut editor = Editor::default();
-        editor.set_text("NAME COMMAND [ARGS...]");
+        editor.set_text("NAME COMMAND [ARGS…]");
         editor.select_all();
         self.mcp_add_editor = true;
         self.rename_editor = Some(editor);
-        self.footer_left = "type NAME COMMAND [ARGS...] · Enter preview · Esc close".into();
+        self.footer_left = "type NAME COMMAND [ARGS…] · Enter preview · Esc close".into();
     }
 
     pub(in crate::tui) fn begin_mcp_import(&mut self) {

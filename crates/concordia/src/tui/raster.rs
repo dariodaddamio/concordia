@@ -466,7 +466,7 @@ pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) 
     };
     f.render_widget(Clear, content);
     let Some(result) = &view.result else {
-        f.render_widget(Paragraph::new("Preparing bounded file preview..."), content);
+        f.render_widget(Paragraph::new("Preparing bounded file preview…"), content);
         return;
     };
     let thumb = match result {
@@ -584,7 +584,7 @@ pub(super) fn draw_attachment(
         );
     } else {
         f.render_widget(
-            Paragraph::new("Preparing preview...").style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new("Preparing preview…").style(Style::default().fg(Color::DarkGray)),
             area,
         );
     }

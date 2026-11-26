@@ -39,7 +39,7 @@ intended direction so the site does not promise unfinished work.
   unopenable, and the header account picker respects hidden accounts.
 - Show provider questions and approvals in Needs attention without replaying uncertain actions.
 - Start question cards with the prompt, show a short session ID alongside it, and keep the full
-  ID below when it was shortened.
+  ID below in secondary text. While a question is open, the turn status says it is waiting for your answer.
 - Local source candidate `2026-11-18b`: offer steering or queueing text during a Codex app-server
   turn. Confirm against the exact thread/turn before clearing the draft; never retry uncertain input.
 - Read Cursor 2026.11.17 usage through its local screen using CSI-u Return, without a model prompt.
@@ -55,9 +55,11 @@ intended direction so the site does not promise unfinished work.
   editor.
 - Render Markdown, Mermaid diagrams, images and attachment previews.
 - Keep failure details expandable under the turn's provider header.
-- Open the permissions menu above the chat footer chip with the draft still visible on the left.
+- Open the permissions menu above the chat footer chip, clearing the covered transcript rows and
+  keeping the draft visible on the left.
   In Settings, the menu opens next to its value and leaves nearby content visible outside the popup.
 - Show live provider usage, model and effort controls, taskbar status and Windows notifications.
+- Show usage loading in the Home usage pane. The `/usage` view covers the transcript while open.
 - Clear covered rows across the chat pane when account, model or effort menus open from the header.
 - Open quiet-turn options beside the visible notice, or near the composer when the notice is offscreen.
 - Show countdowns for quota resets less than 24 hours away and dates for later resets. For Cursor,

@@ -44,6 +44,7 @@ On a fresh setup, press Enter on Home to choose a provider to connect. Use `/doc
 saved chat is unavailable on Home and find the repair command.
 
 Click the permissions chip in the chat footer to review permission modes while keeping your draft visible.
+`/use remove` shows connection status using the same login check as `/doctor`.
 
 <!-- COMMANDS:START -->
 | Command | Arguments | Description | View |

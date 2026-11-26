@@ -12,6 +12,16 @@ pub enum Level {
     Fail,
 }
 
+impl Level {
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub level: Level,
@@ -785,7 +795,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         match (env.provider_bin)(kind) {
             Err(missing) => rows.push(check(
                 Level::Warn,
-                name_static(name),
+                name,
                 format!(
                     "{name} not found; looked in: {}; install it or set {}",
                     missing
@@ -833,7 +843,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                 };
                 rows.push(check(
                     level,
-                    name_static(name),
+                    name,
                     format_provider_cli(name, &Ok(located.clone())) + &format!("{version}{shim}"),
                 ));
             }
@@ -867,14 +877,6 @@ fn check_memory() -> Check {
             format!("{} in use by this process", crate::sysstats::format_mem(b)),
         ),
         None => check(Level::Ok, "memory", "not available on this platform"),
-    }
-}
-
-fn name_static(n: &str) -> &'static str {
-    match n {
-        "codex" => "codex",
-        "claude" => "claude",
-        _ => "cursor",
     }
 }
 
@@ -928,12 +930,7 @@ fn check_accounts(root: &Path) -> Vec<Check> {
 pub fn format_report(checks: &[Check]) -> String {
     let mut lines = vec![format!("concordia doctor · {}", version_line())];
     for c in checks {
-        let tag = match c.level {
-            Level::Ok => "ok  ",
-            Level::Warn => "warn",
-            Level::Fail => "FAIL",
-        };
-        lines.push(format!("{tag}  {:<9} {}", c.name, c.detail));
+        lines.push(format!("{:<4}  {:<9} {}", c.level.tag(), c.name, c.detail));
         if let Some(action) = next_action(c) {
             lines.push(format!("          next: {action}"));
         }
@@ -1400,6 +1397,8 @@ mod tests {
         let d = &find(&c, "codex")[0].detail;
         assert!(d.contains("codex-cli 9.9.9"), "{d}");
         assert!(d.contains(".cmd shim"), "{d}");
+        assert!(find(&c, "grok")[0].detail.starts_with("grok not found"));
+        assert!(find(&c, "cursor")[0].detail.starts_with("cursor not found"));
 
         let failing = |_: &Path| Err("timed out".to_string());
         e.version_of = Some(&failing);
@@ -1549,11 +1548,13 @@ mod tests {
         let checks = vec![
             check(Level::Ok, "build", "concordia"),
             check(Level::Fail, "install", "broken"),
+            check(Level::Warn, "grok", "missing"),
         ];
         let r = format_report(&checks);
         assert!(r.contains("ok    build"));
-        assert!(r.contains("FAIL  install"));
-        assert!(r.ends_with("1 problem(s), 0 warning(s)"));
+        assert!(r.contains("fail  install"));
+        assert!(r.contains("warn  grok"));
+        assert!(r.ends_with("1 problem(s), 1 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
         assert!(format_report(&checks[..2]).ends_with("1 problem(s), 0 warning(s)"));
     }

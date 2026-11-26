@@ -1,6 +1,197 @@
 use super::*;
 
 #[test]
+fn remove_picker_uses_doctors_login_check() {
+    let iso = Isolated::new();
+    let codex = iso.base.path().join(".codex");
+    let claude = iso.base.path().join(".claude");
+    for (home, file, marker) in [
+        (&codex, "auth.json", "{}"),
+        (
+            &claude,
+            ".credentials.json",
+            "synthetic login existence marker",
+        ),
+    ] {
+        std::fs::create_dir_all(home).unwrap();
+        std::fs::write(home.join(file), marker).unwrap();
+    }
+    let mut h = Harness::new(120, 36);
+    h.type_str("/use remove");
+    h.enter();
+    let screen = h.screen();
+    for provider in ["Codex", "Claude"] {
+        assert!(
+            screen
+                .lines()
+                .any(|line| line.contains(provider) && line.contains("logged in")),
+            "{screen}"
+        );
+    }
+    assert!(!screen.contains("logged out"), "{screen}");
+}
+
+#[test]
+fn doctor_keeps_severity_color_and_fills_detail_space_inside_a_path() {
+    use crate::doctor::{Check, Level};
+    let mut h = Harness::new(120, 36);
+    h.app.doctor = Some(DoctorUi {
+        checks: [
+            (
+                Level::Ok,
+                "codex",
+                format!("codex at C:/fixture/{}", "路".repeat(80)),
+            ),
+            (Level::Warn, "grok", "grok not found".into()),
+            (Level::Fail, "store", "unreadable".into()),
+        ]
+        .into_iter()
+        .map(|(level, name, detail)| Check {
+            level,
+            name,
+            detail,
+        })
+        .collect(),
+        fixes: Vec::new(),
+        fixed: HashMap::new(),
+    });
+    h.app.refresh_doctor_picker();
+    h.draw();
+    let buf = h.term.backend().buffer();
+    let styles: Vec<_> = ["ok  codex", "warn  grok", "fail  store"]
+        .into_iter()
+        .map(|label| buf[find_cell(buf, label)].fg)
+        .collect();
+    assert_ne!(styles[0], styles[1]);
+    assert_ne!(styles[1], styles[2]);
+    assert_ne!(styles[0], styles[2]);
+    let screen = h.screen();
+    let row = screen
+        .lines()
+        .find(|line| line.contains("ok  codex"))
+        .unwrap();
+    assert!(
+        row.contains("C:/fixture/路") && row.matches('路').count() >= 15 && row.contains("…"),
+        "{row}"
+    );
+}
+
+#[test]
+fn usage_clears_the_transcript_and_its_scrollbar_at_every_size() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        for i in 0..height * 2 {
+            h.app.push_system(format!("Transcript fixture {i}"));
+        }
+        h.draw();
+        assert!(h.screen().contains("Transcript fixture"));
+        assert!(!h.app.areas.transcript_rail.is_empty());
+        h.app.show_picker(
+            PickerKind::Usage,
+            "usage".into(),
+            vec![PickerRow {
+                id: "usage:fixture".into(),
+                label: "Fixture\nno usage data".into(),
+                detail: String::new(),
+            }],
+            false,
+        );
+        h.draw();
+        let card = h.app.picker_rows[0].0;
+        let buf = h.term.backend().buffer();
+        for y in card.bottom()..h.app.areas.transcript.bottom() {
+            assert!(
+                (0..width).all(|x| buf[(x, y)].symbol() == " "),
+                "{}",
+                h.screen()
+            );
+        }
+    }
+}
+
+#[test]
+fn settings_help_uses_the_available_height() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        settings::open(&mut h.app);
+        h.draw();
+        let screen = h.screen();
+        if width == 80 {
+            assert!(
+                screen
+                    .lines()
+                    .any(|line| line.trim().trim_matches('│').trim() == "with"),
+                "{screen}"
+            );
+            h.type_str("permissions");
+            let screen = h.screen();
+            assert!(screen.contains("with"));
+            assert!(!screen.contains("started…"), "{screen}");
+        } else {
+            let buf = h.term.backend().buffer();
+            let (x, _) = find_cell(buf, "│ Help");
+            assert_eq!(buf[(x, height - 3)].symbol(), "│", "{screen}");
+        }
+    }
+}
+
+#[test]
+fn integrations_uses_the_bottom_picker_width() {
+    let _iso = Isolated::new();
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        h.type_str("/harness");
+        h.enter();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !integrations::poll(&mut h.app) {
+            assert!(
+                Instant::now() < deadline,
+                "integration inspection did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.draw();
+        let screen = h.screen();
+        let row = screen
+            .lines()
+            .find(|line| line.contains("No integrations connected"))
+            .unwrap();
+        assert_eq!(
+            row.trim().chars().count(),
+            usize::from(width - 4),
+            "{screen}"
+        );
+    }
+}
+
+#[test]
+fn home_places_usage_loading_inside_the_usage_pane() {
+    for (width, height) in [(80, 24), (120, 36), (160, 45)] {
+        let mut h = Harness::new(width, height);
+        let cwd = h.app.cwd.clone();
+        landing::open_with(
+            &mut h.app,
+            vec![landing_session("fixture", &cwd, "Parser review", 1)],
+            None,
+        );
+        h.draw();
+        let buf = h.term.backend().buffer();
+        let (usage_x, _) = find_cell(buf, "┌ usage");
+        let (loading_x, _) = find_cell(buf, "reading usage…");
+        assert!(loading_x > usage_x);
+        assert!(!h.screen().contains("checking limits..."));
+    }
+}
+
+#[test]
+fn shortcuts_footer_uses_arrow_keys() {
+    let mut h = Harness::new(80, 24);
+    h.key(KeyCode::F(1), KeyModifiers::NONE);
+    let footer = footer_row(&h);
+    assert!(footer.contains("↑↓ or PgUp/PgDn scroll"), "{footer}");
+}
+
+#[test]
 fn header_dropdowns_start_on_the_current_choice() {
     let iso = Isolated::new();
     let home = iso.base.path().join(".codex");
@@ -181,7 +372,7 @@ fn rename_footer_follows_the_editor_on_save_escape_and_click() {
     for action in [KeyCode::Enter, KeyCode::Esc, KeyCode::Null] {
         h.key(KeyCode::F(2), KeyModifiers::NONE);
         h.type_str("Fixture title");
-        assert!(footer_row(&h).contains("Enter save title"));
+        assert!(footer_row(&h).contains("Enter save title · Esc cancel"));
         if action == KeyCode::Null {
             let input = h.app.areas.input;
             h.click(input.x, input.y);
@@ -208,11 +399,11 @@ fn empty_chat_and_running_tools_show_only_their_own_hints() {
     h.draw();
     let screen = h.screen();
     assert!(!screen.contains(START_HINT));
-    assert!(screen.contains("▸ ◉ Run"), "{screen}");
+    assert_eq!(screen.matches("Run tests").count(), 1, "{screen}");
     assert!(
         screen
             .lines()
-            .any(|line| line.trim_start().starts_with("◉ Run") && line.contains("[ Esc ] cancel")),
+            .any(|line| line.contains("Codex · running a tool · 0s · [ Esc ] cancel")),
         "{screen}"
     );
     assert!(footer_row(&h).contains("Esc cancel"));
@@ -380,16 +571,48 @@ fn doctor_footer_offers_review_on_a_fixable_row() {
 fn footer_permissions_overlays_the_composer_with_the_draft_visible() {
     for (width, height) in [(80, 24), (120, 36), (160, 45)] {
         let mut h = Harness::new(width, height);
-        h.type_str("keep this draft visible");
-        let chip = h.app.areas.permissions;
-        h.click(chip.x + 1, chip.y);
-        let popup = h.app.areas.permissions_popup;
-        let input = h.app.areas.input;
-        assert_eq!(popup.bottom(), chip.y);
-        assert_eq!(popup.right(), chip.right());
-        assert!(popup.x > input.x && !popup.intersection(input).is_empty());
-        let screen = h.screen();
-        assert!(screen.contains("keep this draft visible"), "{screen}");
+        for i in 0..height {
+            h.app.push_system(format!(
+                "transcript row {i} {}",
+                "parser".repeat(width as usize / 6)
+            ));
+        }
+        for slash in [false, true] {
+            h.app.editor.set_text(if slash {
+                "/mode"
+            } else {
+                "keep this draft visible"
+            });
+            h.draw();
+            let chip = h.app.areas.permissions;
+            if slash {
+                h.enter();
+            } else {
+                h.click(chip.x + 1, chip.y);
+            }
+            let popup = h.app.areas.permissions_popup;
+            let input = h.app.areas.input;
+            assert_eq!(popup.bottom(), chip.y);
+            assert_eq!(popup.right(), chip.right());
+            assert!(popup.x > input.x && !popup.intersection(input).is_empty());
+            let screen = h.screen();
+            for row in popup.intersection(h.app.areas.transcript).rows() {
+                assert!(
+                    screen
+                        .lines()
+                        .nth(row.y as usize)
+                        .unwrap()
+                        .chars()
+                        .take(popup.x as usize)
+                        .all(|c| c == ' '),
+                    "{screen}"
+                );
+            }
+            if !slash {
+                assert!(screen.contains("keep this draft visible"), "{screen}");
+            }
+            h.key(KeyCode::Esc, KeyModifiers::NONE);
+        }
     }
 }
 

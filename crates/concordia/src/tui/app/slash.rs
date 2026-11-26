@@ -53,7 +53,7 @@ impl App {
                 self.push_system(line);
             }
             if crate::mcp_registry::load(&self.state_root).map_or(true, |r| r.servers.is_empty()) {
-                self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · secrets must be env:NAME or credential:TARGET");
+                self.push_system("/mcp add NAME stdio COMMAND [ARGS…] · secrets must be env:NAME or credential:TARGET");
             }
             return;
         }
@@ -63,7 +63,7 @@ impl App {
             return;
         }
         let Some(name) = words.get(1).map(|s| (*s).to_owned()) else {
-            self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
+            self.push_system("/mcp add NAME stdio COMMAND [ARGS…] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
             return;
         };
         let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
@@ -94,7 +94,7 @@ impl App {
                         },
                     );
                 }
-                "add" => return Err("/mcp add NAME stdio COMMAND [ARGS...]".into()),
+                "add" => return Err("/mcp add NAME stdio COMMAND [ARGS…]".into()),
                 _ => return Err("/mcp add|remove|on|off|import".into()),
             }
             Ok(())

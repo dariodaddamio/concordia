@@ -241,6 +241,25 @@ fn the_update_screen_scrolls_to_its_last_line() {
 }
 
 #[test]
+fn update_history_hint_appears_only_in_the_footer() {
+    for width in [80, 120, 160] {
+        let mut h = Harness::new(width, 24);
+        let mut preview = update_preview(false, 0);
+        preview.history.push(crate::update::PreviewLine::Text(
+            "Prior build fixture".into(),
+        ));
+        update_screen(&mut h, preview);
+        let footer = footer_row(&h);
+        assert!(footer.contains("H history · Enter / Esc close"), "{footer}");
+        let screen = h.screen();
+        assert_eq!(screen.matches("H history").count(), 1, "{screen}");
+        assert_eq!(screen.matches("Esc close").count(), 1, "{screen}");
+        h.key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(h.screen().contains("Prior build fixture"));
+    }
+}
+
+#[test]
 fn update_action_stays_visible_and_emphasized_while_the_log_scrolls() {
     for no_color in [false, true] {
         let mut h = Harness::new(90, 24);
@@ -462,7 +481,7 @@ fn cancelling_preserves_partial_reply_and_draft_and_repeated_stop_is_idempotent(
         h.app
             .messages
             .iter()
-            .filter(|m| m.text == "cancelling...")
+            .filter(|m| m.text == "cancelling…")
             .count(),
         1
     );

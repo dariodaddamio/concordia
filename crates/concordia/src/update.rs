@@ -277,11 +277,7 @@ impl UpdatePreview {
         UpdatePreview {
             history: Vec::new(),
             history_expanded: false,
-            lines: vec![
-                PreviewLine::Text(text.into()),
-                PreviewLine::Blank,
-                PreviewLine::Hint("Esc close".into()),
-            ],
+            lines: vec![PreviewLine::Text(text.into())],
             install_available: false,
             release_url: None,
         }
@@ -835,14 +831,6 @@ fn source_preview_for(
             s < installed
         }
     });
-    lines.push(PreviewLine::Hint(
-        if history.is_empty() {
-            "Esc close"
-        } else {
-            "H history · Esc close"
-        }
-        .into(),
-    ));
     Ok(UpdatePreview {
         history,
         history_expanded: false,
@@ -869,10 +857,8 @@ fn builds(sections: &[ChangelogSection], include: impl Fn(&str) -> bool) -> Vec<
     lines
 }
 
-const INSTALL_BUILD: &str = "Press Enter to install it. Concordia builds it (about a minute), then \
-     restarts on the new build by itself. There is nothing else to do. Esc closes without updating.";
-const INSTALL_RELEASE: &str = "Press Enter to install it. Concordia downloads and checks it, then \
-     restarts on the new release by itself. There is nothing else to do. Esc closes without updating.";
+const INSTALL_BUILD: &str = "Concordia builds the update (about a minute), then restarts this tab.";
+const INSTALL_RELEASE: &str = "Concordia downloads and checks the update, then restarts this tab.";
 
 pub fn check_for_update(cwd: &Path) -> Result<UpdatePreview> {
     check_for_update_ctl(cwd, &JobControl::default())
@@ -906,8 +892,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                 lines: vec![
                     PreviewLine::Title(format!("You're on the newest release ({current}).")),
                     from,
-                    PreviewLine::Blank,
-                    PreviewLine::Hint("Esc close".into()),
                 ],
                 install_available: false,
                 release_url: None,
@@ -940,7 +924,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                     }
                     lines.push(PreviewLine::Blank);
                 }
-                lines.push(PreviewLine::Hint("o open release page · Esc close".into()));
                 UpdatePreview {
                     history: Vec::new(),
                     history_expanded: false,
@@ -2239,7 +2222,6 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "H history · Esc close",
             ]
         );
 
@@ -2270,7 +2252,6 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "H history · Esc close",
             ]
         );
     }
@@ -2293,7 +2274,6 @@ mod tests {
                 "",
                 "The checkout is behind this build. Pull or switch branch, then run /update again.",
                 "",
-                "H history \u{b7} Esc close",
             ]
         );
     }

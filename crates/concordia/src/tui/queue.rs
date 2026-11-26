@@ -106,7 +106,7 @@ fn label(text: &str) -> String {
     let mut it = flat.chars();
     let head: String = it.by_ref().take(LABEL_CHARS).collect();
     if it.next().is_some() {
-        format!("{head}...")
+        format!("{head}…")
     } else {
         head
     }

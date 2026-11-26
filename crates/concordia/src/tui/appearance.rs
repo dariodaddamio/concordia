@@ -283,7 +283,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             .into_iter()
             .map(|(id, title, detail)| row(id, title, detail))
             .chain([
-                row("import", "Import theme...", "Type a .toml path"),
+                row("import", "Import theme…", "Type a .toml path"),
                 row("export", "Export current", "Type a destination path"),
             ])
             .collect();

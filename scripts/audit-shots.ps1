@@ -522,7 +522,7 @@ try {
     Capture 'queued-messages' 'While the turn is busy, type `Review parser tests` and press Tab. Repeat with `Draft release notes`.' '(?s)(?=.*Review parser tests)(?=.*Draft release notes)' {
         foreach ($message in 'Review parser tests', 'Draft release notes') { Type-Text $message; Press Tab }
     }
-    Capture 'ctrl-k-options' 'Wait for the one-minute quiet-turn notice from the gated fake turn, then press Ctrl+K.' 'turn is quiet' {
+    Capture 'ctrl-k-options' 'Wait for the one-minute quiet-turn notice from the gated fake turn, then press Ctrl+K.' '(?m)^ *\u250c turn is quiet ' {
         Wait-Grid 'No output from' 75 | Out-Null
         Press k @('CTRL')
     } { Press Esc }

@@ -256,6 +256,10 @@ fn dropdown_width(
 }
 
 pub(super) fn ellipsis(text: &str, width: usize) -> String {
+    truncate_with_ellipsis(text, width, true)
+}
+
+fn truncate_with_ellipsis(text: &str, width: usize, prefer_word_boundary: bool) -> String {
     if cell_width(text) <= width {
         return text.into();
     }
@@ -275,26 +279,14 @@ pub(super) fn ellipsis(text: &str, width: usize) -> String {
         }
         used += w;
         end = index + ch.len_utf8();
-        if ch.is_whitespace() {
+        if prefer_word_boundary && ch.is_whitespace() {
             last_break = Some(end);
         }
     }
-    let cut = last_break.filter(|&at| at > 0).unwrap_or(end);
-    let mut value = text[..cut].trim_end().to_owned();
-    if value.is_empty() {
-        let mut used = 0usize;
-        let mut end = 0usize;
-        for (index, ch) in text.char_indices() {
-            let w = text::char_width(ch);
-            if used + w > width.saturating_sub(1) {
-                break;
-            }
-            used += w;
-            end = index + ch.len_utf8();
-        }
-        value = text[..end].to_owned();
-    }
-    let mut value = value
+    let cut = last_break
+        .filter(|&at| !text[..at].trim_end().is_empty())
+        .unwrap_or(end);
+    let mut value = text[..cut]
         .trim_end_matches(|c: char| matches!(c, '…' | ',' | '·' | ';' | ':') || c.is_whitespace())
         .to_owned();
     value.push('…');
@@ -320,7 +312,7 @@ fn fit_label_detail(label: &str, detail: &str, width: usize) -> (String, Option<
     if detail_room < 4 {
         return (ellipsis(label, width), None);
     }
-    let fitted = ellipsis(detail, detail_room);
+    let fitted = truncate_with_ellipsis(detail, detail_room, false);
     if fitted.is_empty() || fitted == "…" {
         return (ellipsis(label, width), None);
     }
@@ -562,7 +554,7 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
             list.x + (label_width + value_width) as u16 + 2,
             body.y,
             help_width,
-            body.height.min(12),
+            body.height,
         );
         f.render_widget(
             Paragraph::new(description)
@@ -579,9 +571,17 @@ fn draw_settings(f: &mut Frame, area: Rect, app: &mut App) {
         );
     } else if !hide_help {
         let shown = rows.len().min(height) as u16;
+        let help_y = list.y + shown + 1;
         f.render_widget(
-            Paragraph::new(Line::styled(ellipsis(&description, width), muted)),
-            Rect::new(inner.x, list.y + shown + 1, inner.width, 1),
+            Paragraph::new(description)
+                .style(muted)
+                .wrap(ratatui::widgets::Wrap { trim: true }),
+            Rect::new(
+                inner.x,
+                help_y,
+                inner.width,
+                inner.bottom().saturating_sub(help_y),
+            ),
         );
     }
 }
@@ -990,10 +990,8 @@ fn draw_palette(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
                         " {} options ",
                         app.editor.text().split_whitespace().next().unwrap_or("/")
                     )
-                } else if entries.len() > shown {
-                    format!(" commands \u{b7} {} ", entries.len())
                 } else {
-                    " commands ".to_string()
+                    format!(" commands \u{b7} {} ", entries.len())
                 }),
         )
         .highlight_style(
@@ -1028,7 +1026,11 @@ fn draw_run_status(f: &mut Frame, area: Rect, app: &mut App) {
         " \u{b7} {} \u{b7} ",
         run_elapsed(app.turn_started.map_or(0, |t| t.elapsed().as_secs()))
     );
-    let label = if area.width < 60 {
+    let label = if area.width < 60
+        && !app.questions.waiting()
+        && !matches!(app.phase, Phase::Tool(_))
+        && !app.cancel_requested
+    {
         match app.phase {
             Phase::Waiting => "Starting".into(),
             Phase::Thinking => "Thinking".into(),
@@ -2079,7 +2081,7 @@ fn update_action_rows(blocked: bool, width: usize) -> Vec<Line<'static>> {
         (
             " Update blocked: work pending ",
             "Finish chat/workers and save or close edited files, then press Enter again.",
-            "Esc returns to your task. No update is queued.",
+            "No update is queued.",
             Color::Yellow,
         )
     } else {
@@ -2090,7 +2092,7 @@ fn update_action_rows(blocked: bool, width: usize) -> Vec<Line<'static>> {
                 " Enter  Install + restart this tab "
             },
             "Installs, saves your draft and queue, then restarts this tab.",
-            "Other tabs keep running. Esc closes without updating.",
+            "Other tabs keep running.",
             Color::Green,
         )
     };
@@ -2169,6 +2171,8 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         let is_page = picker.kind == PickerKind::Update;
         let width = if is_page {
             area.width
+        } else if picker.kind == PickerKind::Integrations {
+            area.width.saturating_sub(4).max(20)
         } else {
             area.width.saturating_sub(4).min(100)
         };
@@ -2235,6 +2239,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
     if picker.kind == PickerKind::Usage {
+        f.render_widget(Clear, area);
         let width = area.width.saturating_sub(2);
         let cols = (width / 52).max(1) as usize;
         picker.usage_cols = cols;
@@ -2317,7 +2322,6 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             width: (cell_width * cols as u16).min(width),
             height,
         };
-        f.render_widget(Clear, popup);
         let rows_visible = usize::from(popup.height.saturating_add(1) / stride).max(1);
         let first_row = (selected / cols).saturating_sub(rows_visible - 1);
         for (index, (id, label, detail)) in rows.into_iter().enumerate().skip(first_row * cols) {
@@ -2565,7 +2569,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
         popup.y = bottom.saturating_sub(popup.height);
         app.areas.permissions_popup = popup;
     }
-    if picker.kind != PickerKind::Trust {
+    if picker.kind == PickerKind::Trust && settings_anchor.is_none() {
+        let transcript = app.areas.transcript;
+        let covered = Rect::new(transcript.x, popup.y, transcript.width, popup.height);
+        f.render_widget(Clear, transcript.intersection(covered));
+    } else if picker.kind != PickerKind::Trust {
         let backdrop = if dropdown.is_some() && app.settings_view.is_some() {
             screen
         } else {
@@ -2678,7 +2686,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 }
                 if !r.detail.is_empty() {
                     lines.push(Line::styled(
-                        ellipsis(&r.detail, row_width),
+                        truncate_with_ellipsis(&r.detail, row_width, false),
                         Style::default().fg(Color::DarkGray),
                     ));
                 }
@@ -2723,6 +2731,11 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
             ListItem::new(Line::from(spans))
         })
         .collect();
+    let highlight = if picker.kind == PickerKind::Doctor {
+        Style::default().bg(theme::selection())
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
     let list = List::new(items)
         .block(
             Block::default()
@@ -2730,11 +2743,7 @@ fn draw_picker(f: &mut Frame, area: Rect, app: &mut App) {
                 .padding(ratatui::widgets::Padding::horizontal(1))
                 .title(title),
         )
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(highlight.add_modifier(Modifier::BOLD))
         .highlight_symbol("> ");
     f.render_stateful_widget(list, popup, &mut picker.state);
     let mut row_y = popup.y.saturating_add(1);
@@ -2870,7 +2879,7 @@ fn draw_input(f: &mut Frame, area: Rect, app: &mut App) {
                     } else if app.workspace.focused.is_some() {
                         "The file pane has focus."
                     } else {
-                        "Message Concordia..."
+                        "Message Concordia…"
                     },
                     Style::default()
                         .fg(Color::DarkGray)
@@ -2955,6 +2964,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         .filter(|(_, at)| at.elapsed() < FLASH_FOR)
         .map(|(m, _)| m.as_str());
     let job_line;
+    let update_hint;
     let idle_footer_hint = format!("{FOOTER_HINT} \u{b7} Ctrl+K options");
     let scrolled = format!("\u{2191} {} rows up \u{b7} PgDn to follow", app.view.scroll);
     let recovery_hint = format!(
@@ -2963,7 +2973,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
     );
     let (left, left_style) = if app.key_sheet && flash.is_none() {
         (
-            "Up/Down or PgUp/PgDn scroll \u{b7} Esc / ? / F1 close",
+            "↑↓ or PgUp/PgDn scroll \u{b7} Esc / ? / F1 close",
             Style::default().fg(theme::muted()),
         )
     } else if app.settings_view.is_some() && app.picker.is_none() && flash.is_none() {
@@ -2986,7 +2996,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
         (m, Style::default().fg(Color::Indexed(179)))
     } else if app.rename_editor.is_some() && !app.mcp_add_editor {
         (
-            "Enter save title · Esc close",
+            "Enter save title · Esc cancel",
             Style::default().fg(Color::DarkGray),
         )
     } else if app.activity.detail.is_some() {
@@ -3065,38 +3075,44 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &mut App) {
             shown
         );
         (job_line.as_str(), Style::default().fg(Color::Cyan))
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Update)
-        && app
-            .update_preview
+    } else if let Some(preview) = app.update_preview.as_ref().filter(|_| {
+        app.picker
             .as_ref()
-            .is_some_and(|p| p.install_available)
-    {
-        if app.update_blocked_by_work() {
+            .is_some_and(|p| p.kind == PickerKind::Update)
+    }) {
+        let blocked = preview.install_available && app.update_blocked_by_work();
+        let history = if preview.history.is_empty() {
+            ""
+        } else {
+            "H history · "
+        };
+        let release = if preview.release_url.is_some() {
+            "O release page · "
+        } else {
+            ""
+        };
+        let (action, close, style) = if blocked {
             (
-                "Update blocked: task running · Esc returns to task",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                "",
+                "Esc returns to task",
+                Style::default().fg(Color::Yellow),
+            )
+        } else if preview.install_available {
+            (
+                "Enter install · ",
+                "Esc close",
+                Style::default().fg(Color::Green),
             )
         } else {
-            (
-                "Enter installs and restarts this tab · ↑↓ scroll · Esc close",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )
-        }
-    } else if app
-        .picker
-        .as_ref()
-        .is_some_and(|p| p.kind == PickerKind::Update)
-        && app.job.is_none()
-        && app.update_preview.is_some()
-    {
-        ("Enter / Esc close", Style::default().fg(Color::DarkGray))
+            ("", "Enter / Esc close", Style::default().fg(theme::muted()))
+        };
+        let scroll = if app.update_rows > app.update_view {
+            "↑↓ scroll · "
+        } else {
+            ""
+        };
+        update_hint = format!("{action}{history}{release}{scroll}{close}");
+        (update_hint.as_str(), style)
     } else if !app.palette_entries().is_empty() {
         (
             "\u{2191}\u{2193} select \u{b7} Tab complete \u{b7} Enter run \u{b7} Esc close",

@@ -762,7 +762,7 @@ impl App {
         };
         let task = clean(task, 40);
         let task = if task.chars().count() == 40 {
-            format!("{}...", task.trim_end())
+            format!("{}…", task.trim_end())
         } else {
             task
         };
@@ -780,25 +780,17 @@ impl App {
                 "Stopping this turn\u{2026}".into()
             };
         }
+        if self.questions.waiting() {
+            return format!("{} · waiting for your answer", self.account_label());
+        }
         match &self.phase {
-            Phase::Waiting if self.cancel_requested => "Stopping this turn\u{2026}".into(),
             Phase::Waiting if self.live_cards.is_empty() => {
                 format!("{} \u{b7} starting the turn", self.account_label())
             }
             Phase::Waiting => "Reviewing the latest tool results".into(),
             Phase::Thinking => "Working through the next step".into(),
             Phase::Writing => "Putting the answer together".into(),
-            Phase::Tool(name) => self
-                .live_cards
-                .iter()
-                .rev()
-                .find(|c| c.status == CardStatus::Running)
-                .map(|card| {
-                    crate::provider::stream_cards::compact_card_summary(card)
-                        .body()
-                        .to_owned()
-                })
-                .unwrap_or_else(|| format!("Running {name}")),
+            Phase::Tool(_) => format!("{} · running a tool", self.account_label()),
         }
     }
 
@@ -1954,9 +1946,9 @@ impl App {
         }
         if let Some(h) = &self.cancel_handle {
             h.cancel();
-            self.push_system("cancelling...");
+            self.push_system("cancelling…");
         } else if self.cancel_requested {
-            self.push_system("cancelling...");
+            self.push_system("cancelling…");
         } else {
             self.busy = false;
             self.push_system("cancelled");

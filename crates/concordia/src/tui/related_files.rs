@@ -419,7 +419,7 @@ impl App {
                     "files:hint".into()
                 },
                 label: if self.related_files.loading() {
-                    "Finding files mentioned in this chat..."
+                    "Finding files mentioned in this chat…"
                 } else {
                     "No matches. Type a relative path (src/main.rs) or an absolute path (C:/project/file.md)."
                 }

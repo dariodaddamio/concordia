@@ -960,7 +960,7 @@ pub(super) fn handle_key(
         KeyCode::Esc => {
             if let Some(job) = &app.job {
                 job.cancel();
-                app.flash("cancelling...");
+                app.flash("cancelling…");
             } else if app.has_selection() {
                 app.clear_selections();
             } else if app.busy {

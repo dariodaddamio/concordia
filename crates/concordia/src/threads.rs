@@ -723,10 +723,10 @@ fn one_line(s: &str, max: usize) -> String {
     if flat.chars().count() <= max {
         return flat;
     }
-    if max <= 3 {
-        return cap_chars(&flat, max).to_string();
+    if max == 0 {
+        return String::new();
     }
-    format!("{}...", cap_chars(&flat, max - 3))
+    format!("{}…", cap_chars(&flat, max - 1))
 }
 
 fn looks_like_path(d: &str) -> bool {

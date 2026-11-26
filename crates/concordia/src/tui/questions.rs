@@ -1215,7 +1215,7 @@ struct DocRow {
     note: bool,
 }
 struct Doc {
-    prompt: Vec<String>,
+    prompt: Vec<(String, bool)>,
     rows: Vec<DocRow>,
 }
 impl Doc {
@@ -1237,6 +1237,7 @@ impl State {
         } else {
             q.prompt.clone()
         };
+        let mut full_session = None;
         if let Some(origin) = &self.origin {
             let session = origin.session.as_deref().unwrap_or("unreported");
             let shortened = origin
@@ -1256,7 +1257,7 @@ impl State {
                 title.push_str(&format!(" · {} more waiting", self.pending.len()));
             }
             if shortened.is_some() {
-                title.push_str(&format!("\nFull session ID: {session}"));
+                full_session = Some(format!("Full session ID: {session}"));
             }
         }
         let multiple = self.allows_multiple();
@@ -1283,10 +1284,18 @@ impl State {
                 note: true,
             });
         }
-        Some(Doc {
-            prompt: wrap(&title, inner.saturating_sub(1)),
-            rows,
-        })
+        let width = inner.saturating_sub(1);
+        let prompt = wrap(&title, width)
+            .into_iter()
+            .map(|line| (line, false))
+            .chain(
+                full_session
+                    .iter()
+                    .flat_map(|id| wrap(id, width))
+                    .map(|line| (line, true)),
+            )
+            .collect();
+        Some(Doc { prompt, rows })
     }
 }
 
@@ -1386,8 +1395,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let title_style = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let title_line = |text: &str| Line::from(Span::styled(format!(" {text}"), title_style));
     let dim = Style::default().fg(Color::DarkGray);
+    let title_line = |(text, secondary): &(String, bool)| {
+        Line::styled(
+            format!(" {text}"),
+            if *secondary { dim } else { title_style },
+        )
+    };
     for (i, text) in doc.prompt.iter().take(pinned).enumerate() {
         f.render_widget(
             Paragraph::new(title_line(text)),
@@ -2316,6 +2330,7 @@ mod tests {
                 .unwrap();
             app.native_owner = Some(owner);
             app.questions.offer_native(request, true);
+            assert!(app.run_status_label().ends_with("waiting for your answer"));
             let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
             let mut first_content_row = 0;
             terminal
@@ -2335,6 +2350,11 @@ mod tests {
                 "{first_row}"
             );
             assert!(first_row.contains("session syntheti…"), "{first_row}");
+            let prompt_style = &buffer[(1, first_content_row)];
+            let session_style = &buffer[(1, first_content_row + 1)];
+            assert!(prompt_style.modifier.contains(Modifier::BOLD));
+            assert!(!session_style.modifier.contains(Modifier::BOLD));
+            assert_eq!(session_style.fg, Color::DarkGray);
             let screen: String = terminal
                 .backend()
                 .buffer()

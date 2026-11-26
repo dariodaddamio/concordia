@@ -589,14 +589,14 @@ pub fn cursor_usage(reason: &str) -> UsageSnapshot {
 
 fn cursor_waiting() -> UsageSnapshot {
     UsageSnapshot::no_data(
-        "checking limits...",
+        "checking limits…",
         "asking Cursor for this account's limits (takes a few seconds)",
     )
 }
 
 fn claude_waiting() -> UsageSnapshot {
     UsageSnapshot::no_data(
-        "checking limits...",
+        "checking limits…",
         "asking Claude for this account's limits (takes a few seconds)",
     )
 }
@@ -2291,7 +2291,7 @@ mod tests {
         let home = root.path().join("home");
         let mut f = UsageFetcher::with_runner(root.path().to_path_buf(), fake_runner(SAMPLE));
         let first = f.snapshot(ProviderKind::Claude, "claude-2", &home);
-        assert_eq!(first.summary, "checking limits...");
+        assert_eq!(first.summary, "checking limits…");
         wait_for(&mut f);
         let second = f.snapshot(ProviderKind::Claude, "claude-2", &home);
         assert_eq!(second.summary, "5h 93% left · 7d 87% left");
@@ -2403,7 +2403,7 @@ mod tests {
             .with_cursor_runner(ok);
         assert_eq!(
             f.snapshot(ProviderKind::Cursor, "cursor", &home).summary,
-            "checking limits..."
+            "checking limits…"
         );
         wait_for(&mut f);
         let s = f.snapshot(ProviderKind::Cursor, "cursor", &home);
@@ -2635,7 +2635,7 @@ mod tests {
         let warm = restarted.snapshot(ProviderKind::Claude, "same-account", &home_b);
         assert!(warm.summary.contains("5h 58% left"), "{}", warm.summary);
         let provider_switch = restarted.snapshot(ProviderKind::Cursor, "same-account", &home_b);
-        assert_eq!(provider_switch.summary, "checking limits...");
+        assert_eq!(provider_switch.summary, "checking limits…");
     }
 
     #[test]

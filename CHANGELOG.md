@@ -1,5 +1,12 @@
 # Changelog
 
+### Fixed (2026-11-25f, local source)
+
+- Doctor names Grok correctly and uses lowercase severity tags. Long paths use the available picker width, and account removal shows the same login state as Doctor.
+- Permissions and usage clear the transcript rows or area they cover. Settings extends the Help divider and wraps Help at narrower sizes. Integrations uses the standard picker width.
+- Home shows usage loading in the usage pane. Question turns say they are waiting for your answer, and tool status no longer repeats the tool card title.
+- The command menu shows the filtered and unfiltered counts. Shortcut, update and rename footers reflect their available keys.
+
 ### Fixed (2026-11-25e, local source)
 
 - Question cards start with the prompt and show a shortened session ID alongside it. The full ID appears below.

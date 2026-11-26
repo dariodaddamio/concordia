@@ -1340,7 +1340,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
-    let usage_content = if landing.meters.is_empty() {
+    let usage_status = if !landing.tokens_ready {
+        Some(" reading usage… ")
+    } else if landing.tokens_error.is_some() {
+        Some(" recorded usage unavailable ")
+    } else {
+        None
+    };
+    let usage_content = if landing.meters.is_empty() && usage_status.is_none() {
         0
     } else {
         meter_rows(
@@ -1395,11 +1402,9 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                 " chats "
             })
             .border_style(border(landing.pane == Pane::Chats));
-        let usage = if !landing.tokens_ready {
-            Some(" reading usage… ".into())
-        } else if landing.tokens_error.is_some() {
-            Some(" recorded usage unavailable ".into())
-        } else if landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial {
+        let usage = if usage_status.is_none()
+            && (landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial)
+        {
             let day = super::token_line::compact(landing.tokens_24h);
             let total = super::token_line::compact(landing.tokens_all_time);
             let coverage = if landing.tokens_partial {
@@ -1555,11 +1560,11 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         landing.goal_hits.clear();
         return;
     };
-    let (usage_area, right) = if landing.meters.is_empty() {
+    let (usage_area, right) = if landing.meters.is_empty() && usage_status.is_none() {
         (None, right)
     } else {
         let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize);
-        let usage_height = usage_rows as u16 + 2;
+        let usage_height = (usage_rows as u16).max(1) + 2;
         if right.height <= usage_height.saturating_add(7) {
             (Some(right), Rect::default())
         } else {
@@ -1571,10 +1576,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
     };
     if let Some(usage_area) = usage_area {
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" usage ")
             .border_style(border(false));
+        if let Some(status) = usage_status {
+            block = block.title_bottom(Line::styled(status, dim).right_aligned());
+        }
         let inner = block.inner(usage_area);
         f.render_widget(block, usage_area);
         let width = inner.width as usize;

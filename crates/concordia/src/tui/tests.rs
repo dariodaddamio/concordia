@@ -385,7 +385,6 @@ fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview
         ),
     ];
     lines.extend((0..bullets).map(|i| P::Bullet(format!("change number {i}"))));
-    lines.push(P::Hint("Esc close".into()));
     crate::update::UpdatePreview {
         history: Vec::new(),
         history_expanded: false,

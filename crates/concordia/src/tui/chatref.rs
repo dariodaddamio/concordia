@@ -461,8 +461,8 @@ fn clip(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!(
-            "{}...",
-            s.chars().take(max.saturating_sub(3)).collect::<String>()
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
     }
 }

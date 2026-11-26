@@ -87,8 +87,8 @@ pub fn render_width_state(text: &str, width: usize) -> (Vec<MdLine>, bool) {
                         status => {
                             let label = match status {
                                 Some(Err(reason)) => format!("Mermaid: {reason}"),
-                                _ if closed => "Rendering Mermaid diagram...".into(),
-                                _ => "Mermaid diagram arriving...".into(),
+                                _ if closed => "Rendering Mermaid diagram…".into(),
+                                _ => "Mermaid diagram arriving…".into(),
                             };
                             out.push(MdLine {
                                 base: dim(),
@@ -183,14 +183,14 @@ pub fn thinking_preview(raw: &str, max_chars: usize) -> String {
     if count <= max_chars {
         return text;
     }
-    if max_chars <= 3 {
-        return "...".chars().take(max_chars).collect();
+    if max_chars == 0 {
+        return String::new();
     }
     let tail = text
         .chars()
-        .skip(count - (max_chars - 3))
+        .skip(count - (max_chars - 1))
         .collect::<String>();
-    format!("...{tail}")
+    format!("…{tail}")
 }
 
 fn render_prose_inner(line: &str) -> MdLine {
@@ -538,7 +538,7 @@ mod tests {
             "Inspecting source\nRead E2E status and main.rs."
         );
         let preview = thinking_preview(&format!("{}**Reported summary**", "雪".repeat(100)), 24);
-        assert!(preview.starts_with("..."));
+        assert!(preview.starts_with('…'));
         assert!(preview.ends_with("Reported summary"));
         assert!(!preview.contains('*') && preview.chars().count() <= 24);
     }

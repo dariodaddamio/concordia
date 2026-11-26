@@ -192,7 +192,7 @@ fn panel_sits_directly_above_the_prompt_at_every_width() {
             "w={w}"
         );
         assert!(
-            scr[r1 + 2].contains(&format!("queued 3: {}...", "x".repeat(60))) || w < 80,
+            scr[r1 + 2].contains(&format!("queued 3: {}…", "x".repeat(60))) || w < 80,
             "w={w}: {:?}",
             scr[r1 + 2]
         );

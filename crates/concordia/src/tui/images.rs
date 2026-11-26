@@ -650,7 +650,7 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
                 app.images.pasted.as_ref().map_or(0, |p| p.paths.len())
             )
         } else {
-            " Preparing attachment...".into()
+            " Preparing attachment…".into()
         };
         f.render_widget(
             Paragraph::new(label).style(Style::default().fg(Color::DarkGray)),

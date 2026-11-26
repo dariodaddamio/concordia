@@ -989,14 +989,6 @@ pub struct CardSummary {
     pub files: Vec<(std::ops::Range<usize>, String)>,
 }
 
-impl CardSummary {
-    pub(crate) fn body(&self) -> &str {
-        self.text
-            .split_once(' ')
-            .map_or(&self.text, |(_, body)| body)
-    }
-}
-
 pub fn compact_card_summary(card: &StreamCard) -> CardSummary {
     let mark = match card.status {
         CardStatus::Running => "◉",
@@ -1167,8 +1159,8 @@ fn append_summary_file(summary: &mut CardSummary, path: &str) {
     let start = summary.text.chars().count();
     let label = if basename.chars().count() > 64 {
         format!(
-            "{}...{}",
-            basename.chars().take(30).collect::<String>(),
+            "{}…{}",
+            basename.chars().take(32).collect::<String>(),
             basename
                 .chars()
                 .skip(basename.chars().count() - 31)
@@ -1815,7 +1807,7 @@ mod tests {
                 .skip(range.start)
                 .take(range.len())
                 .collect::<String>()
-                .contains("..."));
+                .contains('…'));
         }
         assert_eq!(edit.detail.as_deref(), Some(patch.as_str()));
         let unknown = StreamCard {

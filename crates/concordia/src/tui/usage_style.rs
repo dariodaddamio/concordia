@@ -193,6 +193,6 @@ mod tests {
         assert_eq!(reds, 1);
         assert_eq!(greens.len(), 1);
         assert_eq!(greens[0].content, "59% left");
-        assert!(picker_spans("Claude  checking limits...").is_none());
+        assert!(picker_spans("Claude  checking limits…").is_none());
     }
 }
