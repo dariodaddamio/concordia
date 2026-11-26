@@ -65,6 +65,7 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     }
     let cwd = probe_dir();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("temp dir: {e}"))?;
+    confirm_logged_in(&program, &args, &env, &cwd)?;
     let started = std::time::SystemTime::now();
     let text = run_usage_in_pty(
         &PtySpec {
@@ -79,6 +80,40 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
         remove_probe_chats(&chats, &cwd, started);
     }
     text
+}
+
+const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn confirm_logged_in(
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+) -> Result<(), String> {
+    let has_key = env.iter().any(|(key, _)| key == "CURSOR_API_KEY");
+    let mut cmd = crate::process_ui::command(program);
+    cmd.args(args).arg("status").current_dir(cwd);
+    cmd.env_remove("CURSOR_API_KEY");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = crate::process_lifetime::capture_with_input(cmd, STATUS_TIMEOUT, 64 * 1024, None)
+        .map_err(|error| format!("could not check the Cursor login: {error}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    login_status(&text, has_key)
+}
+
+fn login_status(status: &str, has_key: bool) -> Result<(), String> {
+    let text = status.to_ascii_lowercase();
+    if is_login_prompt(&text) || (!has_key && !text.contains("logged in")) {
+        Err(NOT_LOGGED_IN.into())
+    } else {
+        Ok(())
+    }
 }
 
 fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) {
@@ -125,7 +160,6 @@ fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) 
 struct Shared {
     buf: Vec<u8>,
     overflow: bool,
-    first: Option<Instant>,
     last: Instant,
 }
 
@@ -170,7 +204,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let shared = Arc::new(Mutex::new(Shared {
         buf: Vec::new(),
         overflow: false,
-        first: None,
         last: Instant::now(),
     }));
     let sink = Arc::clone(&shared);
@@ -188,7 +221,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
             s.buf.extend_from_slice(&chunk[..n]);
             let now = Instant::now();
             s.last = now;
-            s.first.get_or_insert(now);
         }
     });
 
@@ -216,16 +248,17 @@ fn drive(
     let mut dsr_answered = 0usize;
     let mut base = 0usize;
     let mut epoch: Option<Instant> = None;
+    let mut visible: Option<Instant> = None;
     loop {
         if start.elapsed() >= timeout {
             return Err(format!("Cursor changed its usage screen or did not respond within {}s; usage is unavailable", timeout.as_secs()));
         }
-        let (bytes, first, last) = {
+        let (bytes, last) = {
             let s = shared.lock().map_err(|_| "poisoned")?;
             if s.overflow {
                 return Err("Cursor usage output exceeds 1 MiB".into());
             }
-            (s.buf.clone(), s.first, s.last)
+            (s.buf.clone(), s.last)
         };
         let asked = count_sub(&bytes, b"\x1b[6n");
         while dsr_answered < asked {
@@ -234,6 +267,9 @@ fn drive(
             dsr_answered += 1;
         }
         let text = screen_text(&bytes[base.min(bytes.len())..]);
+        if visible.is_none() && !text.trim().is_empty() {
+            visible = Some(Instant::now());
+        }
         if sent && table_complete(&text) {
             std::thread::sleep(Duration::from_millis(250));
             let bytes = shared.lock().map_err(|_| "poisoned")?.buf.clone();
@@ -253,7 +289,7 @@ fn drive(
             base = bytes.len();
             epoch = Some(Instant::now());
         } else {
-            let since = epoch.or(first);
+            let since = epoch.or(visible);
             let ready = since.is_some_and(|e| {
                 (last > e && last.elapsed() >= QUIET_READY) || e.elapsed() >= READY_CAP
             });
@@ -531,6 +567,19 @@ if [ -n \"$(dd bs=1 count=1 2>/dev/null)\" ]; then echo browser > '{}'; fi
             !pressed.exists(),
             "a key reached the login prompt, which opens the browser login"
         );
+    }
+
+    #[test]
+    fn the_probe_starts_only_when_status_confirms_a_login() {
+        let logged_out: Result<(), String> = Err(NOT_LOGGED_IN.into());
+        assert_eq!(login_status("Not logged in", false), logged_out);
+        assert_eq!(login_status("", false), logged_out);
+        assert_eq!(
+            login_status("Logged in as someone@example.com", false),
+            Ok(())
+        );
+        assert_eq!(login_status("", true), Ok(()));
+        assert_eq!(login_status("Not logged in", true), logged_out);
     }
 
     #[test]
