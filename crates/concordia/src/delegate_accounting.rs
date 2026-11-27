@@ -1,4 +1,3 @@
-//! Attempt usage is durable metadata; recovery may reconcile accounting, never native execution.
 use super::*;
 use crate::token_log::{Attribution, Entry, Origin as UsageOrigin};
 
@@ -48,7 +47,6 @@ impl Delegates {
         for job in &mut self.jobs {
             for attempt in &mut job.attempt_records {
                 if attempt.id.is_some() && attempt.started_at.is_some() {
-                    // Reconcile the immutable event again after a crash/lost acknowledgement.
                     attempt.accounted = false;
                 }
                 if attempt.id.is_some() && attempt.started_at.is_some() && attempt.outcome.is_none()

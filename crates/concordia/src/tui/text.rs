@@ -1,8 +1,10 @@
-//! Display-width aware wrapping and hit-testing shared by the prompt editor and transcript.
-
 use unicode_width::UnicodeWidthChar;
 
-/// Preserve logical lines from Unix, Windows and CR-only clipboard sources.
+pub(super) fn format_count(count: u64, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{count} {noun}")
+}
+
 pub fn normalize_newlines(input: &str) -> std::borrow::Cow<'_, str> {
     if input.contains('\r') {
         std::borrow::Cow::Owned(input.replace("\r\n", "\n").replace('\r', "\n"))
@@ -11,8 +13,6 @@ pub fn normalize_newlines(input: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Provider output is text, never terminal instructions. Return a source-character
-/// boundary map as well so callers can preserve styles after removing escape sequences.
 pub fn terminal_text(input: &str) -> (String, Vec<usize>) {
     #[derive(Clone, Copy)]
     enum State {
@@ -91,7 +91,6 @@ fn is_terminal_unsafe(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{061c}' | '\u{feff}')
 }
 
-/// Terminal columns a char occupies (control chars count as 0, wide CJK/emoji as 2).
 pub fn char_width(c: char) -> usize {
     UnicodeWidthChar::width(c).unwrap_or(0)
 }
@@ -100,9 +99,6 @@ pub fn slice_width(chars: &[char]) -> usize {
     chars.iter().map(|c| char_width(*c)).sum()
 }
 
-/// Soft-wrap one logical line (no `\n`) into `[start, end)` char ranges that each fit `width`
-/// columns. Prefers breaking after a space; falls back to a hard break inside a long word.
-/// Always returns at least one range, so an empty line still occupies a row.
 pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -123,9 +119,6 @@ pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
             end += 1;
         }
         if end < chars.len() {
-            // Row is full and more text follows. A space right at the margin hangs off this
-            // row (invisible); otherwise break after the last space if one exists past the
-            // start of the row.
             if chars[end] == ' ' {
                 end += 1;
             } else if let Some(sp) = last_space {
@@ -143,8 +136,6 @@ pub fn wrap_ranges(chars: &[char], width: usize) -> Vec<(usize, usize)> {
     out
 }
 
-/// Like `wrap_ranges`, but the first row may be wider than the rest (a list bullet sits in the
-/// first row's text while continuation rows are indented past it).
 pub fn wrap_ranges_hang(chars: &[char], first: usize, rest: usize) -> Vec<(usize, usize)> {
     let head = wrap_ranges(chars, first);
     let (s0, e0) = head[0];
@@ -157,14 +148,11 @@ pub fn wrap_ranges_hang(chars: &[char], first: usize, rest: usize) -> Vec<(usize
     out
 }
 
-/// Char index (relative to `chars`) of the cell at display column `col`. A column past the end
-/// of the text maps to `chars.len()`; a click on the right half of a wide char lands after it.
 pub fn col_to_index(chars: &[char], col: usize) -> usize {
     let mut cols = 0;
     for (i, c) in chars.iter().enumerate() {
         let w = char_width(*c);
         if col < cols + w.max(1) {
-            // Right half of a wide char counts as "after".
             return if w > 1 && col >= cols + w / 2 {
                 i + 1
             } else {
@@ -197,7 +185,6 @@ fn class(c: char) -> Class {
     }
 }
 
-/// `[start, end)` of the run of same-class chars around `idx` (double-click selection).
 pub fn word_bounds(chars: &[char], idx: usize) -> (usize, usize) {
     if chars.is_empty() {
         return (0, 0);
@@ -215,7 +202,6 @@ pub fn word_bounds(chars: &[char], idx: usize) -> (usize, usize) {
     (s, e)
 }
 
-/// Previous word start strictly before `idx` (Ctrl+Left).
 pub fn prev_word(chars: &[char], idx: usize) -> usize {
     let mut i = idx.min(chars.len());
     while i > 0 && class(chars[i - 1]) == Class::Space {
@@ -231,7 +217,6 @@ pub fn prev_word(chars: &[char], idx: usize) -> usize {
     i
 }
 
-/// Next word end strictly after `idx` (Ctrl+Right).
 pub fn next_word(chars: &[char], idx: usize) -> usize {
     let mut i = idx.min(chars.len());
     while i < chars.len() && class(chars[i]) == Class::Space {
@@ -312,7 +297,7 @@ mod tests {
         assert_eq!(col_to_index(&t, 99), 3);
         let w = c("日a");
         assert_eq!(col_to_index(&w, 0), 0);
-        assert_eq!(col_to_index(&w, 1), 1); // right half of wide char = after it
+        assert_eq!(col_to_index(&w, 1), 1);
         assert_eq!(col_to_index(&w, 2), 1);
     }
 
@@ -339,7 +324,6 @@ mod tests {
             .map(|(a, b)| t[*a..*b].iter().collect())
             .collect();
         assert_eq!(rows, ["aaaa bbbb ", "cccc ", "dddd"]);
-        // Lossless and never empty.
         let joined: String = wrap_ranges_hang(&t, 10, 5)
             .iter()
             .flat_map(|(a, b)| t[*a..*b].iter().copied())

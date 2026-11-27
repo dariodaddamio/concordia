@@ -43,7 +43,7 @@ impl App {
             rows,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter run · Esc cancels with nothing sent".into();
+        self.footer_left = "↑↓ move · Enter run · Esc close".into();
     }
 
     fn run_mcp_command(&mut self, args: &str) {
@@ -53,7 +53,7 @@ impl App {
                 self.push_system(line);
             }
             if crate::mcp_registry::load(&self.state_root).map_or(true, |r| r.servers.is_empty()) {
-                self.push_system("/mcp add NAME stdio COMMAND [ARGS...] · secrets must be env:NAME or credential:TARGET");
+                self.push_system("/mcp add NAME stdio COMMAND [ARGS…] · secrets must be env:NAME or credential:TARGET");
             }
             return;
         }
@@ -63,7 +63,7 @@ impl App {
             return;
         }
         let Some(name) = words.get(1).map(|s| (*s).to_owned()) else {
-            self.push_system("/mcp add NAME stdio COMMAND [ARGS...] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
+            self.push_system("/mcp add NAME stdio COMMAND [ARGS…] | /mcp remove NAME | /mcp on NAME | /mcp off NAME | /mcp import");
             return;
         };
         let result = crate::mcp_registry::mutate(&self.state_root, |registry| {
@@ -94,7 +94,7 @@ impl App {
                         },
                     );
                 }
-                "add" => return Err("/mcp add NAME stdio COMMAND [ARGS...]".into()),
+                "add" => return Err("/mcp add NAME stdio COMMAND [ARGS…]".into()),
                 _ => return Err("/mcp add|remove|on|off|import".into()),
             }
             Ok(())
@@ -569,9 +569,8 @@ impl App {
             return true;
         }
         if let SlashCommand::Customization(hooks) = &cmd {
-            // Catalog titles carry provider and scope (`Skills · codex · evidence`); keep them.
             settings::catalog(self, *hooks);
-            self.footer_left = "↑↓ choose · Enter open source · Esc close".into();
+            self.footer_left = "↑↓ move · Enter open source · Esc close".into();
             return true;
         }
         if let SlashCommand::Harness(arg) = &cmd {
@@ -607,10 +606,6 @@ impl App {
                 return true;
             }
         }
-        // Unknown slash names are provider-owned. Returning false deliberately sends the
-        // original line through the active provider turn instead of manufacturing a Concordia
-        // "unknown command" dead end. Native execution is unavailable in print/exec mode; the
-        // picker explains that boundary while direct input remains provider-visible.
         if matches!(&cmd, SlashCommand::Unknown(_)) {
             return false;
         }

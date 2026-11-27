@@ -1,4 +1,3 @@
-//! Cell-based raster previews: no terminal image protocol, shell decoder or persistent worker.
 use super::*;
 use image::ImageDecoder;
 use ratatui::widgets::Wrap;
@@ -270,12 +269,9 @@ impl App {
                 .draft
                 .iter()
                 .any(|item| matches!(item, crate::attachments::Attachment::Image(_)))
+                && self.raster.view.as_ref().is_some_and(|view| view.inline)
             {
-                // A file-pane preview also uses the raster worker, but it is not an
-                // inline composer thumbnail. Keep it alive when the draft has no images.
-                if self.raster.view.as_ref().is_some_and(|view| view.inline) {
-                    self.raster.close();
-                }
+                self.raster.close();
             }
             return;
         };
@@ -318,9 +314,6 @@ impl App {
         std::thread::spawn(move || {
             let result =
                 decode(&path, expected.as_deref(), &cached, &cancelled, page).map(|mut image| {
-                    // Four composer previews must fit the shared cache without eviction
-                    // repeatedly restarting their decoders. The explicit viewer decodes
-                    // the original again when a full-resolution entry is not cached.
                     if inline && (image.width > 512 || image.height > 512) {
                         image.original =
                             Arc::new(image::imageops::thumbnail(&*image.original, 512, 512));
@@ -473,7 +466,7 @@ pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) 
     };
     f.render_widget(Clear, content);
     let Some(result) = &view.result else {
-        f.render_widget(Paragraph::new("Preparing bounded file preview..."), content);
+        f.render_widget(Paragraph::new("Preparing bounded file preview…"), content);
         return;
     };
     let thumb = match result {
@@ -486,9 +479,6 @@ pub(super) fn draw_file_pane(f: &mut Frame, area: Rect, app: &App, path: &Path) 
             return;
         }
     };
-    // File panes must remain visible in both the native window and the text-grid
-    // capture path. The dedicated full-screen/composer image paths may use native
-    // blits, but a pane owns its cell content and renders it directly.
     paint(f, content, thumb, app.no_color);
     f.render_widget(
         Paragraph::new(format!(
@@ -594,14 +584,13 @@ pub(super) fn draw_attachment(
         );
     } else {
         f.render_widget(
-            Paragraph::new("Preparing preview...").style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new("Preparing preview…").style(Style::default().fg(Color::DarkGray)),
             area,
         );
     }
 }
 
 pub(super) fn draw_brand(f: &mut Frame, area: Rect, app: &App, pixels: Arc<image::RgbaImage>) {
-    // The logo never changes: build its thumbnail once instead of copying the image per frame.
     static BRAND: std::sync::OnceLock<Thumbnail> = std::sync::OnceLock::new();
     let thumb = BRAND.get_or_init(|| Thumbnail {
         page: 0,
@@ -617,8 +606,6 @@ pub(super) fn draw_brand(f: &mut Frame, area: Rect, app: &App, pixels: Arc<image
 
 fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
     if app.raster.native && !app.no_color {
-        // A marker confined to blank image cells lets later modal widgets suppress
-        // the overlay, including a Clear widget that covers only part of the image.
         let [red, green, blue] = super::theme::image_background();
         let marker = Color::Rgb(red, green, blue);
         for y in content.y..content.bottom() {
@@ -627,9 +614,6 @@ fn paint_view(f: &mut Frame, content: Rect, thumb: &Thumbnail, app: &App) {
                 f.buffer_mut()[(x, y)].set_fg(marker).set_bg(marker);
             }
         }
-        // Keep the bounded cell preview in the buffer as an observable fallback. The native
-        // window paints the original pixels over these cells after the frame is submitted, so
-        // this does not change native image fidelity or aspect-ratio fitting.
         paint(f, content, thumb, false);
         app.raster
             .native_draws
@@ -676,6 +660,7 @@ fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
     let h = (f64::from(thumb.pixels.height()) * scale / 2.0).floor() as u16;
     let w = w.min(content.width);
     let h = h.min(content.height);
+    let top_gap = (content.height - h) / 2;
     for y in 0..h {
         for x in 0..w {
             let sample = |row: u32| {
@@ -697,8 +682,10 @@ fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
             };
             let top = u32::from(y) * 2 * thumb.pixels.height() / u32::from(h.max(1) * 2);
             let bottom = (u32::from(y) * 2 + 1) * thumb.pixels.height() / u32::from(h.max(1) * 2);
-            let cell =
-                &mut f.buffer_mut()[(content.x + (content.width - w) / 2 + x, content.y + y)];
+            let cell = &mut f.buffer_mut()[(
+                content.x + (content.width - w) / 2 + x,
+                content.y + top_gap + y,
+            )];
             if monochrome {
                 let Color::Rgb(r, g, b) = sample(top) else {
                     continue;
@@ -718,8 +705,6 @@ fn paint(f: &mut Frame, content: Rect, thumb: &Thumbnail, monochrome: bool) {
 
 #[cfg(test)]
 pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
-    // Earlier attachment scenarios can still have a cancelled inline decode in
-    // flight. Settle it before opening this fixture's explicit viewer.
     app.raster.close();
     let settle = Instant::now() + Duration::from_secs(5);
     while app.raster.job.is_some() {

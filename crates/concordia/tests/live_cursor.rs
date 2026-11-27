@@ -1,7 +1,3 @@
-//! Real Cursor turns over ACP on the Auto model. Ignored by default because they spend the user's
-//! Cursor usage; run with `CONCORDIA_LIVE_CURSOR=1 cargo test -p concordia --test live_cursor
-//! -- --ignored --test-threads=1`. `CONCORDIA_LIVE_CURSOR_HOME` picks the account home
-//! (default `~/.cursor`).
 use concordia::{
     attachments,
     native_input::Mode,
@@ -47,8 +43,6 @@ fn owner(cwd: &Path, home: &Path) -> InteractionOwner {
     }
 }
 
-/// Runs one turn, answering every question with its first option and every permission with
-/// the first offered option. Returns the outcome and the interaction kinds that arrived.
 async fn turn(
     home: &Path,
     cwd: &Path,
@@ -76,7 +70,6 @@ async fn turn_with(
             }
             if let TurnProgress::Interaction(request) = event {
                 match request.kind() {
-                    // Owned requests accept only an answer from their owner, as in the app.
                     NativeInteraction::Questions(questions) => {
                         kinds.push(format!("questions:{}", questions.len()));
                         let picks = vec![0; questions.len()];
@@ -122,7 +115,6 @@ async fn turn_with(
         local_time: None,
         compaction: Default::default(),
     };
-    // The question tool runs `concordia ask-mcp`; the test binary itself cannot serve it.
     let ask_server = Path::new(env!("CARGO_BIN_EXE_concordia"));
     let out = run_provider_turn_with_transport(
         &req,
@@ -169,7 +161,6 @@ async fn text_turn_then_resume_the_same_session() {
 #[ignore = "spends real Cursor usage"]
 async fn a_print_mode_chat_continues_after_acp_became_the_default() {
     let Some(home) = live() else { return };
-    // Print mode stops at Cursor's workspace-trust prompt in a fresh temp folder.
     let cwd = std::env::current_dir().unwrap();
     let dir = cwd.as_path();
     let (first, events) = turn_with(

@@ -144,12 +144,14 @@ fn header_and_status_never_repeat_usage() {
         used_pct: 60.0,
         resets: Some("3h".into()),
         bucket: None,
+        usage_based: false,
     });
     snap.windows.push(crate::usage::UsageWindow {
         label: "7d".into(),
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
         bucket: None,
+        usage_based: false,
     });
     h.app.set_usage_footer(&snap);
     h.app.usage_summary = "5h 40% left \u{b7} 7d 14% left".into();
@@ -173,6 +175,7 @@ fn home_header_omits_subscription_when_usage_box_visible() {
         used_pct: 86.0,
         resets: Some("Nov 11, 8:59am".into()),
         bucket: None,
+        usage_based: false,
     });
     landing.meters.push(crate::tui::landing::LandingMeter {
         provider: ProviderKind::Codex,
@@ -209,6 +212,7 @@ fn use_picker_shows_every_limit_reset_at_narrow_widths_and_clears_on_close() {
                 used_pct,
                 resets: Some(reset.into()),
                 bucket: None,
+                usage_based: false,
             });
         }
         let row = picker_row("codex", ProviderKind::Codex, &snap);
@@ -337,6 +341,7 @@ fn limit_warning_updates_with_account_snapshot_and_unknown_clears_it() {
         used_pct: 96.0,
         resets: Some("2026-10-16 06:03 local".into()),
         bucket: None,
+        usage_based: false,
     });
     h.app.provider = ProviderKind::Codex;
     h.app.set_usage_footer(&snap);
@@ -393,7 +398,6 @@ fn distinct_escape_presses_drained_together_close_each_focused_layer() {
         KeyModifiers::NONE,
         KeyEventKind::Release
     )));
-    // A held navigation key must behave like repeated distinct presses, including modifiers.
     for code in [KeyCode::Left, KeyCode::Right, KeyCode::Up, KeyCode::Down] {
         for modifiers in [
             KeyModifiers::NONE,
@@ -692,18 +696,24 @@ fn the_look_shows_role_markers_spacing_and_the_trust_level() {
         s.contains("You › first") && s.contains("\u{25cf} reply") && s.contains("You › second"),
         "{s}"
     );
-    // A blank row separates turns.
     let lines: Vec<&str> = s.lines().collect();
     let reply = lines.iter().position(|l| l.contains("reply")).unwrap();
     assert!(lines[reply + 1].trim().is_empty(), "{s}");
-    // The input box is rounded, and trust is stated in the footer (full is flagged).
     assert!(
-        s.contains('\u{256d}') && s.contains("permissions: edit"),
+        s.contains('\u{256d}') && s.contains("permissions  edit \u{25be}"),
         "{s}"
     );
     h.app.trust = crate::store::TrustMode::Full;
     h.draw();
-    assert!(h.screen().contains("permissions: full \u{26a0}"));
+    assert!(h.screen().contains("permissions  full \u{26a0}"));
+    let mut wide = Harness::new(140, 24);
+    wide.draw();
+    assert!(
+        wide.screen()
+            .contains("permissions \u{b7} all providers  edit \u{25be}"),
+        "the footer says the mode applies to every provider: {}",
+        wide.screen()
+    );
 }
 
 #[test]
@@ -750,7 +760,6 @@ fn no_color_draws_with_the_terminals_own_colours_but_keeps_emphasis() {
         "the palette still marks the selected row"
     );
 
-    // And the normal path really does use colour (so the test proves something).
     let mut c = Harness::new(100, 24);
     c.app.push_user("hello".into());
     c.draw();
@@ -769,13 +778,14 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
     for w in [40u16, 60, 80, 100, 140] {
         let h = Harness::new(w, 12);
         let row = footer_row(&h);
-        let right = if row.ends_with("permissions: edit ▾") {
-            "permissions: edit ▾"
-        } else if row.ends_with("edit ▾") {
-            "edit ▾"
-        } else {
-            ""
-        };
+        let right = [
+            "permissions \u{b7} all providers  edit ▾",
+            "permissions  edit ▾",
+            "edit ▾",
+        ]
+        .into_iter()
+        .find(|right| row.ends_with(right))
+        .unwrap_or("");
         assert!(!right.is_empty(), "w={w}: mode column missing: {row:?}");
         let left = row[..row.len() - right.len()].to_string();
         assert!(
@@ -791,10 +801,9 @@ fn footer_never_cuts_a_hint_mid_word_and_never_overlaps_the_mode_column() {
         }
         assert!(left.contains("Enter send"), "w={w}: {row:?}");
     }
-    // Wide terminals keep everything; narrow ones shorten, then drop the lowest priorities.
-    assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy or cancel"));
+    assert!(footer_row(&Harness::new(140, 12)).contains("Ctrl+C copy"));
     let narrow = footer_row(&Harness::new(60, 12));
-    assert!(narrow.contains("Ctrl+C copy/stop") || narrow.contains("Ctrl+C copy or cancel"));
+    assert!(narrow.contains("Ctrl+C copy"));
     assert!(!footer_row(&Harness::new(40, 12)).contains("drag"));
 }
 
@@ -821,7 +830,7 @@ fn shift_tab_never_reaches_full() {
         let buf = h.term.backend().buffer();
         let y = buf.area.height - 1;
         let x = buf.area.width - 3;
-        assert_eq!(buf[(x, y)].fg, want, "{mode:?}");
+        assert_eq!(buf[(x, y)].bg, want, "{mode:?}");
     }
     assert!(h.screen().contains("full \u{26a0}"));
     let mode = h.app.areas.permissions;
@@ -839,8 +848,7 @@ fn shift_tab_never_reaches_full() {
     assert!(close.y < mode.y);
     let popup = h.app.areas.permissions_popup;
     assert!(popup.width <= 54 && popup.x >= 40);
-    // The permissions popup ends above the composer instead of drawing over it.
-    assert_eq!(popup.bottom(), h.app.areas.input.y - 1);
+    assert_eq!(popup.bottom(), mode.y);
     assert!(h.app.areas.input.width > 0);
     assert!(!h.screen().contains("message · paused"));
     let input = h.app.areas.input;
@@ -893,7 +901,7 @@ fn full_mode_badge_is_red() {
     h.draw();
     let buf = h.term.backend().buffer();
     assert_eq!(
-        buf[(buf.area.width - 3, buf.area.height - 1)].fg,
+        buf[(buf.area.width - 3, buf.area.height - 1)].bg,
         Color::Red
     );
 }
@@ -988,7 +996,7 @@ fn the_token_line_shows_reported_fields_and_the_turn_time() {
     );
     let s = h.screen();
     assert!(
-        s.contains("in 12.3k - out 1.4k - cached 9.8k")
+        s.contains("in 12.3k · out 1.4k · cached 9.8k")
             && s.contains("Worked for")
             && s.contains("stopped"),
         "{s}"
@@ -1110,7 +1118,6 @@ fn tips_hide_when_busy_or_typing_and_wait_20s_after_a_chat() {
     assert!(!h.screen().contains("tip: "));
     h.app.busy = false;
 
-    // After a conversation has started the tip waits for 20 s of idle time.
     h.app.push_user("hi".into());
     h.draw();
     assert!(!h.screen().contains("tip: "));
@@ -1130,7 +1137,6 @@ fn tips_hide_when_busy_or_typing_and_wait_20s_after_a_chat() {
 #[test]
 fn a_user_command_shows_as_typed_and_submits_the_rendered_prompt() {
     let mut h = Harness::new(80, 20);
-    // A name no provider advertises; provider collisions have their own cases.
     let cmds = crate::user_commands::commands_dir(&h.app.state_root);
     std::fs::create_dir_all(&cmds).unwrap();
     std::fs::write(
@@ -1171,7 +1177,6 @@ Review for bugs. Focus: $ARGS",
         .unwrap();
     assert_eq!(last_user.text, "/audit the parser");
 
-    // A built-in name is never shadowed: /doctor stays the built-in and sends no turn.
     h.type_str("/doctor");
     h.app.busy = false;
     h.app.submit_input(&tx);
@@ -1319,7 +1324,6 @@ fn reused_tool_ids_do_not_overwrite_cards_from_previous_turns() {
 
 #[test]
 fn footer_stats_reserve_room_while_preserving_send_hint() {
-    // Off by default: nothing extra.
     let mut h = Harness::new(160, 12);
     h.app.stats = None;
     h.draw();
@@ -1334,7 +1338,6 @@ fn footer_stats_reserve_room_while_preserving_send_hint() {
     );
     assert!(row.contains("Enter send"), "{row:?}");
 
-    // Stats reserve space, reducing optional hints before hiding send or truncating.
     for w in [100u16, 90, 80, 60, 40] {
         let mut h = Harness::new(w, 12);
         h.app.stats = Some(crate::sysstats::StatsHandle::fixed(sample_stats()));
@@ -1437,10 +1440,8 @@ fn two_tabs_draw_a_clickable_strip_on_the_top_row_above_the_header() {
     );
     assert_eq!(h.app.tab_hits.len(), 3);
     assert!(h.app.tab_hits.iter().all(|r| r.y == 0 && r.width > 0));
-    // The header moves down one row instead of being drawn over.
     assert_eq!(screen.lines().nth(1), single.lines().next());
 
-    // While a tab is dragged, a bar marks the gap where it will land.
     h.app.tab_drag = Some((0, 2));
     h.draw();
     let marker = h.app.tab_hits[2].x - 1;

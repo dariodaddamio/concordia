@@ -1,13 +1,6 @@
-//! Keyboard shortcuts for moving between the prompt draft and the queued prompts.
-
 use super::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Handle queue focus shortcuts before the queue's own focused-key handler.
-///
-/// Ctrl+Up never edits or clears the draft, so its text, cursor, selection and history state
-/// remain owned by the prompt editor. Ctrl+Down returns to the draft unless an inline queue
-/// edit is open; in that case the user must save or cancel it explicitly.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     if !key.modifiers.contains(KeyModifiers::CONTROL) {
         return false;
@@ -33,8 +26,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     }
 }
 
-/// Persistent footer hint while the queue has focus. Root and queue rendering can append this
-/// to their existing navigation hint without duplicating the shortcut behavior.
 pub(super) fn focus_hint(app: &App) -> Option<&'static str> {
     if !app.queue.focused {
         return None;

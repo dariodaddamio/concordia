@@ -12,7 +12,6 @@ pub struct AccountDef {
     pub custom: bool,
 }
 
-/// Serializes tests that point `profile_home()` at a temp dir via the environment.
 #[cfg(test)]
 pub(crate) static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -32,7 +31,6 @@ pub fn normalize_account_id(id: &str) -> String {
     }
 }
 
-/// Provider name shown next to accounts (`Codex`, `Claude`, `Grok Build`).
 pub fn display_provider_name(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Codex => "Codex",
@@ -57,8 +55,6 @@ pub fn display_account_name(provider: ProviderKind, account: &str) -> String {
     id
 }
 
-/// Header, settings Accounts row, and `/use` share this label: account alone when it already
-/// names the provider (`Codex 2`), otherwise `Claude · Work`.
 pub fn format_account_heading(
     provider: ProviderKind,
     account: &str,
@@ -77,7 +73,6 @@ pub fn format_account_heading(
     }
 }
 
-/// A nickname changes display only, never account ids, credential homes or removal ownership.
 pub fn set_nickname(root: &Path, account: &str, name: &str) -> anyhow::Result<()> {
     let id = normalize_account_id(account);
     anyhow::ensure!(get_account(root, &id).is_some(), "unknown account: {id}");
@@ -96,7 +91,6 @@ pub fn set_nickname(root: &Path, account: &str, name: &str) -> anyhow::Result<()
     })
 }
 
-/// Whether `home` holds a usable login for `provider` (existence/shape check only).
 pub fn is_logged_in(provider: ProviderKind, home: &Path) -> bool {
     crate::test_guard::check_not_real_state(home);
     dir_logged_in(provider, home)
@@ -111,7 +105,6 @@ fn dir_logged_in(provider: ProviderKind, home: &Path) -> bool {
             } else {
                 home.join("credentials.json")
             };
-            // Existence and size only: whether a login is present never needs the token itself.
             fs::metadata(&cred)
                 .map(|m| m.is_file() && m.len() > 20)
                 .unwrap_or(false)
@@ -228,7 +221,6 @@ pub fn list_all_accounts(state_root: &Path) -> Vec<AccountDef> {
     list_accounts(state_root, false)
 }
 
-/// Setup/removal must also cover logged-out and hidden registered homes.
 pub fn setup_accounts(state_root: &Path) -> Vec<AccountDef> {
     list_accounts(state_root, true)
 }
@@ -264,8 +256,6 @@ fn list_accounts(state_root: &Path, include_hidden: bool) -> Vec<AccountDef> {
     out
 }
 
-/// Who is signed in to this account's home: the email (or provider account id) it reports,
-/// lower-cased. `None` when not logged in or the home does not say.
 pub fn identity_key(provider: ProviderKind, home: &Path) -> Option<String> {
     let id = crate::identity::inspect_provider(provider, home);
     if !id.logged_in {
@@ -276,8 +266,6 @@ pub fn identity_key(provider: ProviderKind, home: &Path) -> Option<String> {
         .filter(|l| !l.is_empty())
 }
 
-/// Groups of logged-in accounts of one provider that are the *same login* (two slots signed in
-/// to one subscription). Each group has at least two accounts, ordered built-in/older first.
 pub fn duplicate_groups(state_root: &Path) -> Vec<Vec<AccountDef>> {
     let mut by_key: std::collections::BTreeMap<(String, String), Vec<AccountDef>> =
         std::collections::BTreeMap::new();
@@ -306,7 +294,6 @@ pub fn duplicate_groups(state_root: &Path) -> Vec<Vec<AccountDef>> {
         .collect()
 }
 
-/// The existing account that `id` duplicates, if any (never `id` itself).
 pub fn duplicate_of(state_root: &Path, id: &str) -> Option<AccountDef> {
     let want = normalize_account_id(id);
     duplicate_groups(state_root)

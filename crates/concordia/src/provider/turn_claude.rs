@@ -1,14 +1,8 @@
-//! Claude Agent SDK stdio control protocol.
-//!
-//! This module is deliberately limited to the documented native control frames.  It does not
-//! treat MCP callbacks, tool results, or model prose as approval evidence.  The coordinator owns
-//! process lifetime and routes parsed permission requests through `InteractionConnection`.
 use super::*;
 use crate::provider::interaction::InteractionConnection;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
-/// Current installed Claude control schema matched to the official SDK protocol.
 pub(crate) const SUPPORTED_VERSION: &str = crate::capacity::claude_capacity::CLI_VERSION;
 
 const MAX_ID: usize = 512;
@@ -86,7 +80,6 @@ fn bounded_id(value: Option<&Value>) -> Option<String> {
         .then(|| value.to_owned())
 }
 
-/// Parse only a top-level native `can_use_tool` control request.
 pub(crate) fn permission_request(value: &Value) -> Result<Option<PermissionRequest>, String> {
     if value.get("type").and_then(Value::as_str) != Some("control_request") {
         return Ok(None);
@@ -134,7 +127,6 @@ pub(crate) fn permission_request(value: &Value) -> Result<Option<PermissionReque
     }))
 }
 
-/// Control cancellation identifies a pending permission request and must never be answered.
 pub(crate) fn cancelled_request_id(value: &Value) -> Option<&str> {
     (value.get("type").and_then(Value::as_str) == Some("control_cancel_request"))
         .then(|| value.get("request_id").and_then(Value::as_str))
@@ -142,7 +134,6 @@ pub(crate) fn cancelled_request_id(value: &Value) -> Option<&str> {
         .filter(|id| !id.is_empty() && id.len() <= MAX_ID && !id.chars().any(char::is_control))
 }
 
-/// Build the native SDK response after the broker has produced an at-most-once decision.
 pub(crate) fn permission_response(
     request_id: &str,
     input: &Value,
@@ -183,7 +174,6 @@ pub(crate) fn user_message(prompt: &str) -> Value {
     })
 }
 
-/// Translate the broker's one-shot ACP-shaped selection into the Claude wire decision.
 pub(crate) fn allow_from_broker(value: &Value) -> bool {
     value.pointer("/outcome/optionId").and_then(Value::as_str) == Some("allow")
 }
@@ -202,8 +192,6 @@ fn bounded_question_text(value: Option<&Value>, field: &str) -> Result<String, S
     Ok(text.to_owned())
 }
 
-/// Normalize Claude's AskUserQuestion payload into the existing bounded Questions broker shape.
-/// The original input remains in the pending request and is used to build updatedInput later.
 fn claude_question_params(request: &PermissionRequest, session: &str) -> Result<Value, String> {
     let questions = request
         .input
@@ -265,8 +253,6 @@ fn claude_question_params(request: &PermissionRequest, session: &str) -> Result<
     }))
 }
 
-/// Convert broker selections to the official Claude answer shape. Claude accepts a string for
-/// each answer; multi-select labels are joined with comma-space as documented by the SDK demo.
 fn claude_question_answer(input: &Value, answer: &Value) -> Result<Value, String> {
     let questions = input
         .get("questions")
@@ -346,8 +332,6 @@ async fn write_frame(input: &mut tokio::process::ChildStdin, value: &Value) -> a
     Ok(())
 }
 
-/// Run Claude's version-matched stdio control transport. Process ownership and cancellation stay
-/// with the normal `RunningTurn`; this adapter only owns the protocol handshake and request loop.
 pub(super) async fn run(
     req: &ProviderTurnRequest<'_>,
     plan: &PlannedTurn,
@@ -406,8 +390,6 @@ pub(super) async fn run(
         !crate::provider::launch::is_batch_shim(&launch.program),
         "Claude native stdio requires a native executable; batch wrappers are unsupported"
     );
-    // The stream protocol receives initialize and user frames over stdin; the normal argv prompt
-    // must not be sent as a second, uncorrelated request.
     if launch.args.last() == Some(&plan.prompt) {
         launch.args.pop();
     } else {
@@ -432,8 +414,6 @@ pub(super) async fn run(
         .args(&launch.args)
         .envs(plan.env.clone())
         .envs(launch.env.clone())
-        // Ask the CLI for the SDK-host-only session_state_changed frames. This is the
-        // versioned signal the official SDK uses to know whether a result owes a follow-up turn.
         .env("CLAUDE_CODE_SDK_READS_SESSION_STATE", "1")
         .current_dir(&plan.cwd)
         .stdin(std::process::Stdio::piped())
@@ -471,7 +451,6 @@ pub(super) async fn run(
         ..Default::default()
     };
     let artifact_owner = owner.clone();
-    // Claude announces its slash commands for this session; the palette offers exactly those.
     let command_owner = owner.clone();
     let mut command_help: std::collections::HashMap<String, String> = Default::default();
     let mut artifacts = crate::artifacts::Collector::default();
@@ -623,7 +602,6 @@ pub(super) async fn run(
                                         })
                                     })
                                     .collect();
-                                // The catalog belongs to this session, so name it first.
                                 send_progress(&progress, TurnProgress::Session(session.to_owned()), &handle).await;
                                 send_progress(
                                     &progress,
@@ -838,9 +816,6 @@ pub(super) async fn run(
                 anyhow::ensure!(pending.is_empty(), "Claude ended with unresolved native permissions; completion is uncertain");
                 out.failed |= value["is_error"] == true || value["subtype"].as_str() != Some("success");
                 result_seen = true;
-                // Deferred background work may legitimately outlive the result by any amount of
-                // time (a long build). The turn stays open until Claude reports it idle or the
-                // user cancels; there is no wall-clock ceiling.
                 if out.failed
                     || (deferred_tasks.is_empty()
                         && ((!deferred_work_seen && session_state.as_deref() != Some("running"))
@@ -940,8 +915,6 @@ pub(super) async fn run(
     Ok(out)
 }
 
-/// Capture only after a completed turn on this same live connection. A newly resumed
-/// process is not evidence that its prior context has already been loaded.
 async fn capture_context(
     input: &mut tokio::process::ChildStdin,
     output: &mut tokio::io::BufReader<tokio::process::ChildStdout>,

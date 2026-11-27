@@ -1,4 +1,3 @@
-//! Active attachment state for the composer or a queued edit. Snapshots stay in durable envelopes.
 use super::*;
 use crate::attachments::{Attachment, Document, Image, Message, PdfDocument};
 enum Paste {
@@ -95,8 +94,6 @@ impl App {
             conversation: self.deleg.d.conversation_id().into(),
             cwd: self.cwd.clone(),
         });
-        // A standalone pasted image path is an image input, not prose mentioning a file.
-        // Import it immediately so the same preview appears as for a clipboard bitmap.
         if self.images.pasted.as_ref().is_some_and(|pasted| {
             pasted.paths.iter().all(|path| {
                 path.extension().is_some_and(|extension| {
@@ -211,8 +208,6 @@ impl App {
                 if let Some(id) = self.workspace.focused {
                     self.workspace.preview(id, true);
                 }
-                // /attach adds a chip for the next send; keep the composer focused so typing
-                // continues there. F6 still moves into the preview when the user wants it.
                 self.workspace.focused = None;
                 self.flash("Document snapshot attached; preview shows the included text");
             }
@@ -237,7 +232,6 @@ impl App {
     }
     pub(super) fn restore_composer(&mut self, raw: &str) {
         self.rename_editor = None;
-        // A restored draft owns its attachments; a previous import must never append to it.
         self.images.job = None;
         self.images.pressed = None;
         self.images.targets.clear();
@@ -656,7 +650,7 @@ pub(super) fn draw(f: &mut Frame, mut area: Rect, app: &mut App) -> Rect {
                 app.images.pasted.as_ref().map_or(0, |p| p.paths.len())
             )
         } else {
-            " Preparing attachment...".into()
+            " Preparing attachment…".into()
         };
         f.render_widget(
             Paragraph::new(label).style(Style::default().fg(Color::DarkGray)),
@@ -712,7 +706,7 @@ pub(super) fn mouse(app: &mut App, event: &MouseEvent) -> bool {
             };
             if pressed.1 {
                 app.images.draft.remove(pressed.0);
-                app.images.targets.clear(); // Indices become valid again after the next draw.
+                app.images.targets.clear();
                 app.persist_draft_now();
                 return true;
             }
@@ -897,7 +891,6 @@ mod tests {
         app.images.revision = app.editor.revision();
         tx.send(Ok(Paste::Text("clipboard text".into()))).unwrap();
         app.poll_images();
-        // Queue edit owns paste routing; async completion never interprets an attachment envelope.
         assert!(!app.editor.text().contains("concordia-message-v1"));
         app.close_queue_edit();
         app.queue.items.clear();
@@ -924,8 +917,6 @@ mod tests {
         assert!(app.accept_pasted_files());
         assert!(!app.images.importing());
         assert_eq!(app.images.count(), 0);
-        // A pasted image path imports immediately, and typing during the asynchronous
-        // import must not discard the attachment or overwrite the evolving message.
         image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 90, 255]))
             .save(&original)
             .unwrap();

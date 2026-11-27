@@ -1,9 +1,3 @@
-//! Reader for Claude Agent SDK's bidirectional `get_context_usage` response.
-//!
-//! This module deliberately does not spawn Claude or invent source/file provenance. The
-//! persistent transport owns connection generation and turn correlation; it passes those exact
-//! identities into `read` and the coordinator converts the result into the existing Observation.
-
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -11,8 +5,6 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
-/// Current official control schema matched against the installed CLI and initialize-only receipt.
-/// This identifies protocol support, not a claim of live model-turn qualification.
 pub const CLI_VERSION: &str = "2.1.319";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,8 +40,6 @@ struct WireUsage {
     is_auto_compact_enabled: bool,
 }
 
-/// Parse one exact SDK control response. The caller must retain the binding and connection
-/// generation; a parsed response is never valid for another session, model, turn, or connection.
 pub fn read(response: &[u8], binding: ContextBinding) -> Result<ContextUsage, String> {
     if response.is_empty() || response.len() > MAX_RESPONSE_BYTES {
         return Err("Claude context response is missing or oversized".into());
@@ -76,7 +66,6 @@ pub fn read(response: &[u8], binding: ContextBinding) -> Result<ContextUsage, St
     {
         return Err("Claude context response failed model/window validation".into());
     }
-    // The displayed percentage is metadata; policy uses the widened exact token ratio.
     let percentage_basis = ((wire.total_tokens as u128 * 100) / wire.max_tokens as u128) as u64;
     Ok(ContextUsage {
         binding,
@@ -89,7 +78,6 @@ pub fn read(response: &[u8], binding: ContextBinding) -> Result<ContextUsage, St
     })
 }
 
-/// Compile-time marker for coordinator capability registration.
 pub const TRANSPORT: &str = "claude-agent-sdk-control/get_context_usage";
 pub const PROVIDER: ProviderKind = ProviderKind::Claude;
 
@@ -183,7 +171,6 @@ fn unknown(
     }
 }
 
-/// Persist one post-turn control response and its exact native-memory checkpoint.
 pub fn save(
     root: &Path,
     binding: &crate::native_memory::Binding,
@@ -247,7 +234,6 @@ pub fn save(
     .map_err(|e| e.to_string())
 }
 
-/// Load a cached post-turn measurement only when the current native-memory checkpoint is exact.
 pub fn load(
     root: &Path,
     binding: &crate::native_memory::Binding,

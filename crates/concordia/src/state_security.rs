@@ -1,5 +1,3 @@
-//! State-directory permission policy.
-
 use std::path::Path;
 
 #[cfg(windows)]
@@ -199,8 +197,6 @@ pub fn is_owner_only(path: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Return the current folder SDDL for doctor backups. This is intentionally Windows-only:
-/// Unix ACLs are not changed by the doctor ACL applier.
 #[cfg(windows)]
 pub fn security_descriptor_sddl(path: &Path) -> std::io::Result<String> {
     use std::os::windows::ffi::OsStrExt;
@@ -253,13 +249,10 @@ pub fn security_descriptor_sddl(path: &Path) -> std::io::Result<String> {
     Ok(result)
 }
 
-/// Recognize the protected ACL emitted for a state directory. The parser is deliberately
-/// independent of Windows pointers so malformed or future SDDL can only produce `false`.
 pub fn sddl_is_owner_only(sddl: &str) -> bool {
     sddl_is_owner_only_with_mode(sddl, false)
 }
 
-/// Recognize the inherited ACL that a child of a protected state directory receives.
 pub fn sddl_is_owner_only_child(sddl: &str) -> bool {
     sddl_is_owner_only_with_mode(sddl, true)
 }
@@ -295,8 +288,6 @@ mod tests {
     use super::*;
     #[test]
     fn new_state_dir_is_owner_only() {
-        // The Windows test guard's profile temp parent is intentionally not granted
-        // WRITE_DAC; use Cargo's isolated workspace target instead.
         let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..\\..\\target");
         let parent = tempfile::Builder::new().tempdir_in(target).unwrap();
         let dir = parent.path().join("state");

@@ -1,14 +1,8 @@
-//! Deterministic, local redaction for values which must not enter Concordia records.
-//!
-//! Input readers own their byte limits. Every supplied line is scanned, including long
-//! serialized records, so a scan boundary cannot copy a credential verbatim into storage.
-
 use std::borrow::Cow;
 use std::sync::{OnceLock, RwLock};
 
 static RUNTIME_SECRETS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 
-/// Register an exact runtime secret. The value is retained only in this process.
 pub fn register_runtime_secret(value: impl Into<String>) {
     let value = value.into();
     if !value.is_empty() {
@@ -22,7 +16,6 @@ pub fn register_runtime_secret(value: impl Into<String>) {
     }
 }
 
-/// Redact credentials and high-entropy values from text.
 pub fn redact(text: &str) -> Cow<'_, str> {
     let mut rest = text;
     let mut output = String::new();
@@ -76,7 +69,6 @@ pub fn redact_bytes(bytes: &[u8]) -> Vec<u8> {
     }
     if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(bytes) {
         return if strings(&mut value) {
-            // Value serialization cannot fail for an already parsed JSON tree.
             serde_json::to_vec(&value).expect("serialize redacted JSON")
         } else {
             bytes.to_vec()
@@ -411,7 +403,6 @@ fn find_all(
 }
 
 fn token(kind: &str) -> String {
-    // A removal marker carries the reason, never a value-derived fingerprint.
     format!("[REDACTED:{kind}:removed]")
 }
 

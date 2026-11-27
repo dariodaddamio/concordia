@@ -1,11 +1,9 @@
-//! Opt-in native Codex stdio transport, checked against the qualified generated protocol.
 use super::*;
 use crate::provider::{interaction::InteractionConnection, CardStatus};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 const TOOL_MAP_MAX: usize = 4096;
-// Wire frames can contain full tool output/history; display limits are applied separately.
 const FRAME_MAX: usize = 64 * 1024 * 1024;
 const TEXT_CHUNK_MAX: usize = 64 * 1024;
 
@@ -95,8 +93,6 @@ impl Connection {
         loop {
             let value = self.read().await?;
             if value.get("method").is_some() {
-                // No approvals during initialize/history loading. Events from turn/start may
-                // precede its response, but cannot become actionable before its exact turn ID.
                 if method == "turn/start" {
                     buffered_bytes += value.to_string().len();
                     anyhow::ensure!(
@@ -313,7 +309,6 @@ impl Connection {
                     self.text_fragment(id, delta).await;
                 }
             }
-            // A new summary part starts a new paragraph of the same reasoning stream.
             "item/reasoning/summaryPartAdded" => {
                 self.emit(TurnProgress::ThinkingDelta("\n".into())).await;
             }
@@ -325,8 +320,6 @@ impl Connection {
             "item/started" | "item/completed" => {
                 self.item(&params["item"], method == "item/completed").await
             }
-            // Cumulative thread totals and the last model response are not full-turn totals.
-            // Existing native-source accounting remains authoritative until a baseline is proven.
             _ => {}
         }
         Ok(false)
@@ -513,11 +506,8 @@ impl Connection {
     }
 }
 
-/// The Codex CLI version this transport was qualified against.
 const QUALIFIED_VERSION: &str = "codex-cli 0.166.0";
 const QUALIFIED_CLI_VERSION: &str = "0.166.0";
-/// Start of a failure that happened before the prompt reached Codex; the caller may rerun the
-/// same turn on the standard transport without sending the prompt twice.
 pub(super) const UNAVAILABLE: &str = "Codex native protocol unavailable before the prompt was sent";
 pub(super) const INCOMPATIBLE: &str =
     "Codex app-server protocol is older than Concordia's qualified minimum";
@@ -573,8 +563,6 @@ pub(super) async fn run(
     .await?
     .map_err(anyhow::Error::msg)?;
     if version.trim() != QUALIFIED_VERSION {
-        // Providers stay current; a newer Codex is tried, and a protocol mismatch before the
-        // prompt is sent falls back to the standard transport in the caller.
         crate::logging::info(&format!(
             "codex app-server: installed {} differs from the qualified {QUALIFIED_VERSION}",
             version.trim()
@@ -628,14 +616,11 @@ pub(super) async fn run(
         command.arg(script);
     }
     command.arg("app-server");
-    // Carry the process-local compaction overrides from the final enforcement plan.
     for (flag, value) in planned_options(&plan.argv).filter(|(flag, _)| *flag == "-c") {
         if let Some(value) = value {
             command.args([flag, value]);
         }
     }
-    // Codex app-server reads MCP servers from the same -c configuration surface as `codex exec`.
-    // This server is per-turn because its endpoint and token belong only to this live bridge.
     let ask_name = toml::Value::String("concordia-ask".into());
     let ask_command = toml::Value::String(ask_command);
     let ask_endpoint = toml::Value::String(ask_endpoint);
@@ -673,7 +658,6 @@ pub(super) async fn run(
     handle.pid.store(child.id().unwrap_or(0), Ordering::SeqCst);
     let input = child.stdin.take().context("Codex stdin unavailable")?;
     let stdout = child.stdout.take().context("Codex stdout unavailable")?;
-    // Backpressure bounds queued large frames; do not retain sixteen full output snapshots.
     let (output_tx, output) = mpsc::channel(1);
     let output_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout);
@@ -738,15 +722,11 @@ pub(super) async fn run(
         next_steer_id: 100,
     };
     let mut prompt_sent = false;
-    // Only a protocol call that fails may fall back; identity and policy refusals never do.
     let mut protocol_failure = true;
     let result=async {
         let init=tokio::time::timeout(Duration::from_secs(12),conn.rpc(1,"initialize",json!({"clientInfo":{"name":"concordia","title":"Concordia","version":crate::version::VERSION},"capabilities":{"experimentalApi":true}}))).await??;
         protocol_failure = false;
         anyhow::ensure!(init["codexHome"].as_str().and_then(|path|Path::new(path).canonicalize().ok()).as_ref()==Some(&home),"Codex app-server account home mismatch; prompt withheld");
-        // Identity is verified above and must never fall back. Compatibility refusal is
-        // different: it is a pre-prompt protocol failure, so the caller may retry this same
-        // draft on Codex's standard transport without replaying it here.
         protocol_failure = true;
         let protocol_version = init["userAgent"]
             .as_str()
@@ -787,7 +767,6 @@ pub(super) async fn run(
             return Ok::<(), anyhow::Error>(());
         }
         if command == "/fork" && req.prompt.split_whitespace().count() == 1 {
-            // The original thread stays as it was; this chat continues on the new one.
             prompt_sent = true;
             let fork = tokio::time::timeout(Duration::from_secs(12), conn.rpc(4, "thread/fork", json!({"threadId": id, "cwd": plan.cwd, "sandbox": sandbox, "approvalPolicy": approval, "approvalsReviewer": "user", "excludeTurns": true}))).await??;
             let forked = fork["thread"]["id"].as_str().filter(|forked| !forked.is_empty() && forked.len() <= 4096).context("Codex fork returned no thread ID")?;
@@ -818,7 +797,6 @@ pub(super) async fn run(
         conn.listen().await
     }.await;
     handle.set_steering(None);
-    // A lost acknowledgement is uncertain: never retry input on another turn or transport.
     if let Some((_, request)) = conn.steering.take() {
         let _ = request.reply.send(Err("Steering was not confirmed before the connection ended; check native history before resending".into()));
     }
@@ -828,7 +806,6 @@ pub(super) async fn run(
     }
     if let Err(error) = result {
         if !conn.out.cancelled && !prompt_sent && protocol_failure {
-            // Nothing reached Codex yet: report quietly so the caller can use the standard transport.
             conn.out.failed = true;
             conn.out.stderr_tail = format!("{UNAVAILABLE}: {error:#}");
         } else if !conn.out.cancelled {

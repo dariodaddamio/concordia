@@ -1,4 +1,3 @@
-//! The single always-on MCP surface: account discovery and delegated agents.
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -73,8 +72,6 @@ pub fn take_pending_records(root: &Path, limit: usize) -> Vec<AgentRecord> {
         .collect()
 }
 
-/// Names returned by this server's `tools/list` response. Callers use this registry when
-/// describing a session, so the standing context cannot drift from the registered surface.
 pub fn registered_tool_names() -> Vec<String> {
     vec!["agents".into()]
 }
@@ -233,8 +230,6 @@ fn call_remote(root: &Path, params: &Value) -> Result<Value, String> {
     }
     let registry =
         crate::mcp_registry::load(root).map_err(|_| "MCP registry cannot be read".to_string())?;
-    // The caller cannot choose the policy scope. The proxy process binds its project at
-    // launch; absent an authenticated binding, use its own working directory.
     let project = proxy_project();
     let entry = crate::mcp_registry::effective(&registry, &project, server)
         .ok_or_else(|| "remote MCP server is disabled for this project".to_string())?;
@@ -640,7 +635,6 @@ pub fn take_pending(root: &Path, limit: usize) -> Vec<PendingProposal> {
     out
 }
 
-/// Claim only requests bound to this active conversation, workspace and parent attempt.
 pub fn take_pending_for(
     root: &Path,
     limit: usize,
@@ -693,8 +687,6 @@ pub fn take_pending_for(
         if record.status != "queued" {
             continue;
         }
-        // A queued cancellation is consumed by the proposal owner before the request can
-        // become a live worker. Keep the intent durable if the terminal record cannot persist.
         if records::peek_control(root, &proposal.agent_id)
             .is_some_and(|control| control.action == "cancel")
         {
@@ -716,7 +708,6 @@ pub fn take_pending_for(
         if std::fs::rename(&path, &claim).is_err() {
             continue;
         }
-        // The durable AgentRecord keeps the task even if cleanup or submission fails.
         let _ = std::fs::remove_file(claim);
         out.push(proposal);
         if out.len() == limit {

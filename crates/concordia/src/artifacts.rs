@@ -1,5 +1,3 @@
-//! Metadata-only local file outputs reported by verified structured native events.
-//! A report is not a claim that current disk bytes were authored by the provider.
 use crate::provider::{
     interaction::InteractionOwner,
     stream_cards::{CardStatus, StreamCard},
@@ -30,7 +28,6 @@ pub struct Record {
     pub execution_directory_id: String,
 }
 impl Record {
-    /// Explicit bounded historical source inspection; never reads current file contents.
     pub fn inspect_edit(&self, root: &Path) -> Result<Option<StreamCard>, String> {
         if self.owner.provider != crate::store::ProviderKind::Codex {
             return Ok(None);
@@ -98,7 +95,6 @@ impl Record {
             .unwrap_or_default()
             .to_string_lossy();
         let path = target
-            // Card details are plain text; a bare path is clickable there, link markup is not.
             .map(|target| format!("Open current file: {target}"))
             .unwrap_or_else(|| {
                 "Open unavailable: reported path is outside the execution directory or excluded"
@@ -185,8 +181,6 @@ fn local_path(owner: &InteractionOwner, reported: &str) -> Option<PathBuf> {
     }
     Some(path)
 }
-/// Only completed Codex file-change items. Prose, tool arguments, unknown providers and failed
-/// requests never become output records. The native event hash is not a disk content hash.
 pub fn from_item(
     owner: &InteractionOwner,
     session: &str,
@@ -257,11 +251,6 @@ pub fn from_item(
         .collect()
 }
 
-/// Convert Cursor's documented completed write/edit tool report into the shared artifact
-/// registry. Cursor emits the request and result in one `tool_call` event, so `call_id` is the
-/// native event identity and the successful result path is the provider-owned local-path report.
-/// A started call, failed result, prose path, or a result without an explicit success path is not
-/// evidence that a file was produced.
 pub fn from_cursor_event(
     owner: &InteractionOwner,
     session: &str,
@@ -306,8 +295,6 @@ pub fn from_cursor_event(
     let Some(success) = call.pointer("/result/success").filter(|v| v.is_object()) else {
         return Vec::new();
     };
-    // A success object is required to carry a concrete path. Do not fall back to prose or the
-    // request arguments: the completed native result is the provenance-bearing report.
     let Some(path) = success.get("path").and_then(Value::as_str).filter(|path| {
         !path.is_empty() && path.len() <= 4096 && !path.chars().any(char::is_control)
     }) else {
@@ -334,8 +321,6 @@ pub fn from_cursor_event(
         return Vec::new();
     }
     let revision = format!("{:x}", Sha256::digest(event.to_string().as_bytes()));
-    // Some native call IDs contain line breaks. Keep their identity in a visibly escaped
-    // representation rather than injecting control characters into provenance cards.
     let event_id = if native_event_id.chars().any(char::is_control) {
         format!(
             "json:{}",
@@ -357,9 +342,6 @@ pub fn from_cursor_event(
         execution_directory_id,
     }]
 }
-/// Track Claude's built-in Write/Edit tool use until the matching successful user tool result.
-/// Request arguments alone are not output evidence; the result must carry native tool-result
-/// metadata (`filePath`/`path` or `structuredPatch`) and the exact `tool_use_id` correlation.
 pub fn claude_tool_event(
     pending: &mut HashMap<String, (String, String)>,
     owner: &InteractionOwner,
@@ -675,8 +657,6 @@ impl Collector {
             .await;
     }
 
-    /// Record a completed Cursor write/edit report using the same bounded registry and
-    /// persistence path as Codex file-change items.
     pub async fn report_cursor(
         &mut self,
         owner: Option<&InteractionOwner>,

@@ -1,4 +1,3 @@
-//! Update presentation reads the job's progress snapshot; it never owns update execution.
 use crate::update::{JobSnapshot, PreviewLine as P, UpdatePreview, UpdateStage as S};
 use std::time::Duration;
 

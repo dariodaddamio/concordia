@@ -13,7 +13,6 @@ use std::sync::{Arc, Weak};
 
 pub const HISTORY_CAP: usize = 500;
 
-// The panic hook cannot see the app, so the latest draft is mirrored here on every change.
 type DraftSlot = Mutex<
     Option<(
         Weak<super::recovery::RecoveryLease>,
@@ -72,20 +71,14 @@ fn flush_from(slot: &DraftSlot) {
     }
 }
 
-// ---- wiring into the app ---------------------------------------------------------------
-
-/// Ticks (200 ms each) without an edit before the draft is written: about one second.
 const DRAFT_DEBOUNCE_TICKS: u64 = 5;
 const RETRY_DELAY_TICKS: u64 = 25;
 const MAX_RETRIES: u8 = 5;
 
-/// Bookkeeping for what has been written, so the tick only writes when something changed.
 pub(super) struct Keep {
-    /// `[ui] persist_history`.
     pub history: bool,
     pub turn_recovery_notice: bool,
     pub restored_conversation: bool,
-    /// Revision bookkeeping for in-memory sent history.
     rev_saved: u64,
     rev_seen: u64,
     changed_tick: u64,
@@ -226,7 +219,6 @@ impl super::App {
             .filter(|s| !s.is_empty() && **s != self.draft_text())
             .cloned()
     }
-    /// The draft as it should be saved: while browsing history, the text that was being typed.
     pub(super) fn draft_text(&self) -> String {
         if self.hist_pos.is_some() {
             self.hist_draft.clone()
@@ -240,7 +232,6 @@ impl super::App {
         }
     }
 
-    /// Restore the draft, history and queue left by the previous run (at launch, once).
     pub(super) fn restore_state(&mut self) {
         self.restore_state_for_record(None);
     }
@@ -277,12 +268,8 @@ impl super::App {
                             || data.questions.waiting();
                         restored_questions = Some(data.questions);
                         self.restore_composer(&data.draft);
-                        // A fresh prompt saved over a parked draft comes back as a fresh
-                        // prompt, so Up on the first row still returns to the parked draft.
                         self.fresh_draft = data.fresh_prompt && data.alternate_draft.is_some();
                         self.parked_draft = data.alternate_draft;
-                        // Restored prompts wait for the user; a pause with nothing queued
-                        // would silently hold every prompt queued later.
                         self.queue.paused = !data.queue.is_empty();
                         self.queue.items = data.queue;
                         self.restore_pending_edit(data.pending_edit);
@@ -311,7 +298,6 @@ impl super::App {
         self.persist_draft_now();
     }
 
-    /// Called every tick: write the draft once it has been still for about a second.
     pub(super) fn persist_tick(&mut self) {
         let rev = self.editor.revision();
         let signature = edit_signature(self);
@@ -376,7 +362,6 @@ impl super::App {
         }
     }
 
-    /// Write the draft immediately (send, exit).
     pub(super) fn persist_draft_now(&mut self) {
         let _ = self.persist_draft_checked();
     }
@@ -513,7 +498,6 @@ impl super::App {
         self.queue.dispatch.clear_automatic();
     }
 
-    /// Saved records available for automatic restoration into tabs.
     pub(super) fn recovery_choices(&self) -> &[super::recovery::RecoveryChoice] {
         &self.keep.recovery_choices
     }
@@ -575,8 +559,6 @@ impl super::App {
         self.queue.edit_rect = None;
     }
 
-    /// Remember a sent prompt: in memory (deduplicated, capped) and, unless it is a slash
-    /// command, in memory until the current session ends.
     pub(super) fn push_history(&mut self, line: &str) {
         if self.history.last().map(String::as_str) == Some(line) {
             return;
@@ -602,7 +584,6 @@ mod tests {
     fn panic_mirror_flushes_the_latest_draft() {
         let d = root();
         let lease = Arc::new(crate::tui::recovery::create(d.path()).unwrap());
-        // Use a local slot: other App tests update the process-global mirror concurrently.
         let slot: DraftSlot = Mutex::new(Some((
             Arc::downgrade(&lease),
             "typed before the crash".into(),

@@ -15,7 +15,6 @@ impl App {
     pub(in crate::tui) fn paste_text_chunk(&mut self, text: &str, continues: bool) {
         if self.picker.is_none() {
             if let Some(view) = self.settings_view.as_mut() {
-                // Pasted text filters the settings; it must not land in the hidden draft.
                 view.filter.extend(text.chars().filter(|c| !c.is_control()));
                 view.filter_selected = 0;
                 return;
@@ -50,8 +49,6 @@ impl App {
             worker_input::paste(self, text);
             return;
         }
-        // Paste can arrive as one Event::Paste or as a buffered burst split into overflow
-        // chunks. Route every chunk here so a modal never edits the prompt or queue editor.
         if self.activity.detail.is_some() {
             self.activity.insert_query(text);
             return;

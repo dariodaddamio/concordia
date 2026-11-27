@@ -1,6 +1,3 @@
-//! Bounded file references in user and assistant text. Ranges are UTF-8 byte offsets into the
-//! original text; the TUI must translate its clicked character to a byte offset before matching.
-
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -9,11 +6,8 @@ const MAX_PATH_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// Text displayed to the user (a Markdown label, or the literal path).
     pub display: String,
-    /// Clickable range in the original text. Markdown uses the label range.
     pub range: Range<usize>,
-    /// Local path text, without Markdown delimiters or a line/column fragment.
     pub target: String,
     pub line: Option<u32>,
     pub column: Option<u32>,
@@ -27,7 +21,6 @@ pub struct ResolvedFile {
     pub column: Option<u32>,
 }
 
-/// Markdown syntax and label ranges in bytes, shared by discovery and display.
 pub(crate) struct MarkdownLink {
     pub syntax: Range<usize>,
     pub label: Range<usize>,
@@ -58,15 +51,11 @@ pub(crate) fn markdown_links(text: &str) -> Vec<MarkdownLink> {
     links
 }
 
-/// Find path-shaped references without touching the filesystem or interpreting them as commands.
-/// Markdown destinations support `[label](target)`, including `<targets with spaces>`.
 pub fn candidates(text: &str) -> Vec<Candidate> {
     let bounded = &text[..char_boundary_at_or_before(text, MAX_TEXT_BYTES)];
     let mut out = Vec::new();
     let mut masked = vec![false; bounded.len()];
 
-    // Markdown links have an unambiguous destination, so record them first and suppress their
-    // syntax from the plain-path pass. Keep only the visible label clickable.
     for link in markdown_links(bounded) {
         let label = &bounded[link.label.clone()];
         if let Some((path, line, column)) = split_reference(&link.target) {
@@ -84,8 +73,6 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
         masked[link.syntax].fill(true);
     }
 
-    // Native tool arguments quote JSON paths, including escaped Windows separators and spaces.
-    // Decode the complete string instead of attempting to open its JSON spelling on disk.
     let mut quoted = 0;
     while let Some(start) = bounded[quoted..].find('"').map(|i| quoted + i) {
         let mut values =
@@ -106,8 +93,6 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
         }
     }
 
-    // Inline code is a strong signal that whitespace belongs to the path. Produce every bounded
-    // whitespace-delimited suffix endpoint so paths with spaces can be resolved exactly on click.
     let mut tick_cursor = 0;
     while let Some(start) = bounded[tick_cursor..].find('`').map(|n| n + tick_cursor) {
         let Some(end_rel) = bounded[start + 1..].find('`') else {
@@ -124,9 +109,6 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
         tick_cursor = end + 1;
     }
 
-    // Plain paths are recognized by a drive/root/relative prefix or a filename extension.
-    // Candidate endpoints are bounded to a line and 1 KiB; resolution later requires an existing
-    // file, which disambiguates prose from references containing spaces.
     let mut line_start = 0;
     for line in bounded.split_inclusive('\n') {
         let line_end = line_start + line.len();
@@ -198,7 +180,6 @@ pub fn candidates(text: &str) -> Vec<Candidate> {
     out
 }
 
-/// Explicit command operands can be extensionless and contain whitespace without guessing from prose.
 pub fn explicit_reference(text: &str) -> Option<Candidate> {
     let text = text.trim();
     let (target, line, column) = split_reference(text)?;
@@ -219,9 +200,6 @@ pub fn explicit_reference(text: &str) -> Option<Candidate> {
     })
 }
 
-/// Resolve one candidate for explicit navigation or bounded active-chat reference discovery.
-/// Explicit Markdown basenames may use the workspace's direct `docs` directory when absent
-/// at the root. No recursive search, subdirectory rewriting or file-content read occurs.
 pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String> {
     if !is_local_path(&candidate.target)
         || candidate.target.len() > MAX_PATH_BYTES
@@ -229,8 +207,6 @@ pub fn resolve(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFile, String
     {
         return Err("not a supported local file reference".into());
     }
-    // Chat renderers commonly spell an absolute Windows Markdown destination `/C:/...`.
-    // Strip only that extra slash; preserve drive-relative, UNC and ordinary rooted paths.
     let target = candidate.target.as_str();
     #[cfg(windows)]
     let target = normalized_local_path(target);
@@ -293,8 +269,6 @@ pub fn resolve_explicit(candidate: &Candidate, cwd: &Path) -> Result<ResolvedFil
     })
 }
 
-/// Whether `candidate` names an existing file, remembered briefly so redraws do not stat the
-/// same prose again. Rendering uses this to underline only references that open.
 pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -329,7 +303,6 @@ pub fn exists_cached(candidate: &Candidate, cwd: &Path) -> bool {
 }
 
 pub(crate) fn normalized_local_path(target: &str) -> &str {
-    // Canonical Windows drive paths carry this prefix. Do not unwrap UNC/device namespaces.
     let target = target
         .strip_prefix(r"\\?\")
         .or_else(|| target.strip_prefix("//?/"))
@@ -359,7 +332,6 @@ pub(crate) fn normalized_local_path(target: &str) -> &str {
     }
 }
 
-/// Return the candidate covering an explicitly clicked byte offset, if any.
 pub fn candidate_at(text: &str, byte: usize) -> Option<Candidate> {
     candidates(text)
         .into_iter()
@@ -423,8 +395,6 @@ fn decode_markdown_target(raw: &str) -> String {
 }
 
 fn add_plain_variants(out: &mut Vec<Candidate>, raw: &str, start: usize, inline: bool) {
-    // Variants are useful for `C:\dir\file with spaces.rs` while allowing the resolver to
-    // reject shorter prefixes. End at each whitespace boundary and the complete code span.
     let mut ends = raw
         .char_indices()
         .filter_map(|(i, c)| c.is_whitespace().then_some(i))
@@ -521,8 +491,6 @@ fn has_extension(s: &str) -> bool {
     let s = s.trim_end_matches(|c: char| ".,;!?)]}".contains(c));
     let path = split_reference(s).map(|p| p.0).unwrap_or_default();
     let leaf = path.rsplit(['/', '\\']).next().unwrap_or(&path);
-    // Bare decimal measurements are prose (12.3k tokens, 8.2s), not filenames.
-    // Explicit paths such as ./8.2s remain addressable.
     if !path.contains(['/', '\\']) {
         let bare = leaf.trim_start_matches(['$', '\u{20ac}', '\u{a3}']);
         if let Some((whole, fraction)) = bare.split_once('.') {

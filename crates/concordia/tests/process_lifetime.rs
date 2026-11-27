@@ -1,5 +1,3 @@
-//! Process-lifetime ownership integration coverage.
-
 #[cfg(windows)]
 #[test]
 fn provider_child_dies_when_concordia_is_killed() {
@@ -56,8 +54,6 @@ fn process_alive(pid: u32) -> bool {
         return true;
     }
 
-    // Some managed Windows runners deny tasklist enumeration. Querying the specific process
-    // keeps the same PID-based check usable there without broad process inspection.
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,

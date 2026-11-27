@@ -1,4 +1,3 @@
-//! Explicit Git worktree creation. No automatic integration, deletion or filesystem sandbox claim.
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
@@ -255,7 +254,6 @@ impl<'a> Git<'a> {
             "-c".into(),
             format!("core.hooksPath={}", path_text(&hooks)?),
         ]);
-        // Read only configuration key names; never inspect credential/configuration values.
         let keys = self.run(
             owner,
             &[
@@ -305,8 +303,6 @@ fn path_text(path: &Path) -> Result<&str, String> {
         .to_str()
         .filter(|text| text.len() <= 4096 && !text.chars().any(char::is_control))
         .ok_or("managed path has ambiguous Unicode identity")?;
-    // Git for Windows cannot create worktrees through Rust's verbatim DOS prefix.
-    // Keep canonical metadata unchanged and pass the equivalent DOS path as one argument.
     #[cfg(windows)]
     if let Some(dos) = text.strip_prefix(r"\\?\") {
         if dos.as_bytes().get(1) == Some(&b':') {
@@ -357,7 +353,6 @@ fn verify_record(git: &Git<'_>, record: &Record) -> Result<(), String> {
     Ok(())
 }
 
-/// Read-only revalidation for worker admission. Working edits are retained; head/branch ownership remains explicit.
 pub fn bound(root: &Path, owner: &Path, id: &str) -> Result<Record, String> {
     let registry = load(root)?;
     let record = registry
@@ -563,7 +558,6 @@ pub fn create(
         .map_err(|error| format!("worktree {} retained for inspection: {error}", record.id))
 }
 
-/// Explicit read-only Git reconciliation; never reissues creation or repairs/deletes files.
 pub fn reconcile(
     root: &Path,
     owner: &Path,

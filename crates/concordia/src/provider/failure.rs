@@ -10,7 +10,6 @@ pub enum FailureKind {
     None,
 }
 
-/// Detect only an explicit structured quota signal. Error prose is not a signal.
 pub fn structured_usage_limit(provider: ProviderKind, input: &str) -> bool {
     let signals: &[&str] = match provider {
         ProviderKind::Claude => &[
@@ -86,8 +85,6 @@ pub fn classify_failure(provider: ProviderKind, outcome: &TurnOutcome) -> Failur
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             structured.push(v);
         } else if let Some(start) = line.find('{') {
-            // Native RPC adapters retain structured error objects after a short human prefix.
-            // Parse only the object suffix; prose remains non-evidence.
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line[start..]) {
                 structured.push(v);
             }

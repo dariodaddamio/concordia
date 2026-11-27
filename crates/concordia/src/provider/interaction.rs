@@ -1,4 +1,3 @@
-//! Native requests stay bound to the owning run, launch and live protocol connection.
 use crate::store::ProviderKind;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,7 +44,6 @@ pub struct InteractionOwner {
 }
 
 impl InteractionOwner {
-    /// Resolve identities before launch; a missing home is never an implicit account match.
     pub fn validate_for(
         &self,
         provider: ProviderKind,
@@ -132,7 +130,6 @@ pub struct InteractionCapabilities {
 }
 
 impl InteractionCapabilities {
-    /// A help/version cache does not establish a runtime interaction protocol.
     pub fn unknown_for_version(version: Option<&str>) -> Self {
         let mut out = Self::default();
         for evidence in [
@@ -187,7 +184,6 @@ pub enum NativeInteraction {
         options: Vec<NativeOption>,
     },
     CodexQuestions(Vec<NativeQuestion>),
-    /// Cursor's documented blocking create_plan extension.
     PlanApproval {
         title: String,
         options: Vec<NativeOption>,
@@ -640,7 +636,6 @@ impl NativeInteraction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeEnvelope {
-    /// Standalone low-level callers have no UI conversation authority.
     pub owner: Option<InteractionOwner>,
     pub native_session_id: String,
     pub connection_id: String,
@@ -839,7 +834,6 @@ impl NativeRequest {
         self.envelope.owner.as_ref() == Some(owner) && self.is_active()
     }
 
-    /// A response reached the live adapter; this does not establish tool completion.
     pub fn was_answered(&self) -> bool {
         self.answered.load(Ordering::SeqCst)
     }
@@ -863,7 +857,6 @@ impl NativeRequest {
         }
     }
 
-    /// Encode offered native IDs once for both foreground and worker review surfaces.
     pub fn single_choices(&self, choices: &[usize]) -> Result<Value, String> {
         let value = match &self.kind {
             NativeInteraction::CodexPermission { options, .. } => {
@@ -927,7 +920,6 @@ impl NativeRequest {
             .ok_or_else(|| "native answer is unsupported".into())
     }
 
-    /// Reject a wrong owner without consuming the rightful owner's response channel.
     pub fn respond_owned(&self, owner: &InteractionOwner, value: Value) -> Result<(), String> {
         if self.envelope.owner.as_ref() != Some(owner) {
             return Err("native interaction owner mismatch".into());
@@ -935,7 +927,6 @@ impl NativeRequest {
         self.send(value)
     }
 
-    /// Standalone callers can answer their request; owned UI requests require respond_owned.
     pub fn respond(&self, value: Value) {
         if self.envelope.owner.is_none()
             || value.pointer("/outcome/outcome") == Some(&json!("cancelled"))
@@ -972,7 +963,6 @@ impl NativeRequest {
     }
 }
 
-/// Kept only by the live transport. Dropping it invalidates every cloned request.
 pub(crate) struct InteractionConnection {
     owner: Option<InteractionOwner>,
     id: String,
@@ -1045,7 +1035,6 @@ impl InteractionConnection {
         };
     }
 
-    /// Called only after a successful native stdio initialization, before sending a prompt.
     pub fn initialized_claude(&mut self, version: &str) -> Result<(), String> {
         if !crate::provider::compat::version_at_least(
             version,
@@ -1137,8 +1126,6 @@ impl InteractionConnection {
         if !valid_id {
             return Err("native interaction request identity/budget is invalid".into());
         }
-        // Remember identity, never an answer: retransmission must not reuse consent or
-        // create a second response channel, including after native resolution.
         let identity = serde_json::to_vec(&(session, &method, &params))
             .map_err(|_| "invalid native interaction data")?;
         let fingerprint: [u8; 32] = Sha256::digest(&identity).into();

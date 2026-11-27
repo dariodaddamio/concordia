@@ -4,7 +4,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Complete reads and writes fail visibly above this bound; original records are never truncated.
 const STORE_BYTES: u64 = 32 * 1024 * 1024;
 
 fn read_store_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -19,8 +18,6 @@ fn read_store_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-
-/// Routing overrides have a separately versioned bounded transaction, preserving config.toml.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -47,7 +44,6 @@ impl ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrustMode {
-    /// Read-only planning: the provider analyses and proposes, it does not edit.
     Plan,
     Ask,
     Edit,
@@ -55,7 +51,6 @@ pub enum TrustMode {
 }
 
 impl TrustMode {
-    /// Security ordering: a larger rank grants strictly more provider capability.
     pub fn rank(self) -> u8 {
         match self {
             Self::Plan => 0,
@@ -94,8 +89,6 @@ pub struct ChatLaunchRecord {
     pub note: Option<String>,
 }
 
-/// A user task is deliberately separate from provider-native sessions.  Native histories remain
-/// owned by their provider; this is only the bounded Concordia link between them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskSession {
@@ -181,16 +174,12 @@ pub struct OrchestratorSettings {
     pub trust: TrustMode,
     #[serde(default = "default_child_trust")]
     pub child_trust: ChildTrust,
-    /// Explicit opt-in: return worker batches to their owning conversation.
     #[serde(default)]
     pub delegate_auto_return: bool,
     #[serde(default)]
     pub delegate_quota_failover: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_install_on_launch: Option<bool>,
-    /// Opt-in: let an orchestrator reply propose a delegation (still needs a yes from the user).
-    /// `None` = never set by the user: `[delegation] protocol` in config.toml decides (see
-    /// [`delegation_protocol_on`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation_protocol: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,14 +192,12 @@ pub struct OrchestratorSettings {
     pub accepted_terms_providers: std::collections::BTreeSet<String>,
     #[serde(default)]
     pub automatic_handoffs_today: std::collections::BTreeMap<String, u8>,
-    /// Opt-in: record conversations to `<state>/threads` (stores prompts). Read via `threads::enabled`.
     #[serde(default)]
     pub thread_log: bool,
     #[serde(default)]
     pub attention_notifications: std::collections::BTreeSet<String>,
 }
 
-/// The provider selection used when an agent asks for a role without a model.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleConfig {
@@ -299,16 +286,12 @@ pub struct OrchestratorStore {
     pub selection: Option<UseSelection>,
     #[serde(default)]
     pub chats: Vec<ChatLaunchRecord>,
-    /// Ordered task records. Missing in older stores and lazily populated as sessions are used.
     #[serde(default)]
     pub tasks: Vec<TaskRecord>,
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
-    /// Account ids the user removed from view. Used for homes Concordia does not own
-    /// (`~/.codex` and friends): they are hidden, never deleted.
     #[serde(default)]
     pub hidden_accounts: Vec<String>,
-    /// User-facing names only; account ids, native homes and routing remain unchanged.
     #[serde(default)]
     pub account_nicknames: std::collections::BTreeMap<String, String>,
     #[serde(default)]
@@ -365,7 +348,6 @@ pub fn outside_profile_warning(root: &Path) -> Option<String> {
 mod state_hygiene_tests {
     #[test]
     fn state_dir_outside_profile_warns() {
-        // The test guard intentionally exempts isolated test roots from this user-facing warning.
         let root = tempfile::tempdir().unwrap();
         assert!(super::outside_profile_warning(root.path()).is_none());
     }
@@ -401,7 +383,6 @@ mod role_tests {
     }
 }
 
-/// Ensure the product-owned state root has restrictive permissions when it is first created.
 pub fn ensure_state_root(root: &Path) -> std::io::Result<()> {
     if root.exists() {
         return Ok(());
@@ -437,14 +418,12 @@ fn sanitize_settings(settings: OrchestratorSettings) -> OrchestratorSettings {
     settings
 }
 
-/// A store with nothing saved yet: the permission mode comes from `[mode] default` in config.toml.
 fn fresh_store(root: &Path) -> OrchestratorStore {
     let mut store = OrchestratorStore::default();
     store.settings.trust = crate::config::for_root(root).mode.default;
     store
 }
 
-/// Checked read status for views that must distinguish missing records from unreadable state.
 pub fn store_read_error(root: &Path) -> Option<String> {
     load_store_checked(root)
         .err()
@@ -455,7 +434,6 @@ pub fn load_store(root: &Path) -> OrchestratorStore {
     load_store_checked(root).unwrap_or_else(|_| fresh_store(root))
 }
 
-/// A mutation must not turn unreadable, corrupt or future-version state into defaults.
 pub(crate) fn load_store_checked(root: &Path) -> Result<OrchestratorStore> {
     crate::test_guard::check_not_real_state(root);
     let path = store_path(root);
@@ -482,17 +460,12 @@ pub(crate) fn load_store_checked(root: &Path) -> Result<OrchestratorStore> {
     Ok(store)
 }
 
-/// Whether the orchestrator may propose delegations: the user's saved choice, else the config
-/// default. A value saved in the store always wins.
 pub fn delegation_protocol_on(root: &Path) -> bool {
     get_settings(root)
         .delegation_protocol
         .unwrap_or_else(|| crate::config::for_root(root).delegation.protocol)
 }
 
-/// Write an already checked store atomically (temp file + rename). Normal mutations must use
-/// `modify_store`, which refuses invalid existing state before running the mutation. If the
-/// existing file becomes malformed before this final write, preserve its exact bytes in a backup.
 pub fn save_store(root: &Path, store: &OrchestratorStore) -> Result<()> {
     crate::test_guard::check_not_real_state(root);
     let dir = store_dir(root);
@@ -571,8 +544,6 @@ pub fn attention_notification_seen(root: &Path, item_id: &str) -> bool {
     get_settings(root).attention_notifications.contains(item_id)
 }
 
-/// An outstanding question keeps its turn identity across a restart, where it returns as a
-/// restored question or an interrupted request under a new session key; one notification covers it.
 pub fn turn_attention_notification_seen(root: &Path, item_id: &str) -> bool {
     let Some((_, turn)) = item_id
         .split_once(":interrupted:turn:")
@@ -597,8 +568,6 @@ pub fn mark_attention_notification(root: &Path, item_id: &str) -> anyhow::Result
     })
 }
 
-/// Create or update the task containing a native session.  Repeated observations of the same
-/// session are idempotent, while a new provider/account session is appended in order.
 #[allow(clippy::too_many_arguments)]
 pub fn record_task_session(
     root: &Path,
@@ -787,7 +756,6 @@ pub fn record_automatic_handoff(root: &Path, account: &str, day: &str) -> Result
     })
 }
 
-/// Atomically check and reserve one automatic handoff for an account/day.
 pub fn reserve_automatic_handoff(
     root: &Path,
     account: &str,
@@ -876,7 +844,6 @@ pub fn hide_account(root: &Path, id: &str) -> Result<()> {
     })
 }
 
-/// Drop an orc-registered account (and any hidden flag for it). Returns whether it was registered.
 pub fn remove_stored_account(root: &Path, id: &str) -> Result<bool> {
     modify_store(root, |store| {
         let before = store.accounts.len();
@@ -890,7 +857,6 @@ pub fn list_stored_accounts(root: &Path) -> Vec<StoredAccount> {
     load_store(root).accounts
 }
 
-/// Insert or replace an concordia-owned account (keyed by id).
 pub fn upsert_stored_account(root: &Path, account: StoredAccount) -> Result<()> {
     modify_store(root, |store| {
         store.accounts.retain(|a| a.id != account.id);
@@ -933,8 +899,6 @@ fn chrono_now() -> String {
 mod tests {
     use super::*;
 
-    /// Windows keeps a just-deleted file visible for a moment while Defender or the indexer
-    /// holds a handle. Product code retries through that state; tests must not race it.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         for _ in 0..80 {
             if cond() {
@@ -1065,7 +1029,6 @@ mod tests {
         let s = get_settings(dir.path());
         assert_eq!(s.delegation_protocol, Some(true));
         assert_eq!(s.trust, TrustMode::Ask);
-        // An older store without the new keys still loads.
         fs::write(
             store_path(dir.path()),
             r#"{"version":1,"settings":{"trust":"ask","childTrust":"inherit"}}"#,
@@ -1197,7 +1160,6 @@ mod tests {
         assert!(error.to_string().contains("older Concordia writer"));
         assert_eq!(fs::read(&lock).unwrap(), b"");
         assert!(!store_path(dir.path()).exists());
-        // Simulate only this synthetic owner releasing its fixture pathname.
         fs::remove_file(&lock).unwrap();
         upsert_stored_account(dir.path(), acct("a")).unwrap();
         assert_eq!(load_store(dir.path()).accounts.len(), 1);
@@ -1233,7 +1195,6 @@ mod tests {
                 .is_ok(),
             "lock ownership was not released"
         );
-        // ...and it really is free: the next update goes straight through.
         upsert_stored_account(dir.path(), acct("next")).unwrap();
     }
 

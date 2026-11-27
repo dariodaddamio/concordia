@@ -1,7 +1,5 @@
-//! Shared exclusions for automatic workspace discovery and content search.
 use std::path::{Path, PathBuf};
 
-/// Strip Windows verbatim prefixes (`\\?\`, `\\?\UNC\`) for paths shown to the user.
 pub fn display_path(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
@@ -11,7 +9,6 @@ pub fn display_path(path: &Path) -> PathBuf {
     }
 }
 
-/// Classify by path alone: never open credentials to decide whether they are sensitive.
 pub fn sensitive(path: &Path) -> bool {
     let normalized = path
         .to_string_lossy()
@@ -50,8 +47,6 @@ pub fn sensitive(path: &Path) -> bool {
             || name == ".cursor"
             || name.starts_with(".cursor-")
             || name.contains("secret")
-            // SSH public keys are commonly stored beside their private key as
-            // `id_*.pub`; only the private-key name belongs in this exclusion.
             || (name.starts_with("id_") && !name.ends_with(".pub"))
             || (name.starts_with("service-account") && name.ends_with(".json"))
     }) || path.extension().is_some_and(|e| {
@@ -109,7 +104,6 @@ pub fn discoverable(path: &Path, directory: bool) -> bool {
         })
 }
 
-/// Revalidate at use. Canonical aliases/links cannot bypass root containment or exclusions.
 pub fn regular_file(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let relative = path
         .strip_prefix(root)
@@ -466,7 +460,6 @@ mod tests {
         std::fs::write(&corrupted, b"{invalid").unwrap();
         assert!(workspaces::reserve(&state, &writer, &run, &conversation, &attempt).is_err());
         assert_eq!(std::fs::read(corrupted).unwrap(), b"{invalid");
-        // Exercise the supported Git CLI against only this synthetic committed repository.
         let repository = fixture.path().join("repository");
         let managed_state = fixture.path().join("managed-state");
         let empty_hooks = fixture.path().join("empty-hooks");
@@ -637,7 +630,6 @@ mod tests {
             "preserve this edit"
         );
         std::fs::remove_file(record.execution.join("unsaved.md")).unwrap();
-        // A crashed native lifecycle action retains its owner scope until explicit stopped-process acknowledgement.
         let uncertain_run = uuid::Uuid::new_v4().to_string();
         let owner_scope = Request::shared(&repository, &[]).unwrap();
         assert_eq!(

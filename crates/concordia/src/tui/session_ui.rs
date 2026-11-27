@@ -1,4 +1,3 @@
-//! Session titles and bounded asynchronous resume scrollback. Native session ownership stays explicit.
 use super::*;
 
 pub(super) const HISTORY_OMITTED: &str = "Older messages hidden:";
@@ -158,127 +157,6 @@ fn file_facts_memory(value: serde_json::Value) -> String {
     rows.join("\n\n")
 }
 
-/* fn ranked_memory(
-    root: &Path,
-    workspace: &Path,
-    argument: &str,
-    cross_project: bool,
-) -> Option<Result<String, String>> {
-    let (mode, input) = [
-        "ranked",
-        "ranked-file",
-        "ranked-goal",
-        "ranked-from",
-        "ranked-at",
-        "ranked-source",
-    ]
-    .into_iter()
-    .find_map(|mode| {
-        argument
-            .strip_prefix(mode)
-            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
-            .map(|rest| (mode, rest.trim_start()))
-    })?;
-    Some((|| {
-        let mut file = None;
-        let mut goal = None;
-        let mut from = None;
-        let mut at = None;
-        let mut source = None;
-        let text = if mode == "ranked" {
-            input
-        } else {
-            let (context, consumed) = crate::workspaces::word(input)?.ok_or(
-                "use ranked-file PATH TEXT, ranked-goal GOAL TEXT, ranked-from SOURCE TEXT, ranked-source SOURCE TEXT or ranked-at RFC3339 TEXT; quote paths containing spaces",
-            )?;
-            if mode == "ranked-file" {
-                file = Some(context);
-            } else if mode == "ranked-goal" {
-                goal = Some(context);
-            } else if mode == "ranked-from" {
-                from = Some(context);
-            } else if mode == "ranked-at" {
-                at = Some(context);
-            } else {
-                source = Some(context);
-            }
-            input[consumed..].trim_start()
-        };
-        let report = crate::native_memory::rank::recall(
-            root,
-            crate::native_memory::rank::Request {
-                text,
-                source: source.as_deref(),
-                account: None,
-                workspace: (!cross_project).then_some(workspace),
-                goal: goal.as_deref(),
-                file: file.as_deref(),
-                from: from.as_deref(),
-                at: at.as_deref(),
-            },
-        )?;
-        let mut lines = vec![format!("Query: {text:?} · goal {goal:?} · file {file:?} · from {from:?} · reference time {at:?}"), format!(
-            "Ranked memory: {} matches in {} source pages{}",
-            report.hits.len(),
-            report.pages.len(),
-            if report.incomplete {
-                "; incomplete scope"
-            } else {
-                ""
-            }
-        )];
-        if cross_project {
-            lines.push("Cross-project suggestions enabled. Check each recorded workspace; suggestions never confirm membership.".into());
-        }
-        for hit in report.hits {
-            let reasons = hit
-                .reasons
-                .iter()
-                .map(|reason| {
-                    let label = match reason.kind {
-                        "confirmed_goal_source" => "Confirmed goal",
-                        "explicit_relationship" => "Context link",
-                        "exact_historical_file" => "Historical file",
-                        "lexical" => "Text match",
-                        "temporal_distance" => "Native time",
-                        _ => "Evidence",
-                    };
-                    format!(
-                        "{} +{}: {}\nEvidence: {}",
-                        label, reason.points, reason.detail, reason.evidence
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            lines.push(format!("score {} · {} / {} · message {}\n{}\n{}\nSource: {}\n/memory excerpt {} --message {}", hit.score, hit.hit.source.account, hit.hit.source.session_id, hit.hit.message, hit.hit.preview, reasons, hit.hit.source.id, hit.hit.source.id, hit.hit.message));
-            if let Some(workspace) = hit.recorded_workspace {
-                let full = workspace.to_string_lossy();
-                let shown: String = full.chars().take(180).collect();
-                lines.push(format!(
-                    "Recorded workspace: {shown}{}",
-                    if full.chars().count() > 180 {
-                        "… (path display truncated)"
-                    } else {
-                        ""
-                    }
-                ));
-                if cross_project {
-                    lines.push("Context suggestion; inspect the recorded workspace before using it. Membership and native ancestry are unconfirmed.".into());
-                }
-            }
-        }
-        lines.extend(
-            report
-                .limits
-                .into_iter()
-                .map(|limit| format!("Limit: {limit}")),
-        );
-        lines.extend(report.unavailable);
-        Ok(lines.join("\n\n"))
-    })())
-}
-
-*/
 impl App {
     pub(super) fn older_history_source_available(&self) -> bool {
         self.messages.iter().any(|message| {
@@ -337,8 +215,6 @@ impl App {
         });
     }
 
-    /// Refresh a restored tab's exact native history without changing selection, draft,
-    /// conversation ownership or paused unfinished-request state.
     pub(super) fn reload_restored_history(&mut self, session: &str) {
         let Some(home) = self.home_path.clone() else {
             return;
@@ -603,7 +479,6 @@ impl App {
         true
     }
 
-    /// Request navigation without replacing this tab before the runner checks existing owners.
     pub(super) fn request_resume_session(&mut self, account: &str, id: &str) -> bool {
         let key = match super::chat_ownership::Key::for_resume(&self.state_root, account, id) {
             Ok(key) => key,
@@ -621,7 +496,6 @@ impl App {
         true
     }
 
-    /// Low-level application after window-level routing has excluded another owning tab.
     pub(super) fn resume_session(&mut self, account: &str, id: &str) -> bool {
         if self.busy {
             self.flash("finish or cancel the active turn before resuming");
@@ -782,9 +656,6 @@ impl App {
                                 },
                             );
                         }
-                        // Put the newly loaded older page at the visible boundary. The next redraw
-                        // clamps this sentinel to the expanded transcript and keeps the page action
-                        // observable instead of preserving the pre-load bottom anchor.
                         self.view.scroll = usize::MAX;
                         self.session_ui.older_cursor = history.next_cursor;
                         let remaining = history.hidden_messages;
@@ -884,7 +755,6 @@ impl App {
                 .flatten();
             if job.restoring {
                 if let Err(error) = &result {
-                    // Print-mode Cursor chats are not ACP sessions; do not suggest login/diagnostics.
                     if error == crate::native_memory::PRINT_MODE_HISTORY {
                         self.push_system(error.clone());
                     } else {

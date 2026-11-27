@@ -1,5 +1,3 @@
-//! Control-plane fixtures: fail if argv construction, session parsing or usage reading drift.
-
 use concordia::context::should_attempt_native_resume;
 use concordia::mcp::registered_tool_names;
 use concordia::provider::claude::{assert_safe_claude_argv, plan_claude_turn, ClaudeTurnRequest};
@@ -406,7 +404,6 @@ fn claude_first_turn_names_a_session_and_later_turns_resume_it() {
         .windows(2)
         .any(|w| w[0] == "--session-id" && w[1] == id));
     assert!(!first.argv.iter().any(|a| a == "--resume"));
-    // Every conversation gets its own id.
     assert_ne!(mk(None).new_session_id.unwrap(), id);
 
     let later = mk(Some(&id));

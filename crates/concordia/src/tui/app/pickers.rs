@@ -18,31 +18,35 @@ impl App {
             choices,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter apply · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter select · Esc close".into();
     }
 
     pub(in crate::tui) fn guide_open_picker(&mut self, command: &str, does: &str, undo: &str) {
         if let Some(picker) = self.picker.as_mut() {
-            picker.title = format!("{command} · This panel lets you {does}.");
-            // /harness owns its footer from the live catalog (empty → N new · Esc only).
+            if command == "/mode" {
+                return;
+            }
+            picker.title = if command == "/model" {
+                "models".into()
+            } else {
+                format!("{command} · This panel lets you {does}.")
+            };
             if command != "/harness" {
                 self.footer_left = if undo.starts_with("Esc") {
-                    // An undo that is only Esc would repeat the cancel key.
-                    "↑↓ choose · Enter apply · Esc cancel".into()
+                    "↑↓ move · Enter select · Esc close".into()
                 } else {
-                    format!("↑↓ choose · Enter apply · Esc cancel · undo: {undo}")
+                    format!("↑↓ move · Enter select · Esc close · undo: {undo}")
                 };
             }
         }
         if command == "/model" {
             self.footer_left =
-                "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+                "↑↓ move · Enter select · R refresh · type to filter · Esc close".into();
         }
     }
 
     pub(in crate::tui) fn open_resume_picker(&mut self) {
         self.refresh_store_warning();
-        // Open immediately with a muted loading row; the session scan runs off the UI thread.
         self.show_picker(
             PickerKind::Resume,
             "chats".into(),
@@ -53,7 +57,7 @@ impl App {
             }],
             true,
         );
-        self.footer_left = "↑↓ choose · Enter select · type to filter · Esc close".into();
+        self.footer_left = "↑↓ move · Enter select · type to filter · Esc close".into();
         let state_root = self.state_root.clone();
         let cwd = self.cwd.clone();
         self.start_picker_load(PickerKind::Resume, "concordia-resume-list", move || {
@@ -98,7 +102,6 @@ impl App {
             }
         };
         self.picker_load = None;
-        // Esc while loading closes the picker and discards this late result.
         if generation != self.picker_load_generation {
             return false;
         }
@@ -257,7 +260,7 @@ impl App {
     }
     pub(in crate::tui) fn set_mode(&mut self, mode: TrustMode) -> bool {
         if let Err(e) = set_trust_mode(&self.state_root, mode) {
-            self.push_system(format!("mode save failed - {e}"));
+            self.push_system(format!("mode save failed · {e}"));
             return false;
         }
         self.trust = mode;
@@ -297,7 +300,7 @@ impl App {
         match arg {
             None => {
                 self.push_system(format!(
-                    "mode: {} - {}",
+                    "mode: {} · {}",
                     mode_label(self.trust),
                     mode_blurb(self.trust)
                 ));
@@ -313,7 +316,7 @@ impl App {
                     }
                     if self.set_mode(mode) {
                         self.push_system(format!(
-                            "mode \u{2192} {} - {}{}",
+                            "mode \u{2192} {} · {}{}",
                             mode_label(mode),
                             mode_blurb(mode),
                             if self.busy {
@@ -324,7 +327,7 @@ impl App {
                         ));
                     }
                 }
-                None => self.push_system(format!("unknown mode {a} - use plan, ask, edit or full")),
+                None => self.push_system(format!("unknown mode {a} · use plan, ask, edit or full")),
             },
         }
     }
@@ -334,7 +337,13 @@ impl App {
             .iter()
             .position(|r| r.id == format!("trust:{}", self.trust.as_str()))
             .unwrap_or(0);
-        self.show_picker_at(PickerKind::Trust, "permissions".into(), rows, false, idx);
+        self.show_picker_at(
+            PickerKind::Trust,
+            "permissions · all providers".into(),
+            rows,
+            false,
+            idx,
+        );
     }
     pub(in crate::tui) fn refresh_account_continuity(&mut self) {
         let prior_home = self
@@ -384,7 +393,6 @@ impl App {
         self.refresh_store_warning();
         let ready = accounts_with_auth(&self.state_root);
         let duplicates = crate::accounts::duplicate_groups(&self.state_root);
-        // Same UsageFetcher snapshot path and background refresh as `/usage`.
         let accounts: Vec<_> = ready
             .iter()
             .filter_map(|a| {
@@ -393,7 +401,8 @@ impl App {
                     .map(|home| (a.account.clone(), a.provider, home.clone()))
             })
             .collect();
-        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
+        let rows_data =
+            usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account, false);
         let mut rows = Vec::new();
         for urow in rows_data {
             let Some(a) = ready.iter().find(|a| a.account == urow.id) else {
@@ -406,8 +415,12 @@ impl App {
             );
             let default_name = display_account_name(a.provider, &a.account);
             let label = urow.label.replacen(&default_name, &heading, 1);
-            self.picker_tones
-                .insert(format!("use:{}", a.account), urow.tone);
+            if urow.tone != UsageTone::Mute {
+                self.picker_tones
+                    .insert(format!("use:{}", a.account), urow.tone);
+            } else {
+                self.picker_tones.remove(&format!("use:{}", a.account));
+            }
             let mut detail = urow.detail;
             if let Some(other) = duplicates
                 .iter()
@@ -418,30 +431,29 @@ impl App {
             }
             rows.push(PickerRow {
                 id: format!("use:{}", a.account),
-                // Same cached snapshot `/usage` shows; heading matches the header chip.
                 label,
                 detail,
             });
         }
         rows.push(PickerRow {
             id: "use-add".into(),
-            label: "+ add account".into(),
+            label: "Add account".into(),
             detail: if ready.is_empty() {
-                "no logged-in accounts yet - connect Codex, Claude or Cursor".into()
+                "connect a provider account to start chatting".into()
             } else {
-                "connect another Codex, Claude or Cursor account".into()
+                "connect another provider account".into()
             },
         });
         if !ready.is_empty() {
             rows.push(PickerRow {
                 id: "use-remove".into(),
-                label: "- remove account".into(),
+                label: "Remove account".into(),
                 detail: "take an account out of Concordia".into(),
             });
         }
         rows.push(PickerRow {
             id: "use-handoff".into(),
-            label: "next provider for this session".into(),
+            label: "Choose next provider".into(),
             detail: self.handoff_description(),
         });
         rows.extend(
@@ -458,7 +470,7 @@ impl App {
         );
         rows.push(PickerRow {
             id: "use-grok-bot-setup".into(),
-            label: "+ configure Grok Bot routine".into(),
+            label: "Set up Grok Bot routine".into(),
             detail: "webhook key stays in Windows Credential Manager; see Grok Bot setup guide"
                 .into(),
         });
@@ -635,7 +647,6 @@ impl App {
                             || same_account_allowed
                     })
                     .map(move |model| {
-                        // Availability is per model: a provider can limit one model's pool only.
                         let observation = a.home_path.as_ref().and_then(|home| {
                             crate::usage::peek_cached_usage_for_model(
                                 &state_root,
@@ -664,7 +675,7 @@ impl App {
                             detail: if !available && reset.is_some() {
                                 format!(
                                     "at limit · {}",
-                                    reset.as_deref().unwrap_or("reset time unavailable")
+                                    reset.as_deref().unwrap_or(crate::usage::RESET_UNKNOWN)
                                 )
                             } else if !available {
                                 "usage unavailable · capacity must be confirmed before continuing"
@@ -770,7 +781,7 @@ impl App {
             let want = crate::accounts::normalize_account_id(&id);
             match all.into_iter().find(|r| r.id == want) {
                 Some(r) => self.open_remove_confirm(r),
-                None => self.push_system(format!("no account named {id} - try /use remove")),
+                None => self.push_system(format!("no account named {id} · try /use remove")),
             }
             return;
         }
@@ -778,16 +789,20 @@ impl App {
             .iter()
             .map(|r| {
                 let what = if r.owned {
-                    "created by Concordia - its login folder can be deleted"
+                    "created by Concordia · its login folder can be deleted"
                 } else if r.stored {
-                    "registered with Concordia - its files stay where they are"
+                    "registered with Concordia · its files stay where they are"
                 } else {
-                    "your own login - it can only be hidden, never deleted"
+                    "your own login · it can only be hidden, never deleted"
                 };
                 let who = r
                     .home
                     .as_ref()
-                    .map(|h| format_identity_label(&inspect_provider(r.provider, h)))
+                    .map(|home| {
+                        let mut identity = inspect_provider(r.provider, home);
+                        identity.logged_in = crate::accounts::is_logged_in(r.provider, home);
+                        format_identity_label(&identity)
+                    })
                     .unwrap_or_default();
                 PickerRow {
                     id: format!("rmpick:{}", r.id),
@@ -856,13 +871,12 @@ impl App {
         }
         crate::logging::info(&format!("remove-account id={id} mode={mode:?}"));
         match crate::connect::remove_account(&self.state_root, id, mode) {
-            Err(e) => self.push_system(format!("remove failed - {e}")),
+            Err(e) => self.push_system(format!("remove failed · {e}")),
             Ok(msg) => {
                 self.push_system(msg);
                 if crate::accounts::normalize_account_id(&self.account)
                     == crate::accounts::normalize_account_id(id)
                 {
-                    // The account in use is gone: move to another so the next turn has a home.
                     match accounts_with_auth(&self.state_root).into_iter().next() {
                         Some(next) => {
                             if select_account(&self.state_root, &next.account).is_ok() {
@@ -888,7 +902,7 @@ impl App {
                             self.need_context_pack = self.messages.iter().any(|message| {
                                 matches!(message.role, MsgRole::User | MsgRole::Assistant)
                             });
-                            self.push_system("no accounts left - /use add to connect one");
+                            self.push_system("no accounts left · /use add to connect one");
                         }
                     }
                 }
@@ -918,7 +932,7 @@ impl App {
     }
     pub(in crate::tui) fn begin_add_account(&mut self, provider: ProviderKind) {
         if self.pending_login.is_some() {
-            self.push_system("a login is already in progress - finish it first");
+            self.push_system("a login is already in progress · finish it first");
             return;
         }
         match (self.connect)(&self.state_root, provider) {
@@ -957,12 +971,12 @@ impl App {
                         }],
                         false,
                     );
-                    self.footer_left = "Enter run official installer · Esc cancel".into();
+                    self.footer_left = "Enter run official installer · Esc close".into();
                     self.push_system(format!(
                         "{e}. Install it with `{command}` in your own terminal, or confirm below to open the installer window."
                     ));
                 } else {
-                    self.push_system(format!("add account failed - {e}"));
+                    self.push_system(format!("add account failed · {e}"));
                 }
             }
         }
@@ -992,8 +1006,7 @@ impl App {
             .position(|r| r.label.ends_with(" · current"))
             .unwrap_or(0);
         self.show_picker_at(PickerKind::Model, title.into(), rows, true, selected);
-        self.footer_left =
-            "↑↓ choose · Enter apply · r refresh · type to filter · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter select · R refresh · type to filter · Esc close".into();
         if !cfg!(test)
             && crate::models::needs_refresh_at(&self.state_root, self.provider, &self.account)
         {
@@ -1002,41 +1015,65 @@ impl App {
     }
 
     pub(in crate::tui) fn open_provider_picker(&mut self) {
-        let rows = crate::accounts::setup_accounts(&self.state_root)
-            .into_iter()
-            .filter_map(|account| {
-                let home = account.home_path?;
+        let signed_in = crate::accounts::accounts_with_auth(&self.state_root);
+        let mut rows = Vec::new();
+        let mut offered = std::collections::HashSet::new();
+        for account in crate::accounts::list_all_accounts(&self.state_root) {
+            let Some(home) = account.home_path else {
+                continue;
+            };
+            let connected = signed_in.iter().any(|a| a.account == account.account);
+            let provider_has_login = signed_in.iter().any(|a| a.provider == account.provider);
+            if !connected
+                && !account.custom
+                && (provider_has_login || !offered.insert(account.provider))
+            {
+                continue;
+            }
+            let id = format!("provider:{}", account.account);
+            let (tone, detail) = if connected {
                 let snap = self
                     .usage_fetcher
                     .snapshot(account.provider, &account.account, &home);
-                Some(PickerRow {
-                    id: format!("provider:{}", account.account),
-                    label: format!(
-                        "{} · {}",
-                        account.provider.as_str(),
-                        self.named_account(account.provider, &account.account)
-                    ),
-                    detail: if crate::accounts::accounts_with_auth(&self.state_root)
-                        .iter()
-                        .any(|signed_in| signed_in.account == account.account)
-                    {
-                        snap.used_left_text()
-                    } else {
-                        "not connected · native login available".into()
-                    },
-                })
-            })
-            .collect();
-        self.show_picker(
+                let detail = snap.used_left_text();
+                let detail = if detail.is_empty() {
+                    crate::usage::NO_USAGE_DATA.into()
+                } else {
+                    detail
+                };
+                (crate::usage::usage_tone(&snap), detail)
+            } else {
+                (UsageTone::Mute, "not connected".into())
+            };
+            if !connected || tone != UsageTone::Mute {
+                self.picker_tones.insert(id.clone(), tone);
+            } else {
+                self.picker_tones.remove(&id);
+            }
+            let name = self.named_account(account.provider, &account.account);
+            let current = account.account == self.account;
+            rows.push(PickerRow {
+                id,
+                label: format!(
+                    "{} · {}{}",
+                    account.provider.as_str(),
+                    name,
+                    if current { " · current" } else { "" }
+                ),
+                detail,
+            });
+        }
+        let current = format!("provider:{}", self.account);
+        let selected = rows.iter().position(|row| row.id == current).unwrap_or(0);
+        self.show_picker_at(
             PickerKind::Provider,
             "providers and accounts".into(),
             rows,
             false,
+            selected,
         );
     }
 
-    /// Header chip click: the same model or effort picker, drawn under the chip.
-    /// A second click on the chip that opened it closes it.
     pub(in crate::tui) fn toggle_header_dropdown(&mut self, kind: PickerKind, chip: Rect) {
         let open = self.header_dropdown.is_some_and(|(open, _)| open == kind)
             && self
@@ -1050,6 +1087,7 @@ impl App {
         match kind {
             PickerKind::Model => self.open_model_picker(),
             PickerKind::Effort => self.open_effort_picker(),
+            PickerKind::Provider => self.open_provider_picker(),
             _ => return,
         }
         if self
@@ -1098,7 +1136,7 @@ impl App {
             .map(|effort| effort.name.clone())
             .or(role_effort)
             .or_else(|| {
-                model.effort_for_preference(saved_effort.as_deref().or(self.effort.as_deref()))
+                model.effort_for_preference(self.effort.as_deref().or(saved_effort.as_deref()))
             });
         let preferred = preferred_owned.as_deref();
         let selected = model
@@ -1137,7 +1175,7 @@ impl App {
             selected,
         );
         self.effort_model = Some(model_id.to_owned());
-        self.footer_left = "\u{2191}\u{2193} choose effort \u{b7} Enter applies model + effort \u{b7} Esc keeps current selection".into();
+        self.footer_left = "\u{2191}\u{2193} move \u{b7} Enter select \u{b7} Esc close".into();
     }
 
     pub(in crate::tui) fn choose_effort(&mut self, effort: &str) {
@@ -1265,9 +1303,9 @@ impl App {
             rx,
         });
         if let Some(picker) = self.picker.as_mut() {
-            picker.title = "model · refreshing...".into();
+            picker.title = "model · refreshing…".into();
         }
-        self.footer_left = "refreshing... · Esc closes · UI remains responsive".into();
+        self.footer_left = "Refreshing models… · Esc close".into();
     }
     pub(in crate::tui) fn show_picker(
         &mut self,
@@ -1280,7 +1318,6 @@ impl App {
     }
     pub(in crate::tui) fn open_doctor(&mut self) {
         self.doctor = None;
-        // Open immediately with a muted checking row; doctor work runs off the UI thread.
         self.show_picker(
             PickerKind::Doctor,
             "doctor".into(),
@@ -1291,7 +1328,7 @@ impl App {
             }],
             false,
         );
-        self.footer_left = "Esc cancels".into();
+        self.footer_left = "Esc close".into();
         let state_root = self.state_root.clone();
         self.start_picker_load(PickerKind::Doctor, "concordia-doctor", move || {
             let checks = crate::doctor::run_fast_checks_at(&state_root);
@@ -1308,11 +1345,7 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, check)| {
-                let tag = match check.level {
-                    crate::doctor::Level::Ok => "ok",
-                    crate::doctor::Level::Warn => "warn",
-                    crate::doctor::Level::Fail => "FAIL",
-                };
+                let tag = check.level.tag();
                 let fix_index = doctor
                     .fixes
                     .iter()
@@ -1322,11 +1355,18 @@ impl App {
                     .get(&index)
                     .map(|s| format!(" · fixed ({s})"))
                     .unwrap_or_default();
+                let id = fix_index.map_or_else(
+                    || format!("doctor:check:{index}"),
+                    |i| format!("doctor:fix:{i}"),
+                );
+                let tone = match check.level {
+                    crate::doctor::Level::Ok => UsageTone::Ok,
+                    crate::doctor::Level::Warn => UsageTone::Warn,
+                    crate::doctor::Level::Fail => UsageTone::Bad,
+                };
+                self.picker_tones.insert(id.clone(), tone);
                 PickerRow {
-                    id: fix_index.map_or_else(
-                        || format!("doctor:check:{index}"),
-                        |i| format!("doctor:fix:{i}"),
-                    ),
+                    id,
                     label: format!("{tag}  {}{suffix}", check.name),
                     detail: fix_index.map_or_else(
                         || check.detail.clone(),
@@ -1341,7 +1381,7 @@ impl App {
             })
             .collect();
         self.show_picker(PickerKind::Doctor, "doctor".into(), rows, false);
-        self.footer_left = "↑↓ select · Enter review fix · Esc".into();
+        self.footer_left = "↑↓ move · Esc close".into();
     }
     pub(in crate::tui) fn open_doctor_confirmation(&mut self, fix_index: usize) {
         let Some(fix) = self.doctor.as_ref().and_then(|d| d.fixes.get(fix_index)) else {
@@ -1361,7 +1401,7 @@ impl App {
             vec![row],
             false,
         );
-        self.footer_left = "y apply · n cancel · Esc".into();
+        self.footer_left = "Y apply · N / Esc close".into();
     }
     pub(in crate::tui) fn apply_doctor_fix(&mut self, fix_index: usize) {
         let Some(fix) = self
@@ -1424,15 +1464,15 @@ impl App {
         });
         self.footer_left = if filterable {
             if kind == PickerKind::Files {
-                "↑↓ choose · Enter open · F4 actions · type to filter · Esc close".into()
+                "↑↓ move · Enter open · F4 actions · type to filter · Esc close".into()
             } else {
-                "↑↓ choose · Enter select · type to filter · Esc close".into()
+                "↑↓ move · Enter select · type to filter · Esc close".into()
             }
         } else {
             if kind == PickerKind::Usage {
-                "↑↓ choose · Enter select · r refresh · Esc close".into()
+                "↑↓ move · Enter select · r refresh · Esc close".into()
             } else {
-                "↑↓ choose · Enter select · Esc close".into()
+                "↑↓ move · Enter select · Esc close".into()
             }
         };
     }
@@ -1491,7 +1531,6 @@ impl App {
             self.session_ui.memory_screen = None;
         }
         tokens::close(&mut self.token_reads);
-        // Only the update screen owns a job: its check, or the update it started.
         if self
             .picker
             .as_ref()
@@ -1513,7 +1552,6 @@ impl App {
             .as_ref()
             .is_some_and(|picker| matches!(picker.kind, PickerKind::Resume | PickerKind::Doctor))
         {
-            // Invalidate so a late worker result cannot reopen or refill after Esc.
             self.picker_load_generation = self.picker_load_generation.wrapping_add(1);
             self.picker_load = None;
         }
@@ -1542,7 +1580,6 @@ impl App {
         }
         #[cfg(not(test))]
         {
-            // Explorer is intentionally visible: this is the requested URL window.
             let _ = crate::process_ui::visible_command("explorer.exe")
                 .arg(url)
                 .spawn();
@@ -1550,13 +1587,19 @@ impl App {
         #[cfg(test)]
         self.flash("release page opened");
     }
+    pub(in crate::tui) fn end_tab_rename(&mut self) {
+        if !self.mcp_add_editor {
+            self.rename_editor = None;
+        }
+    }
+
     pub(in crate::tui) fn begin_mcp_add(&mut self) {
         let mut editor = Editor::default();
-        editor.set_text("NAME COMMAND [ARGS...]");
+        editor.set_text("NAME COMMAND [ARGS…]");
         editor.select_all();
         self.mcp_add_editor = true;
         self.rename_editor = Some(editor);
-        self.footer_left = "type NAME COMMAND [ARGS...] · Enter preview · Esc cancel".into();
+        self.footer_left = "type NAME COMMAND [ARGS…] · Enter preview · Esc close".into();
     }
 
     pub(in crate::tui) fn begin_mcp_import(&mut self) {
@@ -1577,7 +1620,7 @@ impl App {
             rows,
             false,
         );
-        self.footer_left = "↑↓ choose · Enter add server · Esc cancel".into();
+        self.footer_left = "↑↓ move · Enter add server · Esc close".into();
     }
 
     fn apply_mcp_import(&mut self, index: usize) {
@@ -1636,7 +1679,7 @@ impl App {
             detail: format!("Adds an enabled local stdio server with arguments [{}]. Undo with /mcp remove {name}.", args.join(" ")),
         }], false);
         self.mcp_add_preview = Some((name, command, args));
-        self.footer_left = "Enter confirm · Esc cancel".into();
+        self.footer_left = "Enter confirm · Esc close".into();
     }
 
     pub(in crate::tui) fn apply_mcp_add(&mut self) {
@@ -1747,12 +1790,11 @@ impl App {
             return;
         }
         if kind == PickerKind::Agents && id == crate::tui::native_agents::GROUP_ID {
-            self.toggle_agents_row(&id);
+            self.set_agents_row_open(&id, None);
             return;
         }
         let effort_model = self.effort_model.take();
         let role_editing = self.role_editing.clone();
-        // Dismissing clears the header dropdown anchor; a follow-up choice reuses it.
         let header_anchor = self.header_dropdown;
         self.dismiss_picker();
         if matches!(kind, PickerKind::Model | PickerKind::Effort) {
@@ -1846,7 +1888,6 @@ impl App {
                         editor.set_text(self.session_ui.title.as_deref().unwrap_or_default());
                         editor.select_all();
                         self.rename_editor = Some(editor);
-                        self.footer_left = "type a title · Enter save · Esc cancel".into();
                     }
                     "rename:clear" => {
                         if self.rename_session("") {
@@ -2069,7 +2110,7 @@ impl App {
                 {
                     match crate::connect::install_provider(provider) {
                         Ok(()) => self.push_system(format!(
-                            "{} installer opened. Finish it there, then return and choose + add account again; Concordia will not sign you in automatically or assume the version is compatible.",
+                            "{} installer opened. Finish it there, then return and choose Add account again; Concordia will not sign you in automatically or assume the version is compatible.",
                             provider.as_str()
                         )),
                         Err(error) => self.push_system(format!(
@@ -2192,7 +2233,6 @@ impl App {
                 }
             }
             PickerKind::Model => {
-                // A model chosen from the header dropdown asks for its effort in the same place.
                 let anchor = header_anchor
                     .filter(|(kind, _)| *kind == PickerKind::Model)
                     .map(|(_, chip)| chip);
@@ -2250,7 +2290,9 @@ impl App {
                 }
             }
             PickerKind::Usage => {
-                if let Some(account) = id.strip_prefix("usage:") {
+                if id == "usage-add" {
+                    self.open_add_provider_picker();
+                } else if let Some(account) = id.strip_prefix("usage:") {
                     if account == self.account {
                         return;
                     }
@@ -2303,7 +2345,6 @@ impl App {
     }
 }
 
-/// Build `/resume` title and rows off the UI thread (session scan + diagnostics).
 fn build_resume_picker_payload(state_root: &Path, cwd: &Path) -> (String, Vec<PickerRow>) {
     let sessions = list_recent_sessions(state_root, 40);
     let tasks = crate::store::list_tasks(state_root);

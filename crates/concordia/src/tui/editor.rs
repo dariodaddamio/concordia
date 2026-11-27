@@ -1,19 +1,12 @@
-//! Multi-line prompt editor: cursor, selection, word/line movement, click hit-testing.
-//!
-//! Pure data + logic (no terminal I/O) so it can be unit tested. Indices are char indices into
-//! `text`; layout is recomputed per width because rows soft-wrap.
-
 use super::text::{col_to_index, next_word, prev_word, slice_width, word_bounds, wrap_ranges};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RowSpan {
     pub start: usize,
     pub end: usize,
-    /// Last visual row of its logical line (ends at a `\n` or end of text).
     pub last: bool,
 }
 
-/// Undo steps kept per editor.
 const UNDO_CAP: usize = 200;
 const UNDO_BYTES: usize = 32 * 1024 * 1024;
 
@@ -37,7 +30,6 @@ fn bound_steps(steps: &mut Vec<Snap>) {
     steps.drain(..remove);
 }
 
-/// A restorable editor state: text, caret and selection anchor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Snap {
     text: Vec<char>,
@@ -45,14 +37,10 @@ struct Snap {
     anchor: Option<usize>,
 }
 
-/// Edits that merge into the previous undo step while they continue at the same caret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Burst {
-    /// Typing single characters.
     Insert,
-    /// Backspace / Delete one character at a time.
     Delete,
-    /// Consecutive chunks of a single terminal-delivered paste.
     Paste,
 }
 
@@ -60,7 +48,6 @@ enum Burst {
 struct UndoStack {
     undo: Vec<Snap>,
     redo: Vec<Snap>,
-    /// The burst the last edit belongs to, and the caret it left behind.
     burst: Option<(Burst, usize)>,
 }
 
@@ -69,10 +56,8 @@ pub struct Editor {
     text: Vec<char>,
     cursor: usize,
     anchor: Option<usize>,
-    /// Display column to return to when moving up/down across rows of different length.
     goal_col: Option<usize>,
     hist: UndoStack,
-    /// Bumped whenever the text changes (edit, undo, redo); lets callers notice a dirty draft.
     revision: u64,
 }
 
@@ -95,7 +80,6 @@ impl Editor {
         self.cursor
     }
 
-    /// Empty the buffer. One undo step, so Ctrl+Z after a send brings the sent text back.
     pub fn clear(&mut self) {
         self.edit(None, |e| {
             e.text.clear();
@@ -105,7 +89,6 @@ impl Editor {
         });
     }
 
-    /// Replace the whole buffer; cursor goes to the end. One undo step.
     pub fn set_text(&mut self, s: &str) {
         self.edit(None, |e| {
             e.text = s.chars().collect();
@@ -115,17 +98,13 @@ impl Editor {
         });
     }
 
-    /// Forget all undo / redo steps (a fresh buffer, not an edit of an old one).
     pub fn reset_undo(&mut self) {
         self.hist = UndoStack::default();
     }
 
-    /// Changes whenever the text does.
     pub fn revision(&self) -> u64 {
         self.revision
     }
-
-    // ---- undo / redo -----------------------------------------------------------------
 
     fn snap(&self) -> Snap {
         Snap {
@@ -144,8 +123,6 @@ impl Editor {
         self.revision += 1;
     }
 
-    /// Run a text-changing operation and record it as an undo step (merged into the previous
-    /// step when it continues the same typing / deleting burst). A no-op records nothing.
     fn edit(&mut self, burst: Option<Burst>, f: impl FnOnce(&mut Self)) {
         let before = self.snap();
         let had_selection = self.selection().is_some();
@@ -164,7 +141,6 @@ impl Editor {
         self.hist.burst = burst.map(|b| (b, self.cursor));
     }
 
-    /// Step back. Returns whether anything changed.
     pub fn undo(&mut self) -> bool {
         let Some(prev) = self.hist.undo.pop() else {
             return false;
@@ -176,7 +152,6 @@ impl Editor {
         true
     }
 
-    /// Step forward again after an undo.
     pub fn redo(&mut self) -> bool {
         let Some(next) = self.hist.redo.pop() else {
             return false;
@@ -188,9 +163,6 @@ impl Editor {
         true
     }
 
-    // ---- selection -------------------------------------------------------------------
-
-    /// Ordered, non-empty selection.
     pub fn selection(&self) -> Option<(usize, usize)> {
         let a = self.anchor?;
         if a == self.cursor {
@@ -234,7 +206,6 @@ impl Editor {
         }
     }
 
-    /// Delete the selection if any; returns whether something was deleted.
     fn delete_selection(&mut self) -> bool {
         let Some((a, b)) = self.selection() else {
             self.anchor = None;
@@ -247,7 +218,6 @@ impl Editor {
         true
     }
 
-    /// Remove and return the selected text (cut).
     pub fn cut(&mut self) -> Option<String> {
         let t = self.selected_text()?;
         self.edit(None, |e| {
@@ -256,9 +226,6 @@ impl Editor {
         Some(t)
     }
 
-    // ---- editing ---------------------------------------------------------------------
-
-    /// Insert at the cursor, replacing any selection. Normalize line endings; tabs become 4 spaces.
     pub fn insert_str(&mut self, s: &str) {
         let single = s.chars().count() == 1 && s != "\n" && s != "\r";
         self.edit(single.then_some(Burst::Insert), |e| e.insert_raw(s));
@@ -332,10 +299,7 @@ impl Editor {
         });
     }
 
-    // ---- movement --------------------------------------------------------------------
-
     pub fn move_left(&mut self, extend: bool) {
-        // Collapsing a selection with a plain arrow jumps to its edge, like every editor.
         if !extend {
             if let Some((a, _)) = self.selection() {
                 self.hist.burst = None;
@@ -393,7 +357,6 @@ impl Editor {
         let rows = self.layout(width);
         let r = self.row_of(&rows, self.cursor);
         let mut to = rows[r].end;
-        // On a soft-wrapped row, stay before the hanging space / on the row.
         if !rows[r].last && to > rows[r].start {
             to -= 1;
         }
@@ -430,9 +393,6 @@ impl Editor {
         self.goal_col = Some(col);
     }
 
-    // ---- layout & hit-testing --------------------------------------------------------
-
-    /// Visual rows for the given text width (always at least one).
     pub fn layout(&self, width: usize) -> Vec<RowSpan> {
         let mut out = Vec::new();
         let mut line_start = 0;
@@ -459,8 +419,6 @@ impl Editor {
         out
     }
 
-    /// Row containing char index `idx` (a boundary shared by a wrap belongs to the later row;
-    /// the end of a logical line belongs to that line).
     pub fn row_of(&self, rows: &[RowSpan], idx: usize) -> usize {
         for (i, r) in rows.iter().enumerate() {
             if idx < r.end || (idx == r.end && r.last) {
@@ -470,7 +428,6 @@ impl Editor {
         rows.len().saturating_sub(1)
     }
 
-    /// `(row, display column)` of the cursor.
     pub fn cursor_pos(&self, width: usize) -> (usize, usize) {
         let rows = self.layout(width);
         let r = self.row_of(&rows, self.cursor);
@@ -480,27 +437,23 @@ impl Editor {
     fn index_in_row(&self, row: &RowSpan, col: usize) -> usize {
         let slice = &self.text[row.start..row.end];
         let mut i = col_to_index(slice, col);
-        // Never place the caret after a hanging soft-wrap space (it would render on the next row).
         if !row.last && i >= slice.len() && !slice.is_empty() {
             i = slice.len() - 1;
         }
         row.start + i
     }
 
-    /// Char index for a click at `(row, col)` in layout space.
     pub fn index_at(&self, width: usize, row: usize, col: usize) -> usize {
         let rows = self.layout(width);
         let r = row.min(rows.len() - 1);
         self.index_in_row(&rows[r], col)
     }
 
-    /// Double-click: select the word at `idx`.
     pub fn select_word_at(&mut self, idx: usize) {
         let (a, b) = word_bounds(&self.text, idx.min(self.text.len().saturating_sub(1)));
         self.select_range(a, b);
     }
 
-    /// Triple-click: select the logical line (between newlines) at `idx`.
     pub fn select_line_at(&mut self, idx: usize) {
         let idx = idx.min(self.text.len());
         let a = self.text[..idx]
@@ -620,27 +573,24 @@ mod tests {
         let e = ed("abcd efgh\nxy");
         assert_eq!(e.index_at(5, 0, 2), 2);
         assert_eq!(e.index_at(5, 1, 0), 5);
-        // past end of a soft-wrapped row stays on that row, before the hanging space
         assert_eq!(e.index_at(5, 0, 40), 4);
-        // past end of the last row of a line lands at the line end
         assert_eq!(e.index_at(5, 1, 40), 9);
         assert_eq!(e.index_at(5, 2, 1), 11);
-        // row beyond layout clamps to the last row
         assert_eq!(e.index_at(5, 99, 0), 10);
     }
 
     #[test]
     fn up_down_keep_goal_column() {
         let mut e = ed("abcdef\nab\nabcdef");
-        e.move_to(5, false); // col 5 on row 0
-        e.down(80, false); // short row clamps to its end
+        e.move_to(5, false);
+        e.down(80, false);
         assert_eq!(e.cursor(), 9);
-        e.down(80, false); // goal column restored
+        e.down(80, false);
         assert_eq!(e.cursor(), 10 + 5);
         e.up(80, false);
         e.up(80, false);
         assert_eq!(e.cursor(), 5);
-        e.up(80, false); // up from the first row goes to the start
+        e.up(80, false);
         assert_eq!(e.cursor(), 0);
     }
 
@@ -675,8 +625,6 @@ mod tests {
         e.backspace();
         assert!(e.is_empty());
     }
-
-    // ---- undo / redo ----
 
     fn typed(e: &mut Editor, s: &str) {
         for c in s.chars() {
@@ -784,14 +732,13 @@ mod tests {
     fn undo_stack_is_capped_at_200_steps() {
         let mut e = Editor::default();
         for i in 0..300 {
-            e.insert_str(&format!("{}\n", i % 7)); // each paste is its own step
+            e.insert_str(&format!("{}\n", i % 7));
         }
         let mut n = 0;
         while e.undo() {
             n += 1;
         }
         assert_eq!(n, UNDO_CAP);
-        // the oldest 100 pastes could not be undone
         assert_eq!(e.text().lines().count(), 100);
     }
 
@@ -833,12 +780,11 @@ mod tests {
     fn undo_after_send_restores_the_sent_text() {
         let mut e = Editor::default();
         typed(&mut e, "ship it");
-        e.clear(); // what sending does
+        e.clear();
         assert!(e.is_empty());
         assert!(e.undo());
         assert_eq!(e.text(), "ship it");
         assert_eq!(e.cursor(), 7);
-        // and a second send is still undoable
         e.clear();
         typed(&mut e, "next");
         e.undo();
@@ -855,7 +801,7 @@ mod tests {
         e.set_text("abc");
         e.clear_selection();
         let rev = e.revision();
-        assert!(e.undo()); // only the initial set_text step exists
+        assert!(e.undo());
         assert_eq!(e.text(), "");
         assert!(e.revision() > rev);
         assert!(!e.undo());

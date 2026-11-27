@@ -1,4 +1,3 @@
-//! Bounded, cached Mermaid rendering off the input/render thread. No Node or browser.
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
     atomic::{AtomicU64, Ordering},

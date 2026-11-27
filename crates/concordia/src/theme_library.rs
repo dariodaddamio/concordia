@@ -1,4 +1,3 @@
-//! Strict, file-backed theme format. Theme files are data and never executable code.
 use crate::config::{contrast, Rgb};
 use std::collections::BTreeSet;
 use std::io::Read;

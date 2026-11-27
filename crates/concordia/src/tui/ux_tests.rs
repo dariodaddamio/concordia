@@ -85,7 +85,6 @@ fn reasoning_chunks_are_separated_only_at_reasoning_boundaries() {
         .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
             "sec".into(),
         ));
-    // Streamed deltas can split a word; they join without an inserted line break.
     ui.app
         .apply_progress(crate::provider::turn::TurnProgress::ThinkingDelta(
             "ond\n".into(),
@@ -114,8 +113,6 @@ impl Ui {
         }
         let mut app = App::new(dir.path().join("state"), dir.path().join("workspace"));
         app.home_path = Some(dir.path().join("home"));
-        // These UX assertions exercise the historical terminal palette; pin it
-        // so the product's studio default does not change their contract.
         app.appearance.ui.theme = crate::config::Theme::Default;
         super::theme::install(&app.appearance.ui);
         app.no_color = false;
@@ -200,12 +197,9 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
             },
             &ui.tx,
         );
-        // An empty composer gives the new question focus. The first digit still
-        // returns to the composer instead of becoming popup text.
         assert!(ui.app.questions.focused);
         if explicit_focus {
             ui.key(KeyCode::F(8), KeyModifiers::NONE);
-            // Return from the choices to ordinary typing without choosing or clearing work.
             ui.key(KeyCode::Esc, KeyModifiers::NONE);
         }
         let instruction =
@@ -218,8 +212,6 @@ fn conversational_choices_never_take_a_typed_instruction_from_the_composer() {
         ui.key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(ui.rx.try_recv().unwrap(), instruction);
         assert!(ui.rx.try_recv().is_err());
-        // A typed instruction is sent as written; the question stays open until answered
-        // (owner, 2026-11-18: no question left unanswered).
         assert!(ui.app.questions.waiting());
     }
 }
@@ -461,7 +453,6 @@ fn mouse_answers_and_force_send_wait_for_cancellation_and_dispatch_once() {
         &ui.tx,
     );
     ui.draw();
-    // Mouse targets come from real question layout; no selection means no dispatch.
     assert!(ui.app.questions.waiting());
     let rect = ui.target("2. Change it");
     ui.click(rect);

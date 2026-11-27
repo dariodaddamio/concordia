@@ -1,4 +1,3 @@
-//! Bounded pipe-table layout shared by chat and formatted file panes.
 use super::*;
 use crate::tui::text::{slice_width, wrap_ranges};
 
@@ -90,7 +89,6 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
         .map(|row| {
             row.into_iter()
                 .map(|s| {
-                    // Cell markup is inline, not a heading/list nested in the table.
                     let (text, runs) = inline(&s);
                     let mut cell = MdLine {
                         text,
@@ -109,7 +107,6 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
         .map(|row| row.iter().map(|cell| cell.text.chars().collect()).collect())
         .collect();
     let mut out = Vec::new();
-    // Very narrow panes use labelled rows so no column is silently clipped.
     if width < columns * 7 + 1 {
         'narrow: for (r, row) in cells.iter().enumerate().skip(1) {
             for (i, cell) in row.iter().enumerate() {
@@ -185,8 +182,6 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
             for (i, cell) in row.iter().enumerate() {
                 let (a, mut b) = ranges[i].get(part).copied().unwrap_or((0, 0));
                 let chars = &characters[r][i];
-                // Transcript wrapping lets an invisible space hang over the margin;
-                // a table cell must leave room for the next visible separator.
                 while b > a && chars[b - 1].is_whitespace() {
                     b -= 1;
                 }
@@ -215,9 +210,6 @@ pub(super) fn render(rows: Vec<Vec<String>>, width: usize) -> Vec<MdLine> {
                 break 'rows;
             }
         }
-        // Keep wrapped body rows distinct. Without a rule here, a tall cell in one
-        // row runs directly into the next row and the table loses its row structure.
-        // The last row is closed by the bottom border; a divider there reads as an empty row.
         if r + 1 < cells.len() {
             out.push(rule(&widths, '├', '┼', '┤'));
         }

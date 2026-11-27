@@ -1,6 +1,3 @@
-//! Thread log and map: an opt-in, append-only record of a conversation, and deterministic
-//! pointer maps (no model, no network). See docs/architecture.md ("Thread log", "Map").
-
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,11 +9,8 @@ mod references;
 use crate::context_types::{PackMessage, PackRole};
 use crate::native_memory::references::{CaptureScope, Reference};
 
-/// Per-event text cap, in characters.
 pub const MAX_EVENT_TEXT: usize = 20_000;
-/// Default map budget, in characters.
 pub const MAP_CHARS: usize = 1600;
-/// Default cap for `concordia chat thread read`.
 pub const READ_CHARS: usize = 6000;
 const JOURNAL_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 const JOURNAL_RECORD_BYTES: usize = 1024 * 1024;
@@ -25,7 +19,6 @@ const JOURNAL_READ_BYTES: usize = 32 * 1024 * 1024;
 const JOURNAL_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 const JOURNAL_ANCHOR_BYTES: u64 = 64 * 1024;
 
-/// Count grouped handoff pointers and verified native source ids for the user card.
 pub fn handoff_pointer_count(text: &str) -> usize {
     let grouped = text.matches("--range ").count();
     let sources = text
@@ -39,7 +32,6 @@ pub fn handoff_pointer_count(text: &str) -> usize {
     grouped + sources
 }
 
-/// One finite journal page; cursors retain exact file identity and a fixed source snapshot.
 pub struct ThreadPage {
     pub events: Vec<ThreadEvent>,
     pub first_ordinal: usize,
@@ -86,10 +78,6 @@ fn modified_ns(metadata: &std::fs::Metadata) -> u128 {
         .map_or(0, |time| time.as_nanos())
 }
 
-// ---------------------------------------------------------------------------------------------
-// The environment variable is an explicit enable override; normal configuration is
-// `[threads] logging = "on"`.
-// ---------------------------------------------------------------------------------------------
 pub fn enabled(state_root: &Path) -> bool {
     if std::env::var("CONCORDIA_THREADS").is_ok_and(|v| v == "1") {
         return true;
@@ -98,7 +86,6 @@ pub fn enabled(state_root: &Path) -> bool {
         || crate::config::for_root(state_root).threads.logging
 }
 
-/// A new thread log for a conversation, or None when recording is off.
 pub fn start(state_root: &Path) -> Option<ThreadLog> {
     enabled(state_root).then(|| ThreadLog::open(state_root, &uuid::Uuid::new_v4().to_string()))
 }
@@ -124,13 +111,10 @@ pub struct EventUsage {
     pub cost_usd: Option<f64>,
 }
 
-/// One line of `<thread-id>.jsonl`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ThreadEvent {
-    /// Unix seconds (0 when unknown, e.g. rebuilt from memory).
     #[serde(default)]
     pub t: u64,
-    /// `user`, `assistant`, `card`, `switch`, `note`, `usage`.
     pub k: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -153,7 +137,6 @@ pub fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Cut to at most `max` characters on a char boundary.
 fn cap_chars(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
         Some((i, _)) => &s[..i],
@@ -202,7 +185,6 @@ impl ThreadEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadMeta {
     pub id: String,
-    /// Unix seconds.
     pub started: u64,
     pub title: String,
     #[serde(default)]
@@ -227,7 +209,6 @@ fn safe_id(id: &str) -> String {
         .collect()
 }
 
-/// First prompt, collapsed to one line and cut to 60 chars.
 pub fn title_from_prompt(prompt: &str) -> String {
     one_line(prompt, 60)
 }
@@ -238,7 +219,6 @@ pub struct ThreadLog {
 }
 
 impl ThreadLog {
-    /// No I/O until the first write.
     pub fn open(state_root: &Path, thread_id: &str) -> ThreadLog {
         ThreadLog {
             id: safe_id(thread_id),
@@ -258,13 +238,11 @@ impl ThreadLog {
         self.dir.join(format!("{}.meta.json", self.id))
     }
 
-    /// Append structural metadata only. Conversation bodies require an exact native reference.
     pub fn append(&self, ev: &ThreadEvent) -> Result<()> {
         self.append_record(&references::Record::metadata(ev)?)
             .map(|_| ())
     }
 
-    /// Verify an immutable native projection before persisting its body-free pointer.
     pub fn append_referenced(&self, ev: &ThreadEvent, reference: Reference) -> Result<()> {
         let record = references::Record::referenced(self.root(), ev, reference.clone())?;
         let ordinal = self.append_record(&record)?;
@@ -277,7 +255,6 @@ impl ThreadLog {
         Ok(())
     }
 
-    /// Record a source gap without persisting the original text or an arbitrary error body.
     pub fn append_unavailable(
         &self,
         ev: &ThreadEvent,
@@ -294,7 +271,6 @@ impl ThreadLog {
             .expect("thread directory has a state root")
     }
 
-    /// One bounded cross-process append transaction per journal record.
     fn append_record(&self, record: &references::Record) -> Result<usize> {
         let mut line = crate::redact::redact_bytes(&serde_json::to_vec(record)?);
         line.push(b'\n');
@@ -322,8 +298,6 @@ impl ThreadLog {
             let metadata = file.metadata()?;
             let length = metadata.len();
             let identity = crate::file_identity::of(&file).map_err(std::io::Error::other)?;
-            // Derived body-free metadata avoids rescanning the journal after every append,
-            // including when the asynchronous reference journal opens a fresh ThreadLog.
             let cached = std::fs::File::open(&count_path)
                 .ok()
                 .and_then(|file| serde_json::from_reader::<_, JournalCount>(file.take(4097)).ok());
@@ -359,7 +333,6 @@ impl ThreadLog {
                     .ok_or_else(|| std::io::Error::other("thread ordinal overflow"))?;
                 last = buffer[..read].last().copied();
             }
-            // Preserve a final record lacking a newline; add only its separator.
             if last.is_some_and(|byte| byte != b'\n') {
                 records = records
                     .checked_add(1)
@@ -380,7 +353,6 @@ impl ThreadLog {
                 anchor_len: metadata.len().min(JOURNAL_ANCHOR_BYTES),
                 anchor_sha256: journal_anchor(&mut file, metadata.len().min(JOURNAL_ANCHOR_BYTES))?,
             };
-            // A failed cache update never invalidates the already flushed journal append.
             if let Ok(bytes) = serde_json::to_vec(&count) {
                 let _ = crate::state_io::write_atomic(&count_path, &bytes);
             }
@@ -393,7 +365,6 @@ impl ThreadLog {
         read_event_page(self.root(), &self.log_path(), cursor)
     }
 
-    /// A bounded map remains available even when a full thread is too large to hydrate.
     pub fn read_map(&self, max_chars: usize) -> Result<String> {
         let page = self.read_page(None)?;
         let note = page.next_cursor.as_ref().map(|_| {
@@ -609,7 +580,6 @@ fn read_event_page(root: &Path, path: &Path, after: Option<&str>) -> Result<Thre
         if line.len() > JOURNAL_RECORD_BYTES {
             bail!("thread record at byte {} exceeds 1 MiB; original journal preserved; inspect the exact source with the provider's native history tools", cursor.offset);
         }
-        // Leave a record that crosses this page's byte boundary for the next page.
         if line.last() != Some(&b'\n') && cursor.offset + (read as u64) < cursor.length {
             if scanned == 0 {
                 bail!("thread record exceeds its page budget; original preserved");
@@ -627,7 +597,6 @@ fn read_event_page(root: &Path, path: &Path, after: Option<&str>) -> Result<Thre
             Ok(_) => None,
             Err(_) => None,
         };
-        // Preserve physical ordinals even if a record is malformed.
         let event = event.unwrap_or_else(|| {
             ThreadEvent::with_text(
                 "note",
@@ -670,7 +639,6 @@ fn read_events(root: &Path, path: &Path) -> Result<Vec<ThreadEvent>> {
     let mut events = Vec::new();
     let mut cursor = None;
     let mut retained = 0usize;
-    // Full callers get an explicit failure, never silently incomplete history.
     for _ in 0..(JOURNAL_SCAN_BYTES / JOURNAL_PAGE_BYTES) {
         let page = read_event_page(root, path, cursor.as_deref())?;
         for event in page.events {
@@ -702,7 +670,6 @@ fn thread_ids(state_root: &Path) -> Vec<String> {
     ids
 }
 
-/// Recorded threads, newest first. A log without a meta file still lists (title empty).
 pub fn list(state_root: &Path) -> Vec<ThreadMeta> {
     let mut out: Vec<ThreadMeta> = thread_ids(state_root)
         .into_iter()
@@ -730,7 +697,6 @@ pub fn delete(state_root: &Path, id: &str) -> Result<()> {
     ThreadLog::open(state_root, id).delete()
 }
 
-/// Full id from an exact id or an unambiguous prefix.
 pub fn resolve_prefix(state_root: &Path, prefix: &str) -> Result<String> {
     let prefix = prefix.trim();
     if prefix.is_empty() {
@@ -752,19 +718,15 @@ pub fn resolve_prefix(state_root: &Path, prefix: &str) -> Result<String> {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Map
-// ---------------------------------------------------------------------------------------------
-
 fn one_line(s: &str, max: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         return flat;
     }
-    if max <= 3 {
-        return cap_chars(&flat, max).to_string();
+    if max == 0 {
+        return String::new();
     }
-    format!("{}...", cap_chars(&flat, max - 3))
+    format!("{}…", cap_chars(&flat, max - 1))
 }
 
 fn looks_like_path(d: &str) -> bool {
@@ -782,7 +744,6 @@ fn looks_like_path(d: &str) -> bool {
         })
 }
 
-/// Canonical bounded map: recorded handoff facts and exact source pointers, no inference.
 pub fn build_map(
     events: &[ThreadEvent],
     thread_id: &str,
@@ -999,8 +960,6 @@ fn bound_map_lines(mut lines: Vec<String>, max_chars: usize) -> String {
         return String::new();
     }
     while lines.join("\n").chars().count() > max_chars && lines.len() > 2 {
-        // Fixed loss order: grouped pointers, reply/error detail, changed files, then redirect.
-        // Goal, the read command and current state remain stable.
         let removable = |line: &String| {
             !line.starts_with("read=") && !line.starts_with("state=") && !line.starts_with("goal=")
         };
@@ -1043,8 +1002,6 @@ fn bound_map_lines(mut lines: Vec<String>, max_chars: usize) -> String {
     cap_chars(&out, max_chars).to_owned()
 }
 
-/// Map events from the in-memory transcript (thread log off). `Card` messages carry
-/// `title \x1f detail \x1f status` in their text.
 pub fn events_from_messages(messages: &[PackMessage], provider: &str) -> Vec<ThreadEvent> {
     let mut out = Vec::new();
     for m in messages {
@@ -1079,16 +1036,10 @@ pub fn events_from_messages(messages: &[PackMessage], provider: &str) -> Vec<Thr
     out
 }
 
-/// Encode a card for a `PackRole::Card` message.
 pub fn encode_card(title: &str, detail: Option<&str>, status: &str) -> String {
     format!("{title}\u{1f}{}\u{1f}{status}", detail.unwrap_or(""))
 }
 
-// ---------------------------------------------------------------------------------------------
-// `concordia chat thread read`
-// ---------------------------------------------------------------------------------------------
-
-/// Plain-text rendering of one event for `chat thread read` and `--grep`.
 pub fn render_event(idx: usize, e: &ThreadEvent) -> String {
     let who = e
         .account
@@ -1114,7 +1065,6 @@ pub struct ReadOpts {
     pub max_chars: usize,
 }
 
-/// Parse `A-B` (1-based, inclusive).
 pub fn parse_range(s: &str) -> Result<(usize, usize)> {
     let (a, b) = s
         .split_once('-')
@@ -1183,7 +1133,6 @@ fn read_events_text_from(
     out
 }
 
-/// Human age: "5m", "3h", "2d".
 pub fn age_label(started: u64) -> String {
     let secs = now_secs().saturating_sub(started);
     match secs {
@@ -1194,11 +1143,6 @@ pub fn age_label(started: u64) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------------------------
-
-/// `concordia chat thread ...`. Returns (stdout, exit code); errors go to the Err string (stderr).
 pub fn run_chat_cli(
     state_root: &Path,
     args: &[String],
@@ -1439,7 +1383,6 @@ mod tests {
         }
         let m = build_map(&ev, "id", 1600, true, None, None);
         assert!(m.chars().count() <= 1600);
-        // Compact maps retain the exact source instruction without copying provider bodies.
         let tight = build_map(&ev, "id", 700, true, None, None);
         assert!(tight.matches("cmd number").count() <= 1);
         assert!(
@@ -1539,9 +1482,6 @@ mod tests {
         }
     }
 
-    /*
-            let body = "immutable native-only 日本語 sentinel";
-    */
     #[test]
     fn read_filters_and_caps() {
         let ev = vec![user("alpha"), asst("beta"), user("gamma"), asst("delta")];

@@ -1,11 +1,3 @@
-//! Colour for the `/usage` block and the `/usage all` picker rows.
-//!
-//! The text itself is plain (`usage::window_lines`); this module reads it back and returns style
-//! runs, so a block keeps its colour when it is rewritten in place and old blocks stay coloured.
-//! Only the left percentage changes colour (green below 80 % used, yellow from 80, red from 95 or
-//! when the limit is reached); everything else is dim. `NO_COLOR` strips the colours later and
-//! keeps the emphasis (bold left percentage, dim rest).
-
 use super::transcript::LineRun;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -18,7 +10,6 @@ fn red_bold() -> Style {
     Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
 }
 
-/// Colour of a left percentage given how much is used.
 pub fn tone_color(used: i64, limit_reached: bool) -> Color {
     if limit_reached || used >= 95 {
         Color::Red
@@ -39,7 +30,6 @@ fn chars_before(s: &str, byte: usize) -> usize {
     s[..byte].chars().count()
 }
 
-/// The ASCII number ending at byte `end`: its start and value.
 fn number_before(s: &str, end: usize) -> Option<(usize, i64)> {
     let b = s.as_bytes();
     let mut start = end;
@@ -49,7 +39,6 @@ fn number_before(s: &str, end: usize) -> Option<(usize, i64)> {
     s[start..end].parse().ok().map(|n| (start, n))
 }
 
-/// The provider colour of a block header (`Claude 2 - limits`), from the account's first word.
 fn header_color(line: &str) -> Color {
     let p = match line.split_whitespace().next().unwrap_or("") {
         "Codex" => crate::store::ProviderKind::Codex,
@@ -60,13 +49,12 @@ fn header_color(line: &str) -> Color {
     super::provider_color(p)
 }
 
-/// Style runs `(line, start, end, style)` for a `/usage` block; empty for any other text.
 pub fn runs(text: &str) -> Vec<LineRun> {
     let mut lines = text.lines();
     let Some(head) = lines.next() else {
         return Vec::new();
     };
-    if !head.ends_with(" - limits") {
+    if !head.ends_with(" · limits") && !head.ends_with(" - limits") {
         return Vec::new();
     }
     let mut out = vec![(
@@ -100,6 +88,8 @@ pub fn runs(text: &str) -> Vec<LineRun> {
             }
         } else if line.starts_with("limit reached") {
             out.push((i, 0, n, red_bold()));
+        } else if line.ends_with(" usage-based") {
+            out.push((i, 0, n, dim()));
         } else if line.starts_with("checked ") || line.contains("as of your last chat") {
             out.push((i, 0, n, dim().add_modifier(Modifier::ITALIC)));
         }
@@ -107,9 +97,6 @@ pub fn runs(text: &str) -> Vec<LineRun> {
     out
 }
 
-/// Spans for a `/use` or `/usage all` row label (`Codex  5h 59% left (41% used) · ...`). Each
-/// left percentage is bold and toned on its own; `None` when the label has none, so the caller
-/// keeps its single-style rendering.
 pub fn picker_spans(label: &str) -> Option<Vec<Span<'static>>> {
     const LEFT: &str = "% left";
     let mut spans = Vec::new();
@@ -176,7 +163,6 @@ mod tests {
         assert_eq!(style_at(&r, 2, 5).fg, Some(Color::Yellow));
         assert_eq!(style_at(&r, 3, 12).fg, Some(Color::Red));
         assert!(style_at(&r, 1, 5).add_modifier.contains(Modifier::BOLD));
-        // label and reset phrase are dim, never coloured
         assert!(style_at(&r, 1, 0).add_modifier.contains(Modifier::DIM));
         assert_eq!(style_at(&r, 1, 0).fg, None);
         assert!(style_at(&r, 1, 35).add_modifier.contains(Modifier::DIM));
@@ -207,6 +193,6 @@ mod tests {
         assert_eq!(reds, 1);
         assert_eq!(greens.len(), 1);
         assert_eq!(greens[0].content, "59% left");
-        assert!(picker_spans("Claude  checking limits...").is_none());
+        assert!(picker_spans("Claude  checking limits…").is_none());
     }
 }

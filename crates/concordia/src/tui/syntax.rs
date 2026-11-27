@@ -1,4 +1,3 @@
-//! Cached, background syntax highlighting; no filesystem reads or terminal escape output.
 use super::*;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;

@@ -1,6 +1,3 @@
-//! Thread log, map and `concordia chat thread ...`, driven through the real binary. The conversation
-//! comes from the fake provider; nothing here runs a real CLI.
-
 use concordia::provider::{run_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use concordia::threads::{ThreadEvent, ThreadLog, ThreadMeta};
@@ -30,7 +27,6 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/control-plane/codex-stream.jsonl");
 
-    // One real turn through the runner against the fake provider.
     std::env::set_var("CONCORDIA_CODEX_BIN", FAKE);
     std::env::set_var("FAKE_PROVIDER_MODE", "stream");
     std::env::set_var("FAKE_PROVIDER_STREAM", &fixture);
@@ -62,7 +58,6 @@ async fn a_recorded_conversation_can_be_listed_mapped_and_read() {
     }
     assert_eq!(outcome.exit_code, Some(0));
 
-    // Seed a current thread record for CLI read coverage.
     let id = "3f9a0000-1111-2222-3333-444444444444";
     let log = ThreadLog::open(state.path(), id);
     log.write_meta(&ThreadMeta {
@@ -164,7 +159,6 @@ fn errors_use_exit_codes_1_and_2() {
     let state = tempfile::tempdir().unwrap();
     let a = ThreadLog::open(state.path(), "abc1");
     let b = ThreadLog::open(state.path(), "abc2");
-    // Only distinct log ids are needed for prefix resolution; body-free metadata is sufficient.
     a.append(&ThreadEvent::new("note")).unwrap();
     b.append(&ThreadEvent::new("note")).unwrap();
     assert_eq!(
@@ -182,7 +176,6 @@ fn errors_use_exit_codes_1_and_2() {
             .code(),
         Some(2)
     );
-    // Empty state lists cleanly.
     let empty = tempfile::tempdir().unwrap();
     assert!(thread_cmd(empty.path(), &["list"]).status.success());
 }

@@ -1,4 +1,3 @@
-//! A bounded, read-only integration catalog owned by the current conversation surface.
 use super::{App, PickerKind};
 use crate::update::{PreviewLine, UpdatePreview};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,8 +6,6 @@ use std::sync::{
     mpsc, Arc,
 };
 
-/// The mutation types exposed by F10. Confirmation is intentionally owned by the shared picker;
-/// this module only provides the stable review payload and bounded execution primitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Action {
     Connect,
@@ -204,7 +201,6 @@ fn catalog_footer(catalog: &crate::harness::catalog::Catalog) -> String {
 }
 
 fn catalog_lines(catalog: &crate::harness::catalog::Catalog, selected: usize) -> Vec<PreviewLine> {
-    // Border title already names the panel; the body starts with content.
     let mut lines = Vec::new();
     if catalog.integrations.is_empty() {
         lines.push(PreviewLine::Text("No integrations connected yet.".into()));
@@ -426,7 +422,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                                 release_url: None,
                             });
                         }
-                        app.footer_left = "Enter confirm · Esc cancel".into();
+                        app.footer_left = "Enter confirm · Esc close".into();
                     }
                     Err(error) => app.flash(error),
                 }
@@ -434,12 +430,12 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
             }
             KeyCode::Backspace => {
                 path.pop();
-                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc cancel".into())], install_available: false, release_url: None });
+                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc close".into())], install_available: false, release_url: None });
                 return true;
             }
             KeyCode::Char(c) if !c.is_control() && path.chars().count() < 4096 => {
                 path.push(c);
-                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc cancel".into())], install_available: false, release_url: None });
+                app.update_preview = Some(UpdatePreview { history: Vec::new(), history_expanded: false, lines: vec![PreviewLine::Title("New local integration".into()), PreviewLine::Field("Path", path.clone()), PreviewLine::Hint("Type or paste a local folder/manifest path · Enter inspect · Esc close".into())], install_available: false, release_url: None });
                 return true;
             }
             KeyCode::Char(_) => {
@@ -458,14 +454,13 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
                 PreviewLine::Title("New local integration".into()),
                 PreviewLine::Field("Path", String::new()),
                 PreviewLine::Hint(
-                    "Type or paste a local folder/manifest path · Enter inspect · Esc cancel"
-                        .into(),
+                    "Type or paste a local folder/manifest path · Enter inspect · Esc close".into(),
                 ),
             ],
             install_available: false,
             release_url: None,
         });
-        app.footer_left = "Type path · Enter inspect · Esc cancel".into();
+        app.footer_left = "Type path · Enter inspect · Esc close".into();
         return true;
     }
     if app.integrations.review.is_some() && key.code == KeyCode::Enter {
@@ -561,7 +556,7 @@ pub(super) fn handle_key(app: &mut App, mut key: KeyEvent) -> bool {
             release_url: None,
         });
     }
-    app.footer_left = "Enter confirm · Esc cancel".into();
+    app.footer_left = "Enter confirm · Esc close".into();
     true
 }
 
@@ -767,8 +762,6 @@ pub(super) fn poll_action(app: &mut App) -> bool {
     true
 }
 
-/// Accept a terminal paste while the new-manifest field is active. The shared event loop may
-/// route clipboard payloads here without placing them in the composer draft.
 pub(super) fn paste(app: &mut App, text: &str) -> bool {
     if !app
         .picker
@@ -793,7 +786,7 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
         lines: vec![
             PreviewLine::Title("New local integration".into()),
             PreviewLine::Field("Path", path.clone()),
-            PreviewLine::Hint("Enter inspect · Esc cancel".into()),
+            PreviewLine::Hint("Enter inspect · Esc close".into()),
         ],
         install_available: false,
         release_url: None,

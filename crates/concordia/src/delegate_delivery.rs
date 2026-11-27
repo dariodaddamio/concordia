@@ -1,4 +1,3 @@
-//! Explicit cross-worktree dependency acceptance. It never integrates or executes native tools.
 use super::*;
 use crate::managed_workspaces::lifecycle::DependencySnapshot;
 use sha2::{Digest, Sha256};

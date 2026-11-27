@@ -1,6 +1,3 @@
-//! Read terminal events independently of drawing so idle gaps cannot disappear while the UI is
-//! busy. The main loop consumes stamped events and flushes inference bursts at recorded gaps.
-
 use crossterm::event::{self, Event};
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,13 +30,10 @@ pub(super) struct WakeHandle(SyncSender<Message>);
 #[cfg(windows)]
 impl WakeHandle {
     pub(super) fn wake(&self) {
-        // If full, input is already ready and the root loop will drain child events.
         let _ = self.0.try_send(Message::Wake);
     }
 }
 
-/// Owns the only Crossterm event reader for the TUI. Events and quiet-boundary markers are bounded
-/// and retain their observed order and timestamps, independently of render-loop delays.
 pub struct InputStream {
     receiver: Option<Receiver<Message>>,
     pending: Option<Message>,
@@ -119,7 +113,6 @@ impl InputStream {
             notification_target: None,
         })
     }
-    /// Start the reader. Call this only after terminal input modes have been configured.
     pub fn spawn() -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
         #[cfg(windows)]
@@ -170,7 +163,6 @@ impl InputStream {
         self.notification_target.take()
     }
 
-    /// Wait for an event for at most `timeout`. A queued reader error is returned immediately.
     pub fn poll(&mut self, timeout: Duration) -> io::Result<bool> {
         if let Some(message) = &self.pending {
             return match message {
@@ -204,8 +196,6 @@ impl InputStream {
         }
     }
 
-    /// Return the next event or ordered idle marker, its reader timestamp, and whether it marks a
-    /// quiet boundary. A boundary is `(None, at, true)`. Intended to follow `poll(true)`.
     pub fn read(&mut self) -> io::Result<(Option<Event>, Instant, bool)> {
         #[cfg(windows)]
         {
@@ -255,7 +245,6 @@ impl InputStream {
 impl Drop for InputStream {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        // A full bounded channel can block the reader in send; dropping the receiver releases it.
         drop(self.receiver.take());
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
@@ -298,10 +287,7 @@ fn read_events(
                 }
                 return;
             }
-            Err(windows_vt::StartError::Unsupported) => {
-                // VT input is unsupported by this host/handle. No bytes have been read, so it is
-                // safe to fall back to Crossterm's native Windows INPUT_RECORD reader.
-            }
+            Err(windows_vt::StartError::Unsupported) => {}
             Err(windows_vt::StartError::Failed(error)) => {
                 let _ = startup.send(Err(io::Error::new(error.kind(), error.to_string())));
                 return;

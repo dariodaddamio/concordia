@@ -1,6 +1,3 @@
-//! Real child processes against the fake adapter: timeout, no shell, output caps, and the
-//! connect and verify flows end to end through `concordia::harness`.
-
 use concordia::harness::run::run_command;
 use concordia::harness::{command, parse_manifest, Context};
 use concordia::provider::enforcement::{self, Gate};
@@ -452,8 +449,6 @@ fn verify_end_to_end_opens_the_gate_only_for_a_real_matching_report() {
         .any(|l| l.contains("verified")));
 }
 
-/// npm installs Node CLIs on Windows as `name.cmd`; a program named without its extension must
-/// still start, as `habena` does in a shell.
 #[cfg(windows)]
 #[test]
 fn a_cmd_shim_starts_by_its_bare_name() {

@@ -1,4 +1,3 @@
-//! Metadata-only native usage observations. They never enter Concordia attempt totals.
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -57,7 +56,6 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
     }
 }
 
-/// The native history owner creates immutable page pointers; this reader only extracts counters.
 pub fn import_page(
     root: &Path,
     binding: &Binding,
@@ -127,7 +125,6 @@ pub fn import_page(
         }
         let start = position;
         position += raw.len() as u64;
-        // A boundary-split oversized line is not a complete event; the next page owns its skip.
         if raw.len() > LINE_BYTES
             || (start == history.start && starts_inside_record)
             || !raw.ends_with(b"\n")
@@ -191,7 +188,6 @@ pub fn import_page(
             continue;
         }
         let sha256 = digest(raw);
-        // Exact record identity deduplicates reimports, never token/time similarity.
         let key = digest(
             format!(
                 "{}\n{}\n{}\n{start}\n{sha256}",

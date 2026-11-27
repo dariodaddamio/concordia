@@ -73,7 +73,6 @@ fn eventually(mut cond: impl FnMut() -> bool) -> bool {
     cond()
 }
 
-/// Run a copy of the fake provider *as* `path`, so Windows holds that file open.
 fn run_as(path: &Path, pid_file: &Path) -> Child {
     std::fs::copy(FAKE, path).unwrap();
     let child = Command::new(path)
@@ -103,7 +102,6 @@ fn a_fresh_install_lands_at_concordia_exe_and_the_pointer_follows_it() {
     );
     let pointer = std::fs::read_to_string(current_pointer_path()).unwrap();
     assert_eq!(PathBuf::from(pointer.trim()), dest);
-    // No staging or swap debris.
     assert!(
         !sb.names()
             .iter()
@@ -111,7 +109,6 @@ fn a_fresh_install_lands_at_concordia_exe_and_the_pointer_follows_it() {
         "{:?}",
         sb.names()
     );
-    // And it runs.
     let out = Command::new(&dest).arg("--version").output().unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("concordia "));
 }
@@ -122,7 +119,6 @@ fn an_update_replaces_concordia_exe_even_while_an_older_concordia_is_running_fro
     let pid_file = sb.dir.path().join("pid.txt");
     let mut running = run_as(&sb.concordia_exe(), &pid_file);
 
-    // Prove the premise: Windows really refuses to overwrite a running exe.
     assert!(
         std::fs::copy(CONCORDIA, sb.concordia_exe()).is_err(),
         "the stand-in should hold concordia.exe open; the test would prove nothing"
@@ -136,7 +132,6 @@ fn an_update_replaces_concordia_exe_even_while_an_older_concordia_is_running_fro
         std::fs::read(CONCORDIA).unwrap(),
         "`concordia` must now resolve to the NEW build, not the one still running"
     );
-    // The running old image was moved aside, not killed.
     assert!(
         sb.names()
             .iter()
@@ -149,7 +144,6 @@ fn an_update_replaces_concordia_exe_even_while_an_older_concordia_is_running_fro
         "the old pane must keep running"
     );
 
-    // Once the old pane exits, an identical reinstall keeps one verified rollback.
     running.kill().unwrap();
     running.wait().unwrap();
     install_binary(Path::new(CONCORDIA)).unwrap();
@@ -221,12 +215,10 @@ fn concordia_install_installs_this_exe_where_path_will_find_it() {
     assert!(text.contains("NEW terminal"), "{text}");
     let installed = dir.path().join("concordia.exe");
     assert!(installed.is_file());
-    // With an explicit install dir concordia must not edit the user's PATH.
     assert!(!text.contains("to your PATH"), "{text}");
     let v = Command::new(&installed).arg("--version").output().unwrap();
     assert!(String::from_utf8_lossy(&v.stdout).starts_with("concordia "));
 
-    // Running `install` again from the installed copy itself (replacing its own image) works.
     let again = Command::new(&installed)
         .arg("install")
         .env("CONCORDIA_INSTALL_DIR", dir.path())
@@ -267,7 +259,6 @@ fn update_rebuilds_and_installs_from_any_directory_once_the_checkout_is_recorded
         let _ = shortcut_path(false);
     }
 
-    // A pane opened somewhere unrelated, as happens with a normal WezTerm tab.
     let elsewhere = tempfile::tempdir().unwrap();
     match update_auto(elsewhere.path()).expect("source update must work from any directory") {
         UpdateOutcome::Installed(r) => {

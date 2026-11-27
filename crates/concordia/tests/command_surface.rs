@@ -1,6 +1,3 @@
-//! Public command parser contract. These tests exercise parsing/dispatch only; no provider,
-//! account mutation, host integration, updater, or login flow is started.
-
 use concordia::commands::{
     dispatch_slash, parse_slash, CommandContext, CommandOutcome, SlashCommand,
 };

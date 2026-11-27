@@ -1,18 +1,3 @@
-//! What Concordia leaves inside homes it created: the optional MCP entry.
-//!
-//! Rules (docs/mcp.md, AGENTS.md): only homes under `<state>/homes` that Concordia created are ever
-//! touched, never a user's own `.claude` / `.codex`. Everything lives between explicit markers or in
-//! one clearly named entry, is idempotent, preserves what the user wrote around it, and is left
-//! alone (and reported by `concordia doctor`) when the file cannot be parsed.
-//!
-//! Formats (verified with `claude mcp add -s user` and `codex mcp add` against empty temp homes):
-//! * Claude: `<CLAUDE_CONFIG_DIR>/.claude.json`, top-level `mcpServers.<name> =
-//!   {type:"stdio", command, args, env}`; instructions in `<CLAUDE_CONFIG_DIR>/CLAUDE.md`.
-//! * Codex: `<CODEX_HOME>/config.toml`, table `[mcp_servers.<name>]` with `command`, `args` and a
-//!   `[mcp_servers.<name>.env]` table; instructions in `<CODEX_HOME>/AGENTS.md`.
-//! * Cursor: skipped. Its extra accounts are API-key folders only; the CLI reads `~/.cursor`, which
-//!   Concordia never writes.
-
 use crate::store::ProviderKind;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,24 +6,16 @@ const TOML_BEGIN: &str =
     "# concordia:begin (managed by Concordia; remove with [threads] mcp = false)";
 const TOML_BEGIN_KEY: &str = "# concordia:begin";
 const TOML_END: &str = "# concordia:end";
-/// Name of the server entry in each CLI's config.
 pub const SERVER_NAME: &str = "concordia";
-/// Env var that points the server at the state folder (the one `store::default_store_root` reads).
 pub const STATE_ENV: &str = "CONCORDIA_STATE_DIR";
-/// JSON object containing the account id and workspace root fixed at registration time.
 pub const SCOPE_ENV: &str = "CONCORDIA_MCP_SCOPE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
-    /// Already as wanted.
     Current,
-    /// Written (or, in a dry run, would be written).
     Updated,
-    /// Our block or entry was removed (or would be).
     Removed,
-    /// Off, and there is nothing of ours to remove.
     Absent,
-    /// Left alone, with the reason (unparseable file, a foreign entry with our name, ...).
     Blocked(String),
 }
 
@@ -50,8 +27,6 @@ pub struct HomeReport {
     pub mcp: Outcome,
 }
 
-/// Homes Concordia created (registered, under `<state>/homes`) for the CLIs that read an
-/// instructions file and an MCP config from their home. Hidden or user-owned homes never appear.
 pub fn created_homes(state_root: &Path) -> Vec<(String, ProviderKind, PathBuf)> {
     crate::connect::removable(state_root)
         .into_iter()
@@ -60,17 +35,14 @@ pub fn created_homes(state_root: &Path) -> Vec<(String, ProviderKind, PathBuf)> 
         .collect()
 }
 
-/// Bring every Concordia-created home in line with `[threads] mcp`.
 pub fn refresh(state_root: &Path, exe: &Path) -> Vec<HomeReport> {
     run(state_root, exe, true)
 }
 
-/// `/use`: refresh with the active exe and return the transcript lines for what changed.
 pub fn refresh_summary(state_root: &Path) -> Vec<String> {
     summary_lines(&refresh(state_root, &crate::update::resolve_active_exe()))
 }
 
-/// Same decisions, nothing written (for `concordia doctor`).
 pub fn check(state_root: &Path, exe: &Path) -> Vec<HomeReport> {
     run(state_root, exe, false)
 }
@@ -88,7 +60,6 @@ fn run(state_root: &Path, exe: &Path, write: bool) -> Vec<HomeReport> {
         .collect()
 }
 
-/// One transcript line per change or problem (nothing for homes that are already right).
 pub fn summary_lines(reports: &[HomeReport]) -> Vec<String> {
     let mut out = Vec::new();
     for r in reports {
@@ -104,7 +75,6 @@ pub fn summary_lines(reports: &[HomeReport]) -> Vec<String> {
     out
 }
 
-/// Rows for `concordia doctor`: (is a warning, name, detail).
 pub fn doctor_rows(state_root: &Path, exe: &Path) -> Vec<(bool, &'static str, String)> {
     let mut out = Vec::new();
     for r in check(state_root, exe) {
@@ -124,10 +94,6 @@ pub fn doctor_rows(state_root: &Path, exe: &Path) -> Vec<(bool, &'static str, St
     }
     out
 }
-
-// ---------------------------------------------------------------------------------------------
-// Shared marker-block editing
-// ---------------------------------------------------------------------------------------------
 
 fn sync_text_block_checked(
     file: &Path,
@@ -198,9 +164,6 @@ fn atomic_write(path: &Path, bytes: &[u8], expected: Option<&[u8]>) -> std::io::
     }
 }
 
-/// Pure text edit behind [`sync_text_block`]. `begin` may be a prefix of the line (the TOML marker
-/// carries a trailing comment); the block is the lines from the one starting with `begin` through
-/// the one starting with `end`.
 fn splice(text: &str, begin: &str, end: &str, body: Option<&[&str]>) -> Result<String, String> {
     let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let block = |b: &[&str]| -> String {
@@ -263,7 +226,6 @@ fn splice(text: &str, begin: &str, end: &str, body: Option<&[&str]>) -> Result<S
     }
 }
 
-/// The marker text to search for: the begin marker without any trailing comment.
 fn begin_key(begin: &str) -> &str {
     if begin.starts_with(TOML_BEGIN_KEY) {
         TOML_BEGIN_KEY
@@ -271,10 +233,6 @@ fn begin_key(begin: &str) -> &str {
         begin
     }
 }
-
-// ---------------------------------------------------------------------------------------------
-// MCP registration
-// ---------------------------------------------------------------------------------------------
 
 pub fn sync_mcp(
     home: &Path,
@@ -348,7 +306,6 @@ fn read_configuration(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// An entry we wrote: stdio, args exactly ["mcp"]. Anything else under our name is the user's.
 fn is_ours(entry: &serde_json::Value) -> bool {
     entry.get("args") == Some(&serde_json::json!(["mcp"]))
         && entry
@@ -482,7 +439,6 @@ fn sync_codex_toml(
         format!("{SCOPE_ENV} = {}", toml_str(&scope_json(account))),
     ];
     let body_refs: Vec<&str> = body.iter().map(String::as_str).collect();
-    // The new text must still be valid TOML with a single concordia server, or nothing is written.
     let validate = |t: &str| -> Result<(), String> {
         match t.parse::<toml::Table>() {
             Ok(_) => Ok(()),
@@ -535,7 +491,6 @@ mod tests {
             sync_mcp(&h, ProviderKind::Claude, true, exe, st, true),
             Outcome::Current
         );
-        // A moved exe updates the entry.
         let moved = Path::new("C:/new/concordia.exe");
         assert_eq!(
             sync_mcp(&h, ProviderKind::Claude, true, moved, st, true),

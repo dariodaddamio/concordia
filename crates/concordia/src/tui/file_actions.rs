@@ -1,4 +1,3 @@
-//! Shared file choices; launcher work stays off the input/render loop.
 use super::*;
 use crate::file_open::{self, EditorSpec, FileAction, ResolvedAction};
 

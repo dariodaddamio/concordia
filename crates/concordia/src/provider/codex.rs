@@ -11,7 +11,6 @@ pub struct TurnRequest<'a> {
     pub cwd: &'a Path,
     pub codex_home: Option<&'a Path>,
     pub model: Option<&'a str>,
-    /// Provider-reported reasoning level for this turn, when selected.
     pub effort: Option<&'a str>,
     pub native_session_id: Option<&'a str>,
     pub trust: TrustMode,
@@ -60,7 +59,6 @@ pub fn plan_turn_argv_with(req: &TurnRequest<'_>, env: &super::LocateEnv) -> Res
         argv.extend(["-c".into(), format!("model_reasoning_effort={effort}")]);
     }
     match req.trust {
-        // Codex has no separate planning mode; a read-only sandbox is the closest guarantee.
         TrustMode::Plan | TrustMode::Ask => {
             argv.push("--skip-git-repo-check".into());
             argv.push("-s".into());
@@ -108,7 +106,6 @@ pub fn assert_safe_argv(argv: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Parse a multi-line Codex JSONL chunk (fixture / stream buffer).
 pub fn extract_stream_chunk(chunk: &str) -> StreamOutcome {
     let mut out = StreamOutcome::default();
     apply_stream_parts(parse_codex_stream_chunk(chunk), &mut out);
@@ -128,7 +125,6 @@ pub fn apply_stream_parts(parts: Vec<StreamPart>, out: &mut StreamOutcome) {
             StreamPart::TextDelta(text) => out.text.push_str(&text),
             StreamPart::Card(card) => upsert_card(&mut out.cards, card),
             StreamPart::Thinking(_) | StreamPart::ThinkingDelta(_) | StreamPart::Usage(_) => {}
-            // Shown once as a system line; never folded into the reply text.
             StreamPart::Error(msg) => out.errors.push(msg),
         }
     }

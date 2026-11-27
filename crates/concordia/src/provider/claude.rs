@@ -19,8 +19,6 @@ pub struct ClaudePlan {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: String,
-    /// Session id chosen for a conversation's first turn (`--session-id`); recorded by the caller
-    /// once that turn succeeds so later turns can `--resume` it.
     pub new_session_id: Option<String>,
 }
 
@@ -31,8 +29,6 @@ const PROFILE_VARS: &[&str] = &[
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ];
 
-/// Forward only the documented Claude routing profile. Values come from the user's process
-/// environment, with the selected Claude settings file as a fallback. Secrets are not read.
 fn profile_env(config_dir: Option<&std::path::Path>) -> Vec<(String, String)> {
     let settings = config_dir
         .and_then(|dir| crate::fs_safe::read_text_bounded(&dir.join("settings.json"), 1024 * 1024))
@@ -90,7 +86,6 @@ pub fn plan_claude_turn_with(
             argv.push("plan".into());
         }
         TrustMode::Ask => {
-            // Claude 2.1.319 help accepts manual; this is its prompting mode for Ask.
             argv.push("--permission-mode".into());
             argv.push("manual".into());
         }
@@ -114,8 +109,6 @@ pub fn plan_claude_turn_with(
         argv.push("--resume".into());
         argv.push(sid.to_string());
     } else {
-        // First turn of a conversation: pick the id ourselves so we never have to parse it out of
-        // the output, and can resume it explicitly next time.
         let id = uuid::Uuid::new_v4().to_string();
         argv.push("--session-id".into());
         argv.push(id.clone());
@@ -145,7 +138,6 @@ pub fn plan_claude_turn_with(
     })
 }
 
-/// Add Claude's native effort flag only when the cached compatibility probe advertises it.
 pub(crate) fn add_effort_if_supported(argv: &mut Vec<String>, effort: Option<&str>) -> Result<()> {
     let Some(effort) = effort.map(str::trim).filter(|e| !e.is_empty()) else {
         return Ok(());

@@ -1,8 +1,7 @@
 use super::super::*;
 
-/// One footer for the usage page, however it was opened or refreshed.
 pub(in crate::tui) const USAGE_FOOTER: &str =
-    "←↑↓→ move · PgUp/PgDn scroll card · r refresh · t tokens · Esc";
+    "←↑↓→ move · Enter select · PgUp/PgDn scroll · R refresh · T tokens · Esc close";
 
 impl App {
     pub(in crate::tui) fn refresh_usage(&mut self) {
@@ -42,7 +41,7 @@ impl App {
     }
     pub(in crate::tui) fn show_usage(&mut self, force: bool) {
         let Some(home) = self.home_path.clone() else {
-            self.push_system("usage - no account selected; try /use");
+            self.push_system("usage · no account selected; try /use");
             return;
         };
         let snap = if force {
@@ -111,7 +110,7 @@ impl App {
             snap.detail.trim()
         );
         let body = details.trim();
-        format!("{heading} - limits\n{body}")
+        format!("{heading} · limits\n{body}")
     }
     pub(in crate::tui) fn update_usage_block(&mut self) {
         let Some(idx) = self.usage_block else {
@@ -136,7 +135,6 @@ impl App {
     pub(in crate::tui) fn account_label(&self) -> String {
         self.named_account(self.provider, &self.account)
     }
-    /// Header, settings Accounts row, and `/use` share this chip (no lowercase provider id).
     pub(in crate::tui) fn account_heading(&self) -> String {
         crate::accounts::format_account_heading(
             self.provider,
@@ -183,7 +181,6 @@ impl App {
             picker.state = old.state;
             picker.usage_scroll = old.usage_scroll;
             picker.usage_cols = old.usage_cols;
-            // A background refresh must not swap the heading the panel was opened with.
             if picker.kind == PickerKind::Usage {
                 picker.title = old.title;
             }
@@ -249,11 +246,12 @@ impl App {
             .into_iter()
             .filter_map(|a| a.home_path.map(|h| (a.account, a.provider, h)))
             .collect();
-        let rows_data = usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account);
+        let rows_data =
+            usage_rows_for_accounts(&mut self.usage_fetcher, &accounts, &self.account, true);
         let rows: Vec<PickerRow> = if rows_data.is_empty() {
             vec![PickerRow {
-                id: "none".into(),
-                label: "no accounts".into(),
+                id: "usage-add".into(),
+                label: "Add account".into(),
                 detail: String::new(),
             }]
         } else {

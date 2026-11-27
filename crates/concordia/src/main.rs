@@ -78,8 +78,6 @@ const CLI_HELP: &[CommandSpec] = &[
         command: Command::Mcp,
     },
     CommandSpec {
-        // Started by providers (Cursor ACP) as the concordia-ask MCP server; without this entry
-        // the subcommand was rejected and the ask-the-user tool never reached the provider.
         name: "ask-mcp",
         aliases: &[],
         args: "",
@@ -145,7 +143,7 @@ fn print_help() {
          Slash: /use [add] /model /usage /resume /agents /config /new /threads /update /version /copy /doctor /exit\n\
          Files: /open PATH[:LINE[:COLUMN]] · /close ID\n\
          Workers: open the Agents panel with Ctrl+G; inspect, retry and cancel from the selected run (docs/delegation.md)\n\
-         Auth mode shown bottom-right. Ctrl+C cancels (or copies a selection) · Tab slash-complete.\n\
+         Auth mode shown bottom-right. Esc cancels a turn · Ctrl+C copies selected text · Tab slash-complete.\n\
          Connect: /use add [codex|claude|cursor|grok] makes an isolated home and opens its login.\n\
          Mouse: click places the caret, drag selects, double/triple-click picks word/line,\n\
          wheel scrolls, right-click copies the selection or pastes.\n\
@@ -178,7 +176,6 @@ async fn run_default_chat() -> Result<()> {
 async fn main() -> Result<()> {
     let result = run().await;
     if let Err(error) = &result {
-        // A window started from a shortcut has no console, so stderr alone loses this.
         concordia::logging::init(&default_store_root());
         concordia::logging::error(&format!("exit after error: {error:#}"));
     }
@@ -277,7 +274,6 @@ async fn run() -> Result<()> {
         }
         Command::Version => {
             println!("{}", version_line());
-            // Read-only: reporting a version must never repoint the install at this exe.
             if let Ok(exe) = std::env::current_exe() {
                 println!("exe: {}", exe.display());
             }

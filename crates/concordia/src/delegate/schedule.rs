@@ -1,4 +1,3 @@
-//! Bounded dependency metadata. Readiness is descriptive and never launches a provider.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -145,7 +144,6 @@ pub enum Readiness {
     },
 }
 
-/// Tasks retain submission order. Terminal prerequisite receipts survive normal viewer pruning.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Graph {
@@ -283,7 +281,6 @@ impl Graph {
         Ok(())
     }
 
-    /// This says only whether prerequisites succeeded, never whether dispatch is authorized.
     pub fn readiness(&self, task_id: &str) -> Result<Readiness, String> {
         self.validate()?;
         let task = self
@@ -299,7 +296,6 @@ impl Graph {
         }
         let mut waiting = Vec::new();
         for prerequisite in &task.prerequisites {
-            // Validation binds both the exact task and run; a new run never inherits success.
             let parent = self
                 .tasks
                 .iter()
@@ -494,7 +490,6 @@ mod tests {
             .observe_run(&id(1000), &id(101), RunState::Succeeded)
             .unwrap();
         assert_eq!(graph.readiness(&id(2)).unwrap(), Readiness::Ready);
-        // A new execution is a separate receipt and cannot satisfy an older edge.
         graph
             .observe_run(&id(1000), &id(101), RunState::Failed)
             .unwrap();

@@ -1,4 +1,3 @@
-//! Revision-checked pointers into native session files. Persist metadata, never chat bodies.
 use crate::{accounts, sessions, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -11,15 +10,12 @@ use std::{
 
 const TAIL_BYTES: u64 = 8 * 1024 * 1024;
 const HEAD_BYTES: u64 = 64 * 1024;
-// Native setup can make the identity record larger than the freshness anchor.
-// Match discovery's finite prefix budget without changing existing pointer hashes.
 const IDENTITY_BYTES: u64 = 1024 * 1024;
 const LINE_BYTES: usize = 256 * 1024;
 const MAX_MESSAGES: usize = 128;
 const INDEX_BYTES: u64 = 256 * 1024;
 const EXCERPT_BYTES: usize = 8192;
 
-/// Stable user-facing categories for a native source that can no longer be trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerFailureCause {
     FileDeletedOrMoved,
@@ -46,7 +42,6 @@ impl PointerFailureCause {
         }
     }
 
-    /// Convert existing native-reader errors into the small diagnostic taxonomy.
     pub fn from_error(error: &str) -> Self {
         let text = error.to_ascii_lowercase();
         if text.contains("home changed") || text.contains("home is unavailable") {
@@ -293,8 +288,6 @@ pub struct SourceIndex {
     pub history: Option<HistoryPage>,
 }
 
-/// An immutable page in a forward scan. The cursor is this page's content-addressed index id.
-/// Only byte ranges and hashes are persisted; appends never extend an in-flight snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HistoryPage {
     pub start: u64,
@@ -342,7 +335,6 @@ pub struct Excerpt {
     pub source_byte_start: u64,
     pub source_byte_end: u64,
     pub sha256: String,
-    /// Exact UTF-8 bytes from the native JSONL event, possibly one bounded chunk.
     pub raw: String,
     pub next_offset: Option<usize>,
 }
@@ -535,8 +527,6 @@ fn message_role(value: &Value, provider: ProviderKind, session: &str) -> Option<
     }
 }
 
-/// Display text from the same validated native Cursor replay used by exact pointers.
-/// Text is returned in memory only; the caller applies its own transcript/display budget.
 pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String)>, String> {
     if binding.provider != ProviderKind::Cursor {
         return Err("Cursor history requires a Cursor binding".into());
@@ -581,8 +571,6 @@ pub fn cursor_text(root: &Path, binding: &Binding) -> Result<Vec<(String, String
     Ok(messages)
 }
 
-/// A fresh, bounded source observation with enough metadata to explain every rejection.
-/// Native conversation text is neither returned nor retained in this evidence.
 pub fn context_observation(
     root: &Path,
     binding: &Binding,
@@ -716,8 +704,6 @@ pub fn context_observation(
     Ok(observation)
 }
 
-/// Revision checkpoint for a native control measurement. Reads the existing bounded source
-/// owner and verifies the exact account/home/session; no transcript bodies are persisted.
 pub fn control_checkpoint(
     root: &Path,
     binding: &Binding,
@@ -746,8 +732,6 @@ fn literal_exec_patch(input: &str) -> Option<(String, usize)> {
 }
 
 fn literal_exec_patches(input: &str) -> Option<Vec<(String, usize)>> {
-    // Share the complete finite host-batch grammar with compact tool headings. Each patch
-    // keeps its own result index; a successful sibling command cannot validate a failed patch.
     let calls = crate::tool_literals::literal_wrapper_calls(input)?;
     let mut patches = Vec::new();
     for (index, (name, argument)) in calls.into_iter().enumerate() {
@@ -766,8 +750,6 @@ pub(crate) fn successful_patch_output(output: &Value, result_index: Option<usize
         .and_then(|text| serde_json::from_str::<Value>(text).ok());
     let output = decoded.as_ref().unwrap_or(output);
     let output = if let Some(blocks) = output.as_array() {
-        // Each recognized text(await tool(...)) statement publishes one result.
-        // Match the patch's own result, not a later successful shell command.
         let Some(index) = result_index else {
             return false;
         };
@@ -825,8 +807,6 @@ pub(crate) fn codex_patch_inputs(
     codex_patch_inputs_between(root, binding, not_before, i64::MAX, None)
 }
 
-/// Background inline inspection of one explicitly bound, still-running application attempt.
-/// Reject multiple native starts in its time window rather than guessing the newest turn.
 pub(crate) fn live_codex_patches(
     root: &Path,
     binding: &Binding,
@@ -980,8 +960,6 @@ fn codex_patch_inputs_between(
     Ok(patches)
 }
 
-/// Explicit historical inspection binds a completed immutable attempt to one unique
-/// completed native turn near settlement, then reads only that turn's patch inputs.
 pub(crate) fn historical_codex_patches(
     root: &Path,
     record: &crate::artifacts::Record,
@@ -1088,7 +1066,6 @@ pub(crate) fn historical_codex_patches(
     codex_patch_inputs_between(root, &binding, *started, *completed, Some(turn))
 }
 
-/// Verify source identity and all retained record hashes without retaining conversation text.
 pub fn verify_source(root: &Path, id: &str) -> Result<Summary, String> {
     let index = load(root, id)?;
     let mut source = open_index_source(root, &index)?;
@@ -1104,7 +1081,6 @@ pub fn verify_source(root: &Path, id: &str) -> Result<Summary, String> {
     Ok(summary(id, &index))
 }
 
-/// Recover a known completed worker's display result from its immutable native pointer.
 pub fn assistant_text(root: &Path, id: &str) -> Result<String, String> {
     let index = load(root, id)?;
     let mut source = open_index_source(root, &index)?;
@@ -1346,8 +1322,6 @@ fn summary(id: &str, index: &SourceIndex) -> Summary {
     }
 }
 
-/// Scan one bounded page from the beginning of a native history, or continue an immutable
-/// cursor. Each call reads at most two 8 MiB pages plus the bounded identity header.
 pub fn index_history(
     root: &Path,
     binding: &Binding,
@@ -1390,7 +1364,6 @@ pub fn index_history(
         }
         skipped_records = page.skipped_records;
         skip_prefix = page.skip_prefix;
-        // Preserve the original header and length when the live log has appended new records.
         index.source_len = previous.source_len;
         index.anchor_len = previous.anchor_len;
         index.anchor_sha256 = previous.anchor_sha256;
@@ -1407,7 +1380,6 @@ pub fn index_history(
         }
         if !line.ends_with(b"\n") && !at_end {
             if consumed == 0 {
-                // A single oversized record must not trap the cursor at the same offset.
                 skipped_records += 1;
                 consumed += line.len();
                 skip_prefix = true;
@@ -1446,7 +1418,6 @@ pub fn index_history(
     save_index(root, &mut file, index)
 }
 
-/// Expand an exact source pointer into whole-history pages without guessing a session or home.
 pub fn history_from_pointer(root: &Path, id: &str) -> Result<Summary, String> {
     let index = load(root, id)?;
     index_history(root, &index.binding, index.history.as_ref().map(|_| id))
@@ -1641,7 +1612,6 @@ pub fn read(
     if digest(&bytes) != span.sha256 {
         return Err("native source is stale: indexed message changed or was compacted".into());
     }
-    // Re-open files to detect replacement, but do not issue a second Cursor replay in one read.
     if index.binding.provider != ProviderKind::Cursor
         && open_index_source(root, &index)?.identity()? != index.file_identity
     {
@@ -1670,7 +1640,6 @@ pub fn read(
     })
 }
 
-/// CLI and MCP share the same validated, bounded operations.
 pub fn command(root: &Path, args: &[String]) -> Result<String, String> {
     let Some(operation) = args.first().map(String::as_str) else {
         return Err("usage: chat index SESSION --account ID --provider codex|claude|cursor [--scope recent|whole --cursor INDEX] | chat excerpt INDEX [--message N --offset N --max-bytes N] | chat sources INDEX [--from-message N --limit N]".into());
@@ -1840,7 +1809,6 @@ mod more_tests {
     }
 }
 
-/// Build a bounded handoff directory on a worker, while keeping provider originals in place.
 pub fn handoff_prefix(root: &Path, bindings: &[Binding]) -> (String, Vec<String>) {
     let mut sections = Vec::new();
     let mut notices = Vec::new();

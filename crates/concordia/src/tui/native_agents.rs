@@ -1,4 +1,3 @@
-//! Read-only Agents view projection for provider-native and untracked provider runs.
 use super::*;
 use crate::provider::stream_cards::{CardStatus, StreamCard};
 use std::collections::{HashMap, HashSet};
@@ -207,18 +206,16 @@ fn fixed_column(value: &str, width: usize) -> String {
 
 fn agent_label(depth: usize, status: Status, metadata: &Facts) -> String {
     format!(
-        "{}{} {} {}{}{}{} {} {}",
+        "{}{} {role:<13} {}{} {}  {}",
         "  ".repeat(depth),
         status.icon(),
-        fixed_column(&metadata.role, 8),
         fixed_column(&metadata.model, 20),
         fixed_column(&metadata.effort, 6),
         context_bar(metadata.used, metadata.limit, 6),
-        " ",
         metadata
             .turns
             .map_or_else(|| "unknown".into(), |value| value.to_string()),
-        ""
+        role = metadata.role,
     )
 }
 
@@ -226,8 +223,6 @@ pub(super) const GROUP_ID: &str = "agents-group:other";
 const ROW_WIDTH: usize = 40;
 const NO_TASK: &str = "task not shown";
 
-/// A provider CLI launch recognised in a shell tool card. Only the provider, the model flag and
-/// the first line of the task are kept; prompt bodies and tool output never reach the list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Run {
     provider: &'static str,
@@ -280,7 +275,6 @@ fn value_to_command(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// The shell command of a tool card: JSON tool input (string or array), or `command: ...` text.
 fn command_text(detail: &str) -> Option<String> {
     let body = detail.trim_start();
     let body = ["arguments:", "Arguments:", "input:", "Input:"]
@@ -313,7 +307,6 @@ fn command_text(detail: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Shell-style tokens. Statement separators, pipes and redirections become their own tokens.
 fn shell_tokens(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -459,7 +452,6 @@ fn is_terminator(token: &str) -> bool {
     token == ";" || token.starts_with(['<', '>']) || token.ends_with('>')
 }
 
-/// Parse the arguments after the provider (and `exec` for Codex).
 fn parse_args(provider: &'static str, args: &[String]) -> Run {
     let value_flags = value_flags(provider);
     let mut model = None;
@@ -535,8 +527,6 @@ fn find_run(tokens: &[String], depth: usize) -> Option<Run> {
     None
 }
 
-/// First non-empty line of `text`, with escape sequences and control characters removed and
-/// whitespace collapsed.
 fn first_line(text: &str) -> String {
     let mut clean = String::new();
     let mut chars = text.chars().peekable();
@@ -580,8 +570,6 @@ fn cut(text: &str, width: usize) -> String {
     }
 }
 
-/// Recognise only provider CLI launchers in structured tool-call arguments. Ordinary shell cards
-/// remain ordinary activity; no command is executed or inferred from prose.
 fn provider_run(detail: &str) -> Option<Run> {
     let lower = detail.to_ascii_lowercase();
     if !["codex", "claude", "cursor-agent", "grok", "opencode"]
@@ -754,11 +742,12 @@ impl State {
     pub fn count(&self) -> usize {
         self.entries.len()
     }
-    fn toggle_group(&mut self) {
-        self.other_runs_open = !self.other_runs_open;
-    }
-    fn toggle(&mut self, id: &str) {
-        if !self.collapsed.remove(id) {
+    fn set_open(&mut self, id: &str, open: Option<bool>) {
+        if id == GROUP_ID {
+            self.other_runs_open = open.unwrap_or(!self.other_runs_open);
+        } else if open.unwrap_or_else(|| self.collapsed.contains(id)) {
+            self.collapsed.remove(id);
+        } else {
             self.collapsed.insert(id.into());
         }
     }
@@ -818,9 +807,6 @@ impl State {
                     }
                     continue;
                 }
-                // Provider sender/thread IDs are not necessarily Agents-row IDs. Keep a
-                // reported parent only when it is represented by another visible entry;
-                // otherwise the agent is a root in this conversation's tree.
                 let parent = entry
                     .parent
                     .as_deref()
@@ -985,7 +971,6 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .unwrap_or(0)
         .min(rows.len().saturating_sub(1));
     let selected_row = rows.get(selected).cloned();
-    // Size to content (or the room above the composer); no dead bordered rows.
     let list_rows = rows.len().max(1) as u16;
     let height = (list_rows + 2).min(area.height).max(3);
     let panel = Rect {
@@ -1040,15 +1025,12 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let percentage = metadata
                     .compaction
                     .map_or_else(|| "unknown".into(), |value| format!("{value:.1}%"));
-                let status_text = format!(
-                    "{} {}",
-                    status.icon(),
-                    if status == Status::Done {
-                        "Inactive"
-                    } else {
-                        status.word()
-                    }
-                );
+                let status_text = format!("{} {}", status.icon(), status.word());
+                let status_color = match status {
+                    Status::Running => Color::Yellow,
+                    Status::Done => Color::Green,
+                    Status::Error => Color::Red,
+                };
                 let header = format!("#{} {}", row_number, metadata.role);
                 let header_gap = usize::from(columns[0].width.saturating_sub(2))
                     .saturating_sub(header.chars().count() + status_text.chars().count());
@@ -1061,7 +1043,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw(" ".repeat(header_gap)),
-                        Span::styled(status_text, Style::default().fg(Color::Green)),
+                        Span::styled(status_text, Style::default().fg(status_color)),
                     ]),
                     Line::styled(
                         format!("{} · {}", metadata.model, metadata.effort),
@@ -1079,7 +1061,7 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ),
                     Line::styled(
                         format!(
-                            "{} tokens remaining · last snapshot",
+                            "{} tokens remaining",
                             metadata
                                 .remaining
                                 .or_else(|| {
@@ -1140,11 +1122,13 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         detail_lines.push(Line::from("No agent selected"));
     }
     f.render_widget(
-        Paragraph::new(detail_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Agent details "),
-        ), // Clip long values at the pane edge. Wrapping would move the card's columns.
+        Paragraph::new(detail_lines)
+            .wrap(ratatui::widgets::Wrap { trim: true })
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Agent details "),
+            ),
         columns[0],
     );
 
@@ -1182,15 +1166,20 @@ pub(super) fn draw(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let role = row.label.split_whitespace().nth(1).unwrap_or_default();
             let role_start = row.label.find(role).unwrap_or(0);
             let role_end = role_start + role.len();
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{index:>2} "), style),
-                Span::styled(row.label[..role_start].to_owned(), style),
-                Span::styled(
-                    row.label[role_start..role_end].to_owned(),
-                    style.fg(role_color),
-                ),
-                Span::styled(row.label[role_end..].to_owned(), style),
-            ]))
+            let prefix = format!("{index:>2} ");
+            let width = usize::from(columns[1].width.saturating_sub(4));
+            let label = super::draw::ellipsis(&row.label, width.saturating_sub(prefix.len()));
+            let mut spans = vec![Span::styled(prefix, style)];
+            if label.is_char_boundary(role_start) && label.is_char_boundary(role_end) {
+                spans.extend([
+                    Span::styled(label[..role_start].to_owned(), style),
+                    Span::styled(label[role_start..role_end].to_owned(), style.fg(role_color)),
+                    Span::styled(label[role_end..].to_owned(), style),
+                ]);
+            } else {
+                spans.push(Span::styled(label, style));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let mut state = picker.state;
@@ -1235,8 +1224,7 @@ impl App {
         self.footer_left = if empty {
             "Esc close".into()
         } else {
-            "\u{2190}/\u{2192} collapse \u{b7} \u{2191}\u{2193} Enter inspect \u{b7} type to filter \u{b7} Esc close"
-                .into()
+            "↑↓ move · ← collapse · → expand · Enter inspect · Esc close".into()
         };
         if empty {
             if let Some(picker) = self.picker.as_mut() {
@@ -1244,9 +1232,9 @@ impl App {
             }
         }
     }
-    pub(super) fn toggle_agents_row(&mut self, id: &str) {
+    pub(super) fn set_agents_row_open(&mut self, id: &str, open: Option<bool>) {
         if id == GROUP_ID {
-            self.native_agents.toggle_group();
+            self.native_agents.set_open(id, open);
             self.refresh_agents_picker();
             return;
         }
@@ -1261,7 +1249,7 @@ impl App {
                 .find(|(_, stored)| *stored == index)
                 .map(|(id, _)| id.clone());
             if let Some(entry_id) = entry_id {
-                self.native_agents.toggle(&entry_id);
+                self.native_agents.set_open(&entry_id, open);
                 self.refresh_agents_picker();
             }
         }
@@ -1401,7 +1389,7 @@ mod tests {
         let messages = vec![chat("c1", "shell", &detail)];
         let mut state = State::default();
         state.rebuild(&messages);
-        state.toggle_group();
+        state.set_open(GROUP_ID, Some(true));
         let dir = tempfile::tempdir().unwrap();
         let rows = state.rows(&messages, &[], dir.path());
         assert_eq!(rows.len(), 2);
@@ -1495,7 +1483,7 @@ mod tests {
         assert!(rows[0].detail.contains("native work"));
         assert_eq!(rows[1].id, GROUP_ID);
         assert_eq!(rows[1].label, "▸ Other runs on this machine (2)");
-        state.toggle_group();
+        state.set_open(GROUP_ID, Some(true));
         let rows = state.rows(&messages, &[], dir.path());
         assert_eq!(rows.len(), 4);
         assert!(rows[1].label.starts_with("▾"));

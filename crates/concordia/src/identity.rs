@@ -1,5 +1,3 @@
-//! Read real login/model from provider homes — never invent identities.
-
 use crate::store::ProviderKind;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -59,7 +57,6 @@ fn email_from_jwt(token: &str) -> Option<String> {
 }
 
 fn decode_b64(s: &str) -> Option<Vec<u8>> {
-    // Minimal URL-safe base64 decode without extra crate.
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::new();
     let bytes: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();

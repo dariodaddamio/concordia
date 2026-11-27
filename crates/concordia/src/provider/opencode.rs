@@ -1,10 +1,7 @@
-//! OpenCode uses the shared ACP transport. Its credentials and configuration remain provider-owned.
-
 use crate::store::ProviderKind;
 use std::path::{Path, PathBuf};
 
 pub fn home_ready(home: &Path) -> bool {
-    // Do not inspect auth.json. OpenCode documents it as a credential store.
     home.join("auth.json").is_file()
         || home.join("opencode.json").is_file()
         || home.join("opencode.jsonc").is_file()

@@ -20,7 +20,6 @@ fn dismissed_recovery_stays_available_without_reappearing_at_startup() {
     let saved = claim(dir.path(), &id).unwrap();
     assert_eq!(saved.data().unwrap().draft, "saved draft");
     saved.save("new version after dismissal", &[]).unwrap();
-    // Give this revision a deterministic identity distinct from the dismissed one.
     let mut data = saved.data().unwrap();
     data.updated_unix_ms += 1;
     fs::write(
@@ -89,7 +88,6 @@ fn multiple_records_require_explicit_choice_and_corruption_is_preserved() {
         .iter()
         .any(|choice| choice.draft.contains("Original kept unchanged")));
     assert!(!d.path().join("broken").exists());
-    // The corrupt record remains available for manual inspection; it is never overwritten.
     let dirs: Vec<_> = fs::read_dir(d.path())
         .unwrap()
         .filter_map(Result::ok)

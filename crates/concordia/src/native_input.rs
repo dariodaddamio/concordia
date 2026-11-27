@@ -1,4 +1,3 @@
-//! Explicit account/home transport preference. Runtime capability evidence stays on its connection.
 use crate::{native_memory::Binding, store::ProviderKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -51,9 +50,6 @@ fn regular(path: &Path) -> Result<bool, String> {
     }
 }
 
-/// Cursor's interactive native terminal resumes print-mode `create-chat` sessions. Keep the
-/// default on that same explicit-session path so `/terminal native` can reopen the chat's session;
-/// ACP remains available as an explicit native-input mode where its capabilities are required.
 fn default_for(provider: ProviderKind) -> Mode {
     match provider {
         ProviderKind::Cursor => Mode::Standard,
@@ -160,16 +156,10 @@ pub fn command(root: &Path, account: &str, command: &str) -> Result<String, Stri
         })
         .map_err(|error| error.to_string())?;
     }
-    let description: String = match mode {
-        Mode::CursorAcp => "on (Cursor ACP)".into(),
-        Mode::GrokAcp => "on (Grok Build ACP)".into(),
-        Mode::OpencodeAcp => "on (opencode ACP)".into(),
-        Mode::CodexAppServer => "on (Codex app-server)".into(),
-        Mode::ClaudeStdio => format!(
-            "on (Claude native stdio; CLI {} control interface required)",
-            crate::capacity::claude_capacity::CLI_VERSION
-        ),
-        Mode::Standard => "off (standard text transport)".into(),
+    let mode = if mode == Mode::Standard {
+        "standard CLI mode"
+    } else {
+        "interactive mode"
     };
-    Ok(format!("{account}: native text input {description}. New turns and new workers on this account use it; workers already running keep their setting."))
+    Ok(format!("{account}: New turns will use {mode}."))
 }

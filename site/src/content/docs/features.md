@@ -30,10 +30,16 @@ intended direction so the site does not promise unfinished work.
 
 ## Chat and project work
 
-- Guide provider setup during onboarding and show Concordia and provider update notices.
+- Open the provider picker directly from Home during onboarding. Home's footer changes with the
+  selected row, including when Enter expands a folder or opens a chat.
+- Show Concordia and provider update notices.
 - Keep projects in the Projects panel and show delegated and provider runs in the Agents panel.
 - Keep multiple chats in tabs with background, close and resume behavior.
+- In local source candidate `2026-11-25a`, Home skips recent chats that Doctor reports as
+  unopenable, and the header account picker respects hidden accounts.
 - Show provider questions and approvals in Needs attention without replaying uncertain actions.
+- Start question cards with the prompt, show a short session ID alongside it, and keep the full
+  ID below in secondary text. While a question is open, the turn status says it is waiting for your answer.
 - Local source candidate `2026-11-18b`: offer steering or queueing text during a Codex app-server
   turn. Confirm against the exact thread/turn before clearing the draft; never retry uncertain input.
 - Read Cursor 2026.11.17 usage through its local screen using CSI-u Return, without a model prompt.
@@ -48,7 +54,16 @@ intended direction so the site does not promise unfinished work.
 - Run a per-chat PowerShell terminal, preview files with `/open`, and edit through the built-in
   editor.
 - Render Markdown, Mermaid diagrams, images and attachment previews.
+- Keep failure details expandable under the turn's provider header.
+- Open the permissions menu above the chat footer chip, clearing the covered transcript rows and
+  keeping the draft visible on the left.
+  In Settings, the menu opens next to its value and leaves nearby content visible outside the popup.
 - Show live provider usage, model and effort controls, taskbar status and Windows notifications.
+- Show usage loading in the Home usage pane. The `/usage` view covers the transcript while open.
+- Clear covered rows across the chat pane when account, model or effort menus open from the header.
+- Open quiet-turn options beside the visible notice, or near the composer when the notice is offscreen.
+- Show countdowns for quota resets less than 24 hours away and dates for later resets. For Cursor,
+  show API usage as usage-based when on-demand billing is enabled.
 - Support `@chat` references and the `/model` command for active provider models.
 - Connect local Harness and memory extensions through `/harness`, `/skills` and `/hooks`.
 

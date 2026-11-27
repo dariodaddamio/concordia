@@ -1,8 +1,3 @@
-//! `concordia doctor` / `/doctor`: explain why something is not working, without touching anything.
-//!
-//! Every probe is injected through [`Env`] so each branch is unit tested. Nothing here reads
-//! credential contents; account status uses the same existence/shape check as `/use`.
-
 use crate::accounts::{display_account_name, is_logged_in, list_all_accounts};
 use crate::provider::compat;
 use crate::provider::launch::is_batch_shim;
@@ -17,6 +12,16 @@ pub enum Level {
     Fail,
 }
 
+impl Level {
+    pub(crate) fn tag(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Check {
     pub level: Level,
@@ -24,8 +29,6 @@ pub struct Check {
     pub detail: String,
 }
 
-/// A mutation proposed by doctor.  Keeping this separate from `Check` makes the report safe to
-/// render in both the CLI (read-only) and the interactive picker (confirmable).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fix {
     pub id: &'static str,
@@ -35,8 +38,6 @@ pub struct Fix {
     pub impact: &'static str,
 }
 
-/// The mutation boundary for doctor. Implementations own all platform state access; tests can
-/// inject a recorder and therefore never touch PATH, the registry, or ACLs.
 pub trait FixApplier {
     fn previous_value(&self, fix: &Fix, state_root: &Path) -> Result<String, String>;
     fn apply(&self, fix: &Fix, state_root: &Path) -> Result<(), String>;
@@ -45,7 +46,6 @@ pub trait FixApplier {
 pub struct PathApplier;
 pub struct AclApplier;
 
-/// The UI's default dispatcher; tests replace the app's boxed applier with a fake.
 pub struct DoctorAppliers;
 
 impl FixApplier for DoctorAppliers {
@@ -269,7 +269,6 @@ fn append_path_once(old: &str, folder: &str) -> String {
     }
 }
 
-/// The small, explicitly authorised mutation surface of doctor.
 pub fn proposed_fixes(state_root: &Path, checks: &[Check]) -> Vec<Fix> {
     let mut fixes = Vec::new();
     for row in checks {
@@ -304,7 +303,6 @@ pub fn proposed_fixes(state_root: &Path, checks: &[Check]) -> Vec<Fix> {
     fixes
 }
 
-/// The one concrete action shown below every warning or failure in the doctor report.
 pub fn next_action(row: &Check) -> Option<String> {
     if row.level == Level::Ok {
         return None;
@@ -378,23 +376,18 @@ fn check(level: Level, name: &'static str, detail: impl Into<String>) -> Check {
     }
 }
 
-/// A `--version` probe for one CLI.
 pub type VersionProbe<'a> = &'a dyn Fn(&Path) -> Result<String, String>;
 
 pub struct Env<'a> {
     pub state_root: PathBuf,
     pub running_exe: Option<PathBuf>,
     pub active_exe: PathBuf,
-    /// Raw contents of the install pointer file, if present.
     pub pointer: Option<String>,
-    /// Resolve a provider CLI the way a turn would (override env first, then PATH).
     pub provider_bin:
         &'a dyn Fn(ProviderKind) -> Result<crate::provider::Located, crate::provider::NotFound>,
     pub which: &'a dyn Fn(&str) -> Option<PathBuf>,
-    /// `--version` of a CLI; `None` skips probing (fast mode for the TUI).
     pub version_of: Option<VersionProbe<'a>>,
     pub source_checkout: Option<PathBuf>,
-    /// `owner/name` of the configured release feed, if any.
     pub release_repo: Option<String>,
 }
 
@@ -542,8 +535,6 @@ fn check_binary(env: &Env<'_>) -> Check {
     }
 }
 
-/// What typing `concordia` actually runs. A stale copy earlier on PATH than the active build is the
-/// classic reason a new version "does not show up".
 fn check_path_resolution(env: &Env<'_>) -> Check {
     let Some(found) = (env.which)("concordia") else {
         return check(
@@ -685,7 +676,6 @@ fn check_state_dir(root: &Path) -> Check {
     }
 }
 
-/// Where the event log is, so a crash report has somewhere to point.
 fn check_log(root: &Path) -> Check {
     let path = crate::logging::log_path(root);
     match std::fs::metadata(&path) {
@@ -702,7 +692,6 @@ fn check_log(root: &Path) -> Check {
     }
 }
 
-/// `<state>/config.toml`: never a failure (a bad file falls back to defaults), but a warning row.
 fn check_config(root: &Path) -> Check {
     let l = crate::config::Config::load(root);
     if !l.exists {
@@ -730,7 +719,6 @@ fn check_config(root: &Path) -> Check {
     }
 }
 
-/// `<state>/commands/*.md`: count, plus warnings for skipped files and command shadows.
 fn check_user_commands(root: &Path) -> Check {
     let s = crate::user_commands::scan(root);
     let mut detail = format!("{} custom command(s)", s.commands.len());
@@ -774,7 +762,6 @@ fn check_store(root: &Path) -> Check {
             "store",
             format!(
                 "{} of {} account(s) signed in, trust {}{}",
-                // Counted as /use counts them: provider default homes included.
                 crate::accounts::accounts_with_auth(root).len(),
                 crate::accounts::list_all_accounts(root).len(),
                 s.settings.trust.as_str(),
@@ -808,7 +795,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
         match (env.provider_bin)(kind) {
             Err(missing) => rows.push(check(
                 Level::Warn,
-                name_static(name),
+                name,
                 format!(
                     "{name} not found; looked in: {}; install it or set {}",
                     missing
@@ -831,7 +818,6 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                 let version = match env.version_of {
                     Some(probe) => match probe(path) {
                         Ok(v) => {
-                            // Newer, older or unknown is a warning, never a failure.
                             let t = compat::compare_version(kind, &v);
                             if t != compat::VersionComparison::Same {
                                 level = Level::Warn;
@@ -857,7 +843,7 @@ fn check_providers(env: &Env<'_>) -> Vec<Check> {
                 };
                 rows.push(check(
                     level,
-                    name_static(name),
+                    name,
                     format_provider_cli(name, &Ok(located.clone())) + &format!("{version}{shim}"),
                 ));
             }
@@ -883,7 +869,6 @@ fn provider_variable(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// Idle memory of this process (working set), as a row.
 fn check_memory() -> Check {
     match crate::sysstats::self_memory_bytes() {
         Some(b) => check(
@@ -892,14 +877,6 @@ fn check_memory() -> Check {
             format!("{} in use by this process", crate::sysstats::format_mem(b)),
         ),
         None => check(Level::Ok, "memory", "not available on this platform"),
-    }
-}
-
-fn name_static(n: &str) -> &'static str {
-    match n {
-        "codex" => "codex",
-        "claude" => "claude",
-        _ => "cursor",
     }
 }
 
@@ -917,7 +894,6 @@ fn check_accounts(root: &Path) -> Vec<Check> {
                 format!("{} ({}) logged in · {}", a.label, a.account, home.display()),
             ));
         } else if a.custom {
-            // An concordia-created account is the user's intent; say why it is not usable yet.
             let why = if home.is_dir() {
                 "not signed in yet"
             } else {
@@ -954,12 +930,7 @@ fn check_accounts(root: &Path) -> Vec<Check> {
 pub fn format_report(checks: &[Check]) -> String {
     let mut lines = vec![format!("concordia doctor · {}", version_line())];
     for c in checks {
-        let tag = match c.level {
-            Level::Ok => "ok  ",
-            Level::Warn => "warn",
-            Level::Fail => "FAIL",
-        };
-        lines.push(format!("{tag}  {:<9} {}", c.name, c.detail));
+        lines.push(format!("{:<4}  {:<9} {}", c.level.tag(), c.name, c.detail));
         if let Some(action) = next_action(c) {
             lines.push(format!("          next: {action}"));
         }
@@ -975,8 +946,6 @@ pub fn format_report(checks: &[Check]) -> String {
     lines.join("\n")
 }
 
-/// Render the report and its proposed, non-applied changes. This is the shared text used by the
-/// CLI and by the TUI before it opens its confirmation picker.
 pub fn format_report_with_fixes(state_root: &Path, checks: &[Check]) -> String {
     let mut out = format_report(checks);
     let fixes = proposed_fixes(state_root, checks);
@@ -993,8 +962,6 @@ pub fn format_report_with_fixes(state_root: &Path, checks: &[Check]) -> String {
     out
 }
 
-/// Fast, local provider health used by the first-launch panel. It resolves the same binaries as
-/// doctor but deliberately does not run `--version` or contact a provider.
 pub fn fast_provider_status() -> Vec<(ProviderKind, bool)> {
     [
         ProviderKind::Codex,
@@ -1012,7 +979,6 @@ pub fn summary(checks: &[Check]) -> (usize, usize) {
     (w, f)
 }
 
-/// The real environment. `probe_versions` runs each CLI's `--version` (about a second each).
 pub fn real_env<'a>(
     provider_bin: &'a dyn Fn(
         ProviderKind,
@@ -1034,14 +1000,12 @@ pub fn real_env<'a>(
     }
 }
 
-/// Resolve a provider CLI exactly as a turn would: the `CONCORDIA_*_BIN` override, else PATH.
 pub fn resolve_provider_bin(
     kind: ProviderKind,
 ) -> Result<crate::provider::Located, crate::provider::NotFound> {
     crate::provider::locate_real(kind)
 }
 
-/// Format one provider CLI lookup without touching the environment or probing a process.
 pub fn format_provider_cli(
     name: &str,
     result: &Result<crate::provider::Located, crate::provider::NotFound>,
@@ -1095,7 +1059,6 @@ pub fn format_not_found_turn_error(
     )
 }
 
-/// `<program> --version` with a deadline, first non-empty line.
 pub fn probe_version(program: &Path) -> Result<String, String> {
     let native = crate::provider::npm::codex(&program.to_string_lossy());
     let mut command =
@@ -1117,11 +1080,9 @@ pub fn probe_version(program: &Path) -> Result<String, String> {
         .ok_or_else(|| "no output".into())
 }
 
-/// Run the three version probes in parallel and return the report. For the CLI.
 pub fn run_cli_report() -> (String, bool) {
     let provider_bin = resolve_provider_bin;
     let which = |n: &str| which::which(n).ok();
-    // Probe once per provider concurrently so the slowest CLI sets the pace, not the sum.
     let probes: Vec<_> = [
         ProviderKind::Codex,
         ProviderKind::Claude,
@@ -1129,7 +1090,6 @@ pub fn run_cli_report() -> (String, bool) {
     ]
     .into_iter()
     .filter_map(|k| resolve_provider_bin(k).ok().map(|l| l.path))
-    // Also probe whatever typing `concordia` finds, so a stale copy can be named with its version.
     .chain(which::which("concordia").ok())
     .map(|p| {
         let q = p.clone();
@@ -1140,7 +1100,6 @@ pub fn run_cli_report() -> (String, bool) {
         .into_iter()
         .map(|(p, h)| (p, h.join().unwrap_or_else(|_| Err("probe panicked".into()))))
         .collect();
-    // Doctor is read-only: use existing caches, but do not create or refresh Concordia state.
     let detections: Vec<_> = [
         ProviderKind::Codex,
         ProviderKind::Claude,
@@ -1179,7 +1138,6 @@ pub fn run_cli_report() -> (String, bool) {
     (format_report(&checks), fails == 0)
 }
 
-/// Fast report for the TUI (no subprocess probes, so it cannot stall the event loop).
 pub fn run_fast_report() -> String {
     format_report(&run_fast_checks())
 }
@@ -1301,7 +1259,6 @@ mod tests {
         assert_eq!(summary(&checks).1, 0, "{}", format_report(&checks));
         assert!(find(&checks, "binary")[0].detail.contains("active build"));
         assert_eq!(find(&checks, "codex")[0].level, Level::Ok);
-        // claude/cursor are simply not installed: a warning, not a failure.
         assert_eq!(find(&checks, "claude")[0].level, Level::Warn);
         assert!(find(&checks, "account")
             .iter()
@@ -1408,7 +1365,7 @@ mod tests {
         assert!(find(&c, "account")
             .iter()
             .any(|c| c.detail.contains("not signed in yet")));
-        assert_eq!(find(&c, "accounts")[0].level, Level::Warn); // none logged in
+        assert_eq!(find(&c, "accounts")[0].level, Level::Warn);
         fs::remove_dir_all(&home).unwrap();
         let c = run(&env(&fx, &pb, &which));
         assert!(find(&c, "account")
@@ -1440,6 +1397,8 @@ mod tests {
         let d = &find(&c, "codex")[0].detail;
         assert!(d.contains("codex-cli 9.9.9"), "{d}");
         assert!(d.contains(".cmd shim"), "{d}");
+        assert!(find(&c, "grok")[0].detail.starts_with("grok not found"));
+        assert!(find(&c, "cursor")[0].detail.starts_with("cursor not found"));
 
         let failing = |_: &Path| Err("timed out".to_string());
         e.version_of = Some(&failing);
@@ -1538,17 +1497,14 @@ mod tests {
         let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let which = |_: &str| None;
         let mut e = env(&fx, &pb, &which);
-        // Neither a checkout nor a feed: a warning with the fix.
         let row = |e: &Env<'_>| find(&run(e), "update")[0].clone();
         let r = row(&e);
         assert_eq!(r.level, Level::Warn);
         assert!(r.detail.contains("CONCORDIA_UPDATE_REPO"), "{}", r.detail);
-        // A release feed makes /update meaningful.
         e.release_repo = Some("me/concordia".into());
         let r = row(&e);
         assert_eq!(r.level, Level::Ok);
         assert!(r.detail.contains("github.com/me/concordia"), "{}", r.detail);
-        // A source checkout wins.
         e.source_checkout = Some(PathBuf::from(r"C:\src\concordia"));
         assert!(row(&e).detail.contains("rebuilds from the source checkout"));
     }
@@ -1559,13 +1515,11 @@ mod tests {
         let pb = |_: ProviderKind| Err(crate::provider::NotFound { searched: vec![] });
         let active = fx.exe_file("concordia-a.exe");
 
-        // Resolves to the active build: fine.
         let a = active.clone();
         let which_ok = move |n: &str| (n == "concordia").then(|| a.clone());
         let c = run(&env(&fx, &pb, &which_ok));
         assert_eq!(find(&c, "path")[0].level, Level::Ok);
 
-        // Resolves to a different, stale file: a warning naming both and the fix.
         let stale = fx.exe_file("stale-concordia.exe");
         let s2 = stale.clone();
         let which_stale = move |n: &str| (n == "concordia").then(|| s2.clone());
@@ -1583,7 +1537,6 @@ mod tests {
         );
         assert!(row.detail.contains("concordia install"), "{}", row.detail);
 
-        // Not on PATH at all.
         let none = |_: &str| None;
         let c = run(&env(&fx, &pb, &none));
         assert_eq!(find(&c, "path")[0].level, Level::Warn);
@@ -1595,11 +1548,13 @@ mod tests {
         let checks = vec![
             check(Level::Ok, "build", "concordia"),
             check(Level::Fail, "install", "broken"),
+            check(Level::Warn, "grok", "missing"),
         ];
         let r = format_report(&checks);
         assert!(r.contains("ok    build"));
-        assert!(r.contains("FAIL  install"));
-        assert!(r.ends_with("1 problem(s), 0 warning(s)"));
+        assert!(r.contains("fail  install"));
+        assert!(r.contains("warn  grok"));
+        assert!(r.ends_with("1 problem(s), 1 warning(s)"));
         assert!(format_report(&checks[..1]).ends_with("all good"));
         assert!(format_report(&checks[..2]).ends_with("1 problem(s), 0 warning(s)"));
     }
@@ -1655,9 +1610,7 @@ mod tests {
 
     #[test]
     fn probe_version_reads_the_first_line_and_times_out_cleanly() {
-        // The test harness itself answers `--version`.
         let exe = std::env::current_exe().unwrap();
-        // cargo's libtest binary prints nothing useful for --version, so just require it not to hang.
         let _ = probe_version(&exe);
         assert!(probe_version(Path::new("C:\\definitely\\not\\here.exe")).is_err());
     }

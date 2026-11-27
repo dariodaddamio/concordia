@@ -1,4 +1,3 @@
-//! Document pixels for the existing background raster worker. No provider or shell calls.
 use super::*;
 
 pub(super) fn svg(bytes: &[u8]) -> Result<image::RgbaImage, String> {
@@ -14,7 +13,6 @@ pub(super) fn svg(bytes: &[u8]) -> Result<image::RgbaImage, String> {
             .clone(),
         ..Default::default()
     };
-    // A preview may use embedded images, but must not read paths named by the SVG.
     options.image_href_resolver.resolve_string = Box::new(|_, _| None);
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|e| format!("Invalid SVG: {e}"))?;
     let size = tree.size();

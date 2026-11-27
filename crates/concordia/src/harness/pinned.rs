@@ -1,4 +1,3 @@
-//! Exact rules supplied by explicitly connected file-backed harness manifests.
 #[cfg(test)]
 use super::parse_manifest;
 use super::{connections, Manifest};

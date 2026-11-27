@@ -1,4 +1,3 @@
-//! Conservative build parallelism defaults. Explicit user/provider settings take precedence.
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

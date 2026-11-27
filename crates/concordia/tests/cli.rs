@@ -1,5 +1,3 @@
-//! The real `concordia` binary, driven as a user would from a shell.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -14,8 +12,6 @@ fn pointer_state() -> (bool, Option<String>, Option<std::time::SystemTime>) {
 
 #[test]
 fn version_is_read_only_and_never_repoints_the_install() {
-    // Running any copy of concordia (a debug build, an old slot) with --version must not change which
-    // binary every launcher uses. This is the stale-build bug the pointer exists to prevent.
     let before = pointer_state();
     let scratch = tempfile::tempdir().unwrap();
     let out = Command::new(CONCORDIA)
@@ -100,15 +96,12 @@ fn doctor_reports_and_its_exit_code_matches_its_findings() {
     assert!(text.starts_with("concordia doctor"), "{text}");
     assert!(text.contains("build"), "{text}");
     assert!(text.contains("state"), "{text}");
-    // Exit 1 exactly when a FAIL line is present.
     let has_fail = text.lines().any(|l| l.starts_with("FAIL"));
     assert_eq!(
         out.status.code(),
         Some(if has_fail { 1 } else { 0 }),
         "{text}"
     );
-    // Pointing at a scratch dir must not have touched real state: only doctor's probe file
-    // (already removed) could ever land there.
     let leftovers: Vec<_> = std::fs::read_dir(state.path()).unwrap().flatten().collect();
     assert!(
         leftovers.is_empty(),
@@ -129,7 +122,6 @@ fn doctor_flags_an_unreadable_store_with_a_nonzero_exit() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "{text}");
     assert!(text.contains("unreadable"), "{text}");
-    // doctor is read-only: the broken file is still exactly as the user left it.
     assert_eq!(
         std::fs::read_to_string(state.path().join(".ao").join("store.json")).unwrap(),
         "{ broken"

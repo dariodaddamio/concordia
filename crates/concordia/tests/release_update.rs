@@ -1,10 +1,3 @@
-//! Release-based self-update, end to end: real concordia binary as the payload, a real local HTTP
-//! server, real PowerShell downloads and hashing for the happy path, and an in-memory fetcher to
-//! inject every failure. The install dir is a scratch directory (`CONCORDIA_INSTALL_DIR`), so these
-//! tests never touch the real install pointer, `CONCORDIA_EXE`, or the npm shim.
-//!
-//! The invariant behind every failure case: if any check fails, **nothing is installed**.
-
 use anyhow::{anyhow, Result};
 use concordia::release::{
     check, config_from, install_release, Check, Config, Fetcher, PowerShellFetcher, Release,
@@ -37,8 +30,6 @@ impl Sandbox {
         std::env::set_var("CONCORDIA_DEV", "1");
         std::env::set_var("CONCORDIA_TEST_HOME", install.path().join("home"));
         std::env::set_var("CONCORDIA_STATE_DIR", install.path().join("state"));
-        // Integration tests use the normal library build, so cfg(test) cannot isolate release's
-        // cache. Keep verified downloads under this test's state root as well.
         std::env::set_var(
             "CONCORDIA_RELEASE_CACHE_DIR",
             install.path().join("cache").join("releases"),
@@ -71,7 +62,6 @@ impl Drop for Sandbox {
         std::env::remove_var("CONCORDIA_DEV");
         std::env::remove_var("CONCORDIA_TEST_HOME");
         std::env::remove_var("CONCORDIA_STATE_DIR");
-        // install_binary sets CONCORDIA_EXE in this process.
         std::env::remove_var("CONCORDIA_EXE");
     }
 }
@@ -87,7 +77,6 @@ fn real_concordia() -> Vec<u8> {
     std::fs::read(CONCORDIA_EXE).unwrap()
 }
 
-/// `concordia X.Y.Z (stamp)` as the real binary reports it, so tags can match it.
 fn real_version() -> String {
     concordia::version::VERSION.to_string()
 }
@@ -108,11 +97,8 @@ fn sums_for(payload: &[u8]) -> Vec<u8> {
     format!("{}  {ASSET_NAME}\n", sha_hex(payload)).into_bytes()
 }
 
-// ---- an in-memory fetcher ----------------------------------------------------------------
-
 #[derive(Default)]
 struct Mock {
-    /// file name (last URL segment) -> bytes
     files: HashMap<String, Vec<u8>>,
 }
 
@@ -157,8 +143,6 @@ fn install_with(mock: &Mock, tag: &str) -> Result<concordia::update::UpdateResul
     )
 }
 
-// ---- failure cases: nothing may be installed ----------------------------------------------
-
 #[test]
 fn a_tampered_download_is_rejected_by_checksum_and_nothing_is_installed() {
     let sb = Sandbox::new();
@@ -166,7 +150,6 @@ fn a_tampered_download_is_rejected_by_checksum_and_nothing_is_installed() {
     let mut tampered = good.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0xff;
-    // The release's checksum describes the good file; the download was altered.
     let mock = Mock::serving(tampered, sums_for(&good));
     let err = install_with(&mock, &format!("v{}", real_version())).unwrap_err();
     assert!(err.to_string().contains("checksum mismatch"), "{err:#}");
@@ -176,7 +159,7 @@ fn a_tampered_download_is_rejected_by_checksum_and_nothing_is_installed() {
 #[test]
 fn a_matching_checksum_does_not_excuse_a_file_that_does_not_run() {
     let sb = Sandbox::new();
-    let junk = vec![0x4du8; 300_000]; // big enough to look plausible, but not an executable
+    let junk = vec![0x4du8; 300_000];
     let err = install_with(&Mock::honest(junk), &format!("v{}", real_version())).unwrap_err();
     assert!(err.to_string().contains("does not run"), "{err:#}");
     sb.assert_nothing_installed();
@@ -198,7 +181,6 @@ fn a_valid_executable_that_is_not_concordia_is_refused() {
 #[test]
 fn a_release_that_ships_the_wrong_version_is_refused() {
     let sb = Sandbox::new();
-    // The tag claims 9.9.9 but the binary inside is this build.
     let err = install_with(&Mock::honest(real_concordia()), "v9.9.9").unwrap_err();
     assert!(err.to_string().contains("nothing was installed"), "{err:#}");
     assert!(err.to_string().contains("reports"), "{err:#}");
@@ -253,8 +235,6 @@ fn non_https_asset_urls_are_refused_before_any_download() {
     sb.assert_nothing_installed();
 }
 
-// ---- success ----------------------------------------------------------------------------------
-
 fn assert_installed_and_active(sb: &Sandbox, payload: &[u8]) -> PathBuf {
     let pointer = sb.install.path().join("current");
     let target = PathBuf::from(std::fs::read_to_string(&pointer).unwrap().trim());
@@ -264,7 +244,6 @@ fn assert_installed_and_active(sb: &Sandbox, payload: &[u8]) -> PathBuf {
         payload,
         "installed bytes differ"
     );
-    // No temp files left behind by the atomic pointer write.
     assert!(
         !sb.installed_files()
             .iter()
@@ -272,7 +251,6 @@ fn assert_installed_and_active(sb: &Sandbox, payload: &[u8]) -> PathBuf {
         "{:?}",
         sb.installed_files()
     );
-    // The installed binary really runs and is the version we asked for.
     let out = std::process::Command::new(&target)
         .arg("--version")
         .output()
@@ -292,7 +270,6 @@ fn a_good_release_installs_flips_the_pointer_and_runs() {
     assert_eq!(res.summary, format!("updated 0.0.0 -> {}", real_version()));
     let target = assert_installed_and_active(&sb, &payload);
     assert_eq!(res.install_path, target);
-    // The scratch download directory was cleaned up.
     assert!(!res.built_from.exists(), "scratch dir should be removed");
 }
 
@@ -330,8 +307,6 @@ fn updating_twice_keeps_a_working_install() {
     assert_installed_and_active(&sb, &payload);
 }
 
-// ---- real HTTP + real PowerShell ----------------------------------------------------------------
-
 struct Server {
     port: u16,
     stop: Arc<AtomicBool>,
@@ -343,7 +318,6 @@ impl Server {
         Server::start_with("application/json", |_| routes)
     }
 
-    /// `make_routes` receives the bound port so a feed can embed absolute URLs to itself.
     fn start_with(
         feed_content_type: &'static str,
         make_routes: impl FnOnce(u16) -> HashMap<String, (u16, Vec<u8>)>,
@@ -440,7 +414,6 @@ fn full_update_over_real_http_and_powershell() {
     full_update("application/json");
 }
 
-/// Mirrors and proxies sometimes serve JSON unlabeled; PowerShell then hands back raw bytes.
 #[test]
 fn the_feed_still_parses_when_served_as_octet_stream() {
     full_update("application/octet-stream");
@@ -477,7 +450,6 @@ fn full_update(feed_content_type: &'static str) {
     }
     assert_installed_and_active(&sb, &payload);
 
-    // Already current: nothing to do.
     let current = real_version();
     assert!(matches!(
         check(&cfg, &current, &PowerShellFetcher::default()).unwrap(),
@@ -488,14 +460,12 @@ fn full_update(feed_content_type: &'static str) {
 #[test]
 fn a_dead_or_wrong_feed_fails_cleanly_without_installing() {
     let sb = Sandbox::new();
-    // Nothing listens on this port.
     let probe = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = probe.local_addr().unwrap().port();
     drop(probe);
     let err = check(&local_cfg(port), "0.0.0", &PowerShellFetcher::default()).unwrap_err();
     assert!(format!("{err:#}").contains("GET"), "{err:#}");
 
-    // A server that answers 404 (wrong repo).
     let server = Server::start(HashMap::new());
     let err = check(
         &local_cfg(server.port),
@@ -507,11 +477,8 @@ fn a_dead_or_wrong_feed_fails_cleanly_without_installing() {
     sb.assert_nothing_installed();
 }
 
-// ---- /update decision logic -----------------------------------------------------------------
-
 use concordia::update::{check_for_update, update_auto, UpdateOutcome};
 
-/// A directory that is not inside any source checkout.
 fn outside_checkout() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
@@ -589,7 +556,6 @@ fn update_without_a_checkout_uses_the_official_feed_and_rejects_invalid_override
         format!("{err:#}").contains("invalid release repository override"),
         "{err:#}"
     );
-    // Invalid explicit configuration is actionable and never silently uses another feed.
     let preview = check_for_update(dir.path()).unwrap();
     assert!(!preview.install_available);
     assert!(
@@ -602,7 +568,6 @@ fn update_without_a_checkout_uses_the_official_feed_and_rejects_invalid_override
 #[test]
 fn inside_a_source_checkout_check_describes_the_rebuild_and_never_touches_the_network() {
     let _sb = Sandbox::new();
-    // No feed configured and no server: if this tried the network it would fail.
     std::env::remove_var("CONCORDIA_UPDATE_REPO");
     let msg = check_for_update(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
     assert!(
@@ -652,8 +617,6 @@ fn update_when_already_newest_changes_nothing() {
 
 #[test]
 fn an_update_that_fails_verification_is_an_error_and_installs_nothing() {
-    // The feed advertises a newer tag, but the real binary it would serve reports an older
-    // version, so verification must refuse it.
     let sb = Sandbox::new();
     let tag: &'static str = Box::leak(next_patch_tag().into_boxed_str());
     let payload = real_concordia();
@@ -682,14 +645,12 @@ fn an_update_that_fails_verification_is_an_error_and_installs_nothing() {
 #[test]
 fn the_powershell_hasher_matches_a_known_sha256_and_handles_odd_paths() {
     let dir = tempfile::tempdir().unwrap();
-    // SHA-256("abc"), the standard test vector.
     let p = dir.path().join("with space [and] 'quote'.bin");
     std::fs::write(&p, b"abc").unwrap();
     assert_eq!(
         PowerShellFetcher::default().sha256(&p).unwrap(),
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     );
-    // The empty file, and agreement with the independent Rust implementation on real bytes.
     let e = dir.path().join("empty.bin");
     std::fs::write(&e, b"").unwrap();
     assert_eq!(
@@ -703,7 +664,6 @@ fn the_powershell_hasher_matches_a_known_sha256_and_handles_odd_paths() {
         PowerShellFetcher::default().sha256(&f).unwrap(),
         sha_hex(&big)
     );
-    // A missing file is an error, never an empty hash.
     assert!(PowerShellFetcher::default()
         .sha256(&dir.path().join("nope"))
         .is_err());

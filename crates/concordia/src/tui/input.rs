@@ -1,6 +1,3 @@
-//! Buffers short plain-key bursts because Windows terminals may report bracketed
-//! paste as individual key events instead of `Event::Paste`.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
@@ -10,9 +7,7 @@ const MAX_BURST_KEYS: usize = 1024;
 #[derive(Debug)]
 pub struct KeyBurst {
     pub keys: Vec<KeyEvent>,
-    /// True once a newline was seen or the safety bound forced a flush.
     pub text: bool,
-    /// Normalized while the buffer still has cross-chunk CRLF state.
     pub text_content: Option<String>,
     pub continues_paste: bool,
 }
@@ -34,7 +29,6 @@ impl BurstBuffer {
             KeyCode::Char(_) => {
                 key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT
             }
-            // ConPTY translates pasted LF into Ctrl+Enter, including for bracketed pastes.
             KeyCode::Enter => {
                 key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::CONTROL
             }
@@ -43,13 +37,10 @@ impl BurstBuffer {
         }
     }
 
-    /// Add an eligible key. A returned chunk is safe to dispatch immediately.
     pub fn push(&mut self, key: KeyEvent, now: Instant) -> Option<KeyBurst> {
-        // Only the caller can establish that the terminal input queue was quiet. Time
-        // spent drawing a frame between drain batches must not split a pending paste.
         self.add(key, now);
         if self.keys.len() >= MAX_BURST_KEYS {
-            self.force_text = true; // On overflow, preserve every key as draft text.
+            self.force_text = true;
             self.paste_latched = true;
             Some(self.take())
         } else {
@@ -101,8 +92,6 @@ impl BurstBuffer {
         }
     }
 
-    /// Flush keys at an input-source quiet marker without ending a paste that the bounded
-    /// buffer already identified. Terminal delivery can pause between chunks of one paste.
     pub fn take_quiet(&mut self) -> Option<KeyBurst> {
         if self.last_at.is_some() {
             let burst = self.take();
@@ -118,7 +107,6 @@ impl BurstBuffer {
         self.paste_latched || self.emitted_paste || self.last_char_was_cr
     }
 
-    /// End cross-chunk text normalization and undo grouping at an explicit key action.
     pub fn end_continuation(&mut self) {
         self.paste_latched = false;
         self.last_char_was_cr = false;
@@ -192,7 +180,6 @@ impl BurstBuffer {
     }
 }
 
-/// Convert a text burst to editor content; CRLF and bare CR become one logical newline.
 #[cfg(test)]
 pub fn burst_text(keys: &[KeyEvent]) -> String {
     let mut out = String::new();
@@ -501,8 +488,6 @@ mod tests {
         let first = buffer.take_quiet().unwrap();
         super::super::dispatch_key_burst(&mut app, first, &tx);
 
-        // A lone plain Enter is ambiguous until the next quiet marker. A Ctrl+Enter arriving
-        // first proves that the first Enter belonged to the split paste; neither sends a turn.
         super::super::dispatch_key_event(
             &mut app,
             key(KeyCode::Enter),
@@ -533,7 +518,6 @@ mod tests {
         let submit = buffer.take_quiet().unwrap();
         assert!(!submit.text);
         super::super::dispatch_key_burst(&mut app, submit, &tx);
-        // Submission preserves both pasted newlines as well as the draft.
         assert_eq!(rx.try_recv().unwrap(), "a\n\n");
     }
 
@@ -669,7 +653,6 @@ mod tests {
                 start + Duration::from_micros(i),
             );
         }
-        // More input is already queued, but a slow redraw delayed its processing.
         let after_draw = start + Duration::from_millis(50);
         super::super::dispatch_key_event(
             &mut app,

@@ -1,4 +1,3 @@
-//! Historical file facts from verified native tool records. Referenced files are never opened.
 use super::*;
 
 const MAX_FACTS: usize = 64;
@@ -103,7 +102,6 @@ fn reported_workspace(index: &SourceIndex, header: &[u8]) -> Option<PathBuf> {
     workspace
 }
 
-/// Lexical historical matching only. Neither existence nor a current symlink target is inferred.
 pub fn relative_path(workspace: &Path, value: &str) -> Option<PathBuf> {
     if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
         return None;
@@ -370,7 +368,6 @@ impl Page {
     }
 }
 
-/// Rebuild from verified source bytes before publication; a cache is never evidence by itself.
 pub fn read_page(root: &Path, id: &str) -> Result<Page, String> {
     let index = load(root, id)?;
     if index.binding.provider == ProviderKind::Cursor {

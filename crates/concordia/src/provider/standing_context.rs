@@ -1,5 +1,3 @@
-//! The short, deterministic identity supplied to every provider session.
-
 use crate::store::ProviderKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,8 +9,6 @@ pub struct State<'a> {
     pub handoff_map: Option<&'a str>,
 }
 
-/// Return the Concordia tools exposed by the selected provider transport.
-/// The MCP catalog and native question bridge are separate registrations.
 pub fn tools_for_transport(provider: ProviderKind, mode: crate::native_input::Mode) -> Vec<String> {
     if provider == ProviderKind::Claude {
         let mut tools = crate::mcp::registered_tool_names();
@@ -85,7 +81,6 @@ pub fn tag(text: &str) -> String {
     format!("<concordia_standing_context>{text}</concordia_standing_context>")
 }
 
-/// Return whether a completed provider compaction has not already been handled.
 pub(crate) fn should_reinject_context(last: &mut Option<String>, id: &str) -> bool {
     if id.is_empty() || last.as_deref() == Some(id) {
         return false;

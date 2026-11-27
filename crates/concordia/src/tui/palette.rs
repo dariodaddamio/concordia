@@ -1,15 +1,9 @@
-//! Slash-command suggestions shown while typing `/...` in the prompt.
-//!
-//! Pure logic (no terminal I/O): which commands match the text so far, and what selecting one
-//! should put in the prompt. Drawing and key handling live in `tui/mod.rs`.
-
 use crate::commands::command_registry;
 use crate::store::ProviderKind;
 use crate::user_commands::UserCommand;
 
 pub(super) struct SessionCommands {
     pub owner: crate::provider::interaction::InteractionOwner,
-    // Keep the UI's original paths for cheap lookup; the launch owner uses canonical paths.
     pub home_path: Option<std::path::PathBuf>,
     pub cwd: std::path::PathBuf,
     pub session_id: String,
@@ -20,23 +14,17 @@ pub(super) struct SessionCommands {
 pub struct Entry {
     pub command: String,
     pub help: String,
-    /// A user command from `<state>/commands` (drawn with a dim "custom" marker).
     pub custom: bool,
-    /// Provider-native commands are discoverable; unsupported transport operations open the native UI.
     pub provider: bool,
-    /// Concordia and the active provider both advertise this command; Enter opens a choice.
     pub shared: bool,
     pub disabled: bool,
 }
 
-/// Commands whose full text starts with what the user has typed. Only a single-line prompt that
-/// begins with `/` gets suggestions; everything else is ordinary chat text.
 #[cfg(test)]
 pub fn matching(input: &str) -> Vec<Entry> {
     matching_with(input, &[])
 }
 
-/// Like [`matching`], with the user's commands listed after the built-ins.
 pub fn matching_with(input: &str, user: &[UserCommand]) -> Vec<Entry> {
     matching_for_provider(input, user, None)
 }
@@ -149,7 +137,6 @@ pub(super) fn matching_for_session(
 #[derive(Debug, Default)]
 pub struct Palette {
     pub selected: usize,
-    /// Closed with Esc; stays closed until the text changes.
     pub dismissed: bool,
 }
 
@@ -293,7 +280,6 @@ go",
     }
 }
 
-/// Branches reveal their children once the complete command has been entered.
 pub fn is_branch(input: &str) -> bool {
     matches!(
         input.to_ascii_lowercase().as_str(),
@@ -322,7 +308,6 @@ pub fn has_argument_menu(input: &str) -> bool {
     )
 }
 
-/// Dynamic choices come only from connected accounts and locally cached models.
 pub fn matching_arguments(
     input: &str,
     accounts: &[(String, String)],
@@ -355,19 +340,19 @@ pub fn matching_arguments(
         "/use" => {
             add(
                 "/use".into(),
-                "ACCOUNT | add PROVIDER | remove ACCOUNT - Enter opens accounts".into(),
+                "ACCOUNT | add PROVIDER | remove ACCOUNT · Enter opens accounts".into(),
             );
             add(
                 "/use add".into(),
-                "connect a provider account - Enter opens provider choices".into(),
+                "connect a provider account · Enter opens provider choices".into(),
             );
             add(
                 "/use remove".into(),
-                "remove an account - Enter opens removal choices".into(),
+                "remove an account · Enter opens removal choices".into(),
             );
             add(
                 "/use rename".into(),
-                "ACCOUNT NICKNAME - rename for display; omit nickname to reset".into(),
+                "ACCOUNT NICKNAME · rename for display; omit nickname to reset".into(),
             );
             for provider in ["codex", "claude", "cursor", "grok"]
                 .into_iter()
@@ -402,7 +387,7 @@ pub fn matching_arguments(
         "/model" => {
             add(
                 "/model".into(),
-                "MODEL - choose from this account's catalog; Enter opens models".into(),
+                "MODEL · choose from this account's catalog; Enter opens models".into(),
             );
             for model in models {
                 add(
@@ -414,7 +399,7 @@ pub fn matching_arguments(
         "/mode" => {
             add(
                 "/mode".into(),
-                "plan | ask | edit | full - Enter shows the permission mode".into(),
+                "plan | ask | edit | full · Enter shows the permission mode".into(),
             );
             for (mode, help) in [
                 ("plan", "read-only analysis"),
@@ -444,11 +429,11 @@ pub fn matching_arguments(
             if cmd == "/skills" {
                 add(
                     "/skills remove".into(),
-                    "PATH - stop sharing and remove matching links across accounts".into(),
+                    "PATH · stop sharing and remove matching links across accounts".into(),
                 );
                 add(
                     format!("{cmd} install"),
-                    "[PATH] [--current] - share skill folders across accounts".into(),
+                    "[PATH] [--current] · share skill folders across accounts".into(),
                 );
             }
         }
@@ -460,21 +445,21 @@ pub fn matching_arguments(
             for (suffix, help) in [
                 (
                     "connect",
-                    "PATH [--current] - connect setup across accounts",
+                    "PATH [--current] · connect setup across accounts",
                 ),
                 ("status", "show connected harnesses and verification state"),
                 (
                     "tools",
-                    "NAME or harness/tool - list or run a declared tool",
+                    "NAME or harness/tool · list or run a declared tool",
                 ),
                 (
                     "verify",
-                    "[NAME] [--current] - verify all accounts; may use provider usage",
+                    "[NAME] [--current] · verify all accounts; may use provider usage",
                 ),
-                ("disconnect", "NAME - remove a harness connection"),
+                ("disconnect", "NAME · remove a harness connection"),
                 (
                     "skill",
-                    "[--current] - install the connection skill across accounts",
+                    "[--current] · install the connection skill across accounts",
                 ),
             ] {
                 add(format!("/harness {suffix}"), help.into());

@@ -28,7 +28,6 @@ const PROVEN: &str = "denied-live-probe";
 pub enum Gate {
     /// The project has no locked regions, or enforcement was verified for this provider and home.
     Open,
-    /// Write-capable work must not start; the text says why.
     ReadOnly(String),
 }
 
@@ -39,13 +38,11 @@ fn sha_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// SHA-256 of the policy file with line endings normalized, so a checkout setting cannot change it.
 pub fn policy_revision(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes).replace("\r\n", "\n");
     sha_hex(text.as_bytes())
 }
 
-/// A path as a comparable string: forward slashes, no trailing slash, lowercase on Windows.
 pub(crate) fn path_key(path: &Path) -> String {
     let key = path.to_string_lossy().replace('\\', "/");
     let key = key.trim_end_matches('/').to_string();
@@ -71,7 +68,6 @@ pub(crate) fn slot(store: &Path, root: &Path) -> PathBuf {
     store.join(STORE_DIR).join(project_key(root))
 }
 
-/// Refuse state writes through symlinks/junctions, including an existing slot itself.
 pub fn has_reparse_component(base: &Path, target: &Path) -> bool {
     let Ok(relative) = target.strip_prefix(base) else {
         return true;
@@ -107,7 +103,6 @@ fn was_locked(store: &Path, cwd: &Path) -> bool {
         .any(|dir| slot(store, dir).join(LOCKED_MARKER).is_file())
 }
 
-/// Best effort: a failed write only means a later deletion would not be remembered.
 fn remember_locked(slot: &Path, revision: &str) {
     let Some(state_dir) = slot.parent() else {
         return;
@@ -121,9 +116,6 @@ fn remember_locked(slot: &Path, revision: &str) {
 }
 
 pub(crate) fn is_inside(path: &Path, root: &Path) -> bool {
-    // A newly chosen home may not exist yet. Resolve its nearest existing ancestor
-    // so an ordinary path and a canonical Windows extended path remain comparable,
-    // including a missing child beneath a junction into this project.
     fn physical_key(path: &Path) -> String {
         let mut ancestor = path.to_owned();
         let mut missing = Vec::new();
@@ -247,7 +239,6 @@ fn refresh_command_identity(
     })
 }
 
-/// Where receipts live: Concordia's state directory (a throwaway one under test).
 fn store_root() -> PathBuf {
     #[cfg(not(test))]
     {
@@ -262,12 +253,10 @@ fn store_root() -> PathBuf {
     }
 }
 
-/// Decide whether `provider` may do write-capable work from `cwd`. Any read failure closes it.
 pub fn gate(cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
     gate_in(&store_root(), cwd, provider, home)
 }
 
-/// [`gate`] against an explicit state directory.
 pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&Path>) -> Gate {
     let name = provider.as_str();
     for directory in cwd.ancestors() {
@@ -311,7 +300,6 @@ pub fn gate_in(store: &Path, cwd: &Path, provider: ProviderKind, home: Option<&P
     ))
 }
 
-/// The trust a turn may run with, and the notice to show when it was lowered.
 pub fn effective_trust(
     cwd: &Path,
     provider: ProviderKind,
@@ -321,7 +309,6 @@ pub fn effective_trust(
     effective_trust_in(&store_root(), cwd, provider, home, requested)
 }
 
-/// [`effective_trust`] against an explicit state directory.
 pub fn effective_trust_in(
     store: &Path,
     cwd: &Path,
@@ -338,7 +325,6 @@ pub fn effective_trust_in(
     }
 }
 
-/// Check the actual final read-only option rather than assuming it from the requested trust.
 pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
     let pair = |flags: &[&str], value: &str| {
         super::turn::planned_options(argv)
@@ -352,7 +338,6 @@ pub fn is_read_only_argv(provider: ProviderKind, argv: &[String]) -> bool {
     }
 }
 
-/// Refuse to start a turn the gate made read-only if the command line no longer is.
 pub fn ensure_read_only(provider: ProviderKind, argv: &[String]) -> Result<()> {
     if is_read_only_argv(provider, argv) {
         return Ok(());
@@ -378,7 +363,6 @@ mod tests {
         fs::write(dir.join("docs/quality/locked-code.json"), POLICY).unwrap();
     }
 
-    /// Write a receipt where the verifier would: in Concordia's own store, outside the project.
     fn receipt(
         store: &Path,
         root: &Path,

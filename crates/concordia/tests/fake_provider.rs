@@ -47,11 +47,9 @@ impl Env {
     fn path(&self, name: &str) -> PathBuf {
         self.dir.path().join(name)
     }
-    /// Point codex at the fake provider, directly or through an npm-style `.cmd` shim.
     fn use_codex(&mut self, via_cmd_shim: bool) {
         let bin = if via_cmd_shim {
             let shim = self.path("codex.cmd");
-            // Mirrors npm's generated shim: forwards every argument with %*.
             std::fs::write(&shim, format!("@ECHO off\r\n\"{FAKE}\" %*\r\n")).unwrap();
             shim
         } else {
@@ -130,7 +128,6 @@ fn req<'a>(prompt: &'a str, cwd: &'a Path, home: Option<&'a Path>) -> ProviderTu
     }
 }
 
-/// The prompt is always the final argv entry the runner passes.
 fn prompt_arg(r: &Received) -> &str {
     r.args.last().expect("at least the prompt arg")
 }
@@ -207,7 +204,6 @@ async fn streams_session_text_and_cards_through_the_real_runner() {
     assert!(outcome.text.contains("parity hello"), "{:?}", outcome.text);
     assert!(!outcome.cards.is_empty());
 
-    // Progress events arrived live, in order, before completion.
     let mut saw_session = false;
     let mut saw_text = false;
     while let Ok(ev) = rx.try_recv() {
@@ -219,7 +215,6 @@ async fn streams_session_text_and_cards_through_the_real_runner() {
     }
     assert!(saw_session && saw_text);
 
-    // The isolated home and cwd reached the child; no `--last`/`--continue` was passed.
     let got = read_received(&out_file);
     assert!(got
         .env
@@ -249,7 +244,6 @@ async fn nasty_prompt_survives_a_direct_exe_byte_for_byte() {
     assert_eq!(prompt_arg(&read_received(&out_file)), NASTY);
 }
 
-/// Run one turn behind the `.cmd` shim and return what the provider received.
 async fn received_via_shim(prompt: &str) -> Received {
     let mut env = Env::new();
     env.use_codex(true);
@@ -283,7 +277,6 @@ async fn a_multi_line_special_character_prompt_behind_a_cmd_shim_arrives_intact_
 
 #[tokio::test]
 async fn a_very_long_prompt_behind_a_cmd_shim_arrives_intact_over_stdin() {
-    // cmd.exe caps a command line at 8191 chars; continuity packs can exceed that.
     let long = "word ".repeat(4000);
     let got = received_via_shim(&long).await;
     assert_eq!(got.stdin.as_deref(), Some(long.as_str()));
@@ -355,7 +348,6 @@ async fn a_provider_flooding_stderr_cannot_deadlock_the_turn() {
     .unwrap();
     assert_eq!(outcome.exit_code, Some(0));
     assert!(outcome.text.contains("parity hello"));
-    // Only the tail is kept, and it is bounded.
     assert!(outcome.stderr_tail.lines().count() <= 12);
     assert!(outcome.stderr_tail.contains("flood line"));
 }
@@ -404,8 +396,6 @@ async fn a_missing_provider_binary_is_a_clear_error() {
         .unwrap_err();
     assert!(format!("{err:#}").contains("spawn"), "{err:#}");
 }
-
-// ---- cancel ----------------------------------------------------------------------------------
 
 fn pid_alive(pid: u32) -> bool {
     let out = std::process::Command::new("tasklist")
@@ -460,7 +450,6 @@ async fn cancel_scenario(via_cmd_shim: bool, mode: &str) {
         .unwrap();
     assert!(outcome.cancelled);
 
-    // The provider process itself must be gone, not just the shim in front of it.
     let start = Instant::now();
     while pid_alive(pid) && start.elapsed() < Duration::from_secs(5) {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -583,8 +572,6 @@ async fn a_multi_megabyte_line_is_bounded_and_the_rest_of_the_stream_still_parse
     );
 }
 
-// ---- session continuity for Claude and Cursor ---------------------------------------------------
-
 fn req_for<'a>(
     provider: ProviderKind,
     prompt: &'a str,
@@ -607,7 +594,6 @@ fn req_for<'a>(
     }
 }
 
-/// Value following `flag` in the recorded argv.
 fn arg_after<'a>(r: &'a Received, flag: &str) -> Option<&'a str> {
     r.args
         .windows(2)
@@ -625,7 +611,6 @@ async fn a_claude_conversation_names_its_session_then_resumes_it() {
     let cwd = env.path("work");
     std::fs::create_dir_all(&cwd).unwrap();
 
-    // Turn 1: no session yet, so one is chosen up front and reported back.
     let first = run_provider_turn(&req_for(ProviderKind::Claude, "hello", &cwd, None), None)
         .await
         .unwrap();
@@ -635,7 +620,6 @@ async fn a_claude_conversation_names_its_session_then_resumes_it() {
     assert!(arg_after(&got, "--resume").is_none());
     assert_eq!(first.session_id.as_deref(), Some(sid));
 
-    // Turn 2: that id is resumed, and no new one is invented.
     let sid = sid.to_string();
     let second = run_provider_turn(
         &req_for(ProviderKind::Claude, "and again", &cwd, Some(&sid)),
@@ -687,7 +671,6 @@ async fn a_cursor_conversation_gets_a_created_chat_and_resumes_it() {
     assert_eq!(prompt_arg(&got), "hello", "the prompt stays last");
     assert_eq!(first.session_id.as_deref(), Some(id));
 
-    // With a bound chat, no new one is created and it is resumed as given.
     let second = run_provider_turn(&req_for(ProviderKind::Cursor, "more", &cwd, Some(id)), None)
         .await
         .unwrap();

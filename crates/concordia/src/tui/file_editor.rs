@@ -1,4 +1,3 @@
-//! Independent file surface; it never enters the chat dispatcher or starts a provider.
 use super::*;
 use crate::file_links;
 use anyhow::Context;

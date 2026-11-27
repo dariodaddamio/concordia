@@ -1,13 +1,14 @@
-//! End-to-end input tests: real key/mouse events through the handlers, rendered with ratatui's
-//! `TestBackend`, asserting on text, selection, caret and clipboard (in-memory under `cfg(test)`).
-
 use super::*;
 #[path = "tests/app.rs"]
 mod app;
+#[path = "tests/consistency.rs"]
+mod consistency;
 #[path = "tests/draw.rs"]
 mod draw;
 #[path = "tests/input_dispatch.rs"]
 mod input_dispatch;
+#[path = "tests/polish.rs"]
+mod polish;
 #[path = "tests/run.rs"]
 mod run;
 use crate::usage::picker_row;
@@ -84,11 +85,9 @@ impl Harness {
     fn new(w: u16, h: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let mut app = App::new(dir.path().to_path_buf(), dir.path().to_path_buf());
-        // These rendering fixtures assert the historical terminal palette; pin it so
-        // changing the product default does not change what they exercise.
         app.appearance.ui.theme = crate::config::Theme::Default;
         super::theme::install(&app.appearance.ui);
-        app.no_color = false; // Fixtures choose color explicitly, independent of the caller's env.
+        app.no_color = false;
         let term = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hn = Harness {
             app,
@@ -147,7 +146,6 @@ impl Harness {
         self.up(x, y);
     }
 
-    /// Index of the transcript row whose text equals `text`.
     fn row_of(&self, text: &str) -> usize {
         self.app
             .view
@@ -157,7 +155,6 @@ impl Harness {
             .unwrap_or_else(|| panic!("no transcript row {text:?}"))
     }
 
-    /// Screen cell of char `idx` in transcript row `row` (gutter included).
     fn t_cell(&self, row: usize, idx: usize) -> (u16, u16) {
         let t = self.app.areas.transcript;
         let g = self.app.view.rows[row].gutter.chars().count();
@@ -165,20 +162,16 @@ impl Harness {
         (t.x + (g + idx) as u16, t.y + (row - first) as u16)
     }
 
-    /// Screen cell of char column `col` on prompt row `row`.
     fn i_cell(&self, row: u16, col: usize) -> (u16, u16) {
         let r = self.app.areas.input;
         (r.x + (PROMPT_W + col) as u16, r.y + row)
     }
 }
 
-// ---- account connect ---------------------------------------------------------------------
-
 use crate::connect::{add_account_with, Effects, LoginPlan};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Points `profile_home()` at an empty temp dir so tests never see the developer's real homes.
 struct Isolated {
     _guard: std::sync::MutexGuard<'static, ()>,
     base: tempfile::TempDir,
@@ -215,7 +208,6 @@ impl Drop for Isolated {
 }
 
 impl Harness {
-    /// Replace the connect step with one that records launches instead of opening windows.
     fn fake_connect(&mut self) -> Rc<RefCell<Vec<LoginPlan>>> {
         let launched = Rc::new(RefCell::new(Vec::new()));
         let rec = Rc::clone(&launched);
@@ -257,8 +249,6 @@ impl Harness {
     }
 }
 
-// ---- history, exit keys ------------------------------------------------------------------
-
 impl Harness {
     fn send(&mut self, line: &str) {
         self.type_str(line);
@@ -272,16 +262,9 @@ impl Harness {
     }
 }
 
-// ---- provider failure reporting ----------------------------------------------------------
-
 use crate::provider::turn::TurnOutcome;
 
-// ---- performance -------------------------------------------------------------------------
-
-// ---- slash-command palette -----------------------------------------------------------------
-
 impl Harness {
-    /// The rendered screen as plain text, one line per terminal row.
     fn screen(&self) -> String {
         let buf = self.term.backend().buffer();
         let area = buf.area;
@@ -298,8 +281,6 @@ impl Harness {
     }
 }
 
-// ---- duplicates and removal ----------------------------------------------------------------
-
 use crate::test_support::codex_login;
 
 impl Harness {
@@ -311,7 +292,6 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// `/use add codex`, then finish the (faked) login as `email` and let orc notice.
     fn add_codex_signed_in_as(&mut self, email: &str) -> PathBuf {
         self.type_str("/use add codex");
         self.enter();
@@ -328,7 +308,6 @@ impl Harness {
     }
 }
 
-/// Prints what the screen looks like. Run: cargo test -p concordia --lib show_screen -- --ignored --nocapture
 #[test]
 #[ignore]
 fn show_screen() {
@@ -370,8 +349,6 @@ fn show_screen() {
     println!("{}", h2.screen());
 }
 
-// ---- background /update ---------------------------------------------------------------------------
-
 use crate::update::{spawn_job, JobResult as JR, UpdateOutcome as UO};
 
 impl Harness {
@@ -388,7 +365,6 @@ impl Harness {
     }
 }
 
-/// The `/update` screen with `preview` loaded, as a finished check leaves it.
 fn update_screen(h: &mut Harness, preview: crate::update::UpdatePreview) {
     h.app
         .show_picker(PickerKind::Update, "update".into(), Vec::new(), false);
@@ -409,7 +385,6 @@ fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview
         ),
     ];
     lines.extend((0..bullets).map(|i| P::Bullet(format!("change number {i}"))));
-    lines.push(P::Hint("Esc close".into()));
     crate::update::UpdatePreview {
         history: Vec::new(),
         history_expanded: false,
@@ -419,14 +394,10 @@ fn update_preview(install: bool, bullets: usize) -> crate::update::UpdatePreview
     }
 }
 
-// ---- waiting states, thinking, repeated errors ----------------------------------------------------
-
 fn footer_row(h: &Harness) -> String {
     let s = h.screen();
     s.lines().last().unwrap().to_string()
 }
-
-// ---- token line and tips ------------------------------------------------------------------
 
 use crate::provider::stream_cards::TurnUsage;
 
@@ -500,7 +471,6 @@ fn landing_harness() -> Harness {
     h
 }
 
-/// A project folder with a ledger, and a fake harness that prints `output`.
 fn landing_with_work(output: &str) -> Harness {
     let mut h = Harness::new(110, 24);
     let here = h.app.cwd.clone();

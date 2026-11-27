@@ -1,24 +1,10 @@
-//! `@chat` references: `@` in the prompt completes to a recent thread, and on send each
-//! `@<id-or-prefix>` is replaced by that thread's map (docs/architecture.md, "Delivery").
-//!
-//! The pure pieces (finding the token being typed, filtering, expansion) are plain functions so
-//! they are tested without a terminal. The slash palette is untouched: this is a separate mode with
-//! its own state, drawn in the same spot and answering the same navigation keys.
-
 use super::*;
 use crate::threads::{self, ThreadMeta};
 
-/// At most this many references are expanded per prompt; the rest stay literal.
 pub const MAX_REFS: usize = 3;
-/// A thread list younger than this is reused instead of re-reading `<state>/threads`.
 const LIST_TTL: Duration = Duration::from_secs(5);
 const EMPTY_NOTICE: &str = "no recorded chats - enable [threads] in config.toml";
 
-// ---------------------------------------------------------------------------------------------
-// Pure logic
-// ---------------------------------------------------------------------------------------------
-
-/// Characters that may directly precede an `@` that starts a reference.
 fn opens_word(prev: Option<char>) -> bool {
     prev.is_none_or(|c| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\''))
 }
@@ -27,14 +13,11 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-/// Thread ids are UUIDs: hex digits and dashes. Anything else after `@` is not a reference.
 fn looks_like_id(run: &str) -> bool {
     let n = run.chars().count();
     (4..=36).contains(&n) && run.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// The `@query` being typed at the end of the prompt: (byte offset of the `@`, text after it).
-/// None when the last word is not a reference start (`a@b.com`, `\@x`, no `@`, ...).
 pub fn active_query(text: &str) -> Option<(usize, String)> {
     let word_start = text
         .rfind(char::is_whitespace)
@@ -91,7 +74,6 @@ pub(super) fn reference_query(text: &str) -> Option<(usize, String)> {
     Some((start, query.replace('\\', "/")))
 }
 
-/// Threads whose id starts with the query or whose title contains it, newest first.
 pub fn filter<'a>(all: &'a [ThreadMeta], query: &str) -> Vec<&'a ThreadMeta> {
     let q = query.to_lowercase();
     all.iter()
@@ -103,7 +85,6 @@ pub fn filter<'a>(all: &'a [ThreadMeta], query: &str) -> Vec<&'a ThreadMeta> {
         .collect()
 }
 
-/// Shortest id prefix of at least 8 characters that no other thread shares.
 pub fn short_id(all: &[ThreadMeta], id: &str) -> String {
     let chars: Vec<char> = id.chars().collect();
     for n in 8..=chars.len() {
@@ -115,23 +96,17 @@ pub fn short_id(all: &[ThreadMeta], id: &str) -> String {
     id.to_string()
 }
 
-/// The prompt with the `@query` at `start` replaced by `@<id> `.
 pub fn complete(text: &str, start: usize, short: &str) -> String {
     format!("{}@{short} ", &text[..start])
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Expansion {
-    /// The original prompt, followed by separately labelled bounded source maps.
     pub sent: String,
-    /// (short id, map) per expanded reference, for the dimmed transcript block.
     pub maps: Vec<(String, String)>,
-    /// Why a reference was left as typed.
     pub notices: Vec<String>,
 }
 
-/// Keep the original request intact and append unique `@<id-or-unique-prefix>` source maps
-/// (at most `map_chars` characters each, with `more:` pointers). Invalid references get notices.
 pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
     if !text.contains('@') {
         return Expansion {
@@ -146,7 +121,6 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        // An escaped reference remains literal, including its original backslash.
         if c == '\\' && chars.get(i + 1) == Some(&'@') {
             i += 2;
             continue;
@@ -160,7 +134,6 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
             .find(|&j| !is_id_char(chars[j]))
             .unwrap_or(chars.len());
         let run: String = chars[i + 1..end].iter().collect();
-        // `@abcd.example` reads as a domain, not a reference.
         let domainish = (matches!(chars.get(end), Some('/' | '\\'))
             || (chars.get(end) == Some(&':')
                 && chars.get(end + 1).is_some_and(char::is_ascii_digit)))
@@ -195,7 +168,6 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
             }
             [m] => {
                 let id = m.id.clone();
-                // Repeated references keep their original spelling and share one source map.
                 if !done.contains(&id) {
                     if done.len() >= MAX_REFS {
                         literal(&mut ex, format!("at most {MAX_REFS} chats per prompt"));
@@ -222,8 +194,6 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
         }
         i = end;
     }
-    // Native sources must retain the exact original composer value for reference-only recall.
-    // Maps are context for this single request; they do not replace the user's words.
     ex.sent = text.to_string();
     if !ex.maps.is_empty() {
         ex.sent
@@ -237,17 +207,12 @@ pub fn expand(state_root: &Path, text: &str, map_chars: usize) -> Expansion {
     ex
 }
 
-// ---------------------------------------------------------------------------------------------
-// Prompt-box state and the overlay
-// ---------------------------------------------------------------------------------------------
-
 #[derive(Default)]
 pub struct ChatRef {
     list: Vec<ThreadMeta>,
     loaded: Option<Instant>,
     pub selected: usize,
     last_query: Option<String>,
-    /// Prompt text at the moment Esc closed the list; it stays closed until the text changes.
     dismissed_for: Option<String>,
     empty_shown_once: bool,
     showing_empty: bool,
@@ -263,7 +228,6 @@ enum Reference {
     File(usize),
 }
 
-/// What the overlay shows right now.
 enum View {
     Hidden,
     Empty,
@@ -416,7 +380,6 @@ impl App {
         }
     }
 
-    /// Put the chosen thread's id in the prompt in place of the `@query`.
     fn complete_chat_ref(&mut self, list_idx: usize) {
         let text = self.editor.text();
         let Some((start, _)) = active_query(&text) else {
@@ -429,8 +392,6 @@ impl App {
         self.editor.set_text(&complete(&text, start, &short));
     }
 
-    /// Show the maps that were sent with the prompt (dimmed, under the user's own line) and the
-    /// reasons any reference was left alone. Returns the text to send.
     pub(super) fn show_chat_refs(&mut self, ex: Expansion) -> String {
         for (short, map) in &ex.maps {
             self.messages.push(ChatLine {
@@ -447,7 +408,6 @@ impl App {
     }
 }
 
-/// Navigation keys while the list is open. True when the key was used.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let preview = key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('p' | 'P'));
@@ -501,13 +461,12 @@ fn clip(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         format!(
-            "{}...",
-            s.chars().take(max.saturating_sub(3)).collect::<String>()
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
         )
     }
 }
 
-/// The list, floating just above the prompt box like the slash palette.
 pub(super) fn draw(f: &mut Frame, above: Rect, input: Rect, app: &mut App) {
     app.chatref.targets.clear();
     let view = app.chat_view();
@@ -695,7 +654,6 @@ mod tests {
         let log = ThreadLog::open(root, id);
         log.write_meta(&meta(id, title, threads::now_secs()))
             .unwrap();
-        // Reference journals store metadata or native source pointers, never message bodies.
         log.append_unavailable(&ThreadEvent::new("user"), None, "fixture")
             .unwrap();
         log.append_unavailable(&ThreadEvent::new("assistant"), None, "fixture")
@@ -764,7 +722,6 @@ mod tests {
         )));
         assert_eq!(ex.sent.matches(request).count(), 1);
         assert!(ex.sent.ends_with(&format!("@c0ffee00\n{map}\n")));
-        // A unique short prefix works the same way.
         assert_eq!(expand(d.path(), "@c0ff", 1600).maps.len(), 1);
     }
 
@@ -787,7 +744,6 @@ mod tests {
             "{:?}",
             ex.notices
         );
-        // An exact id wins over being a prefix of nothing else.
         assert_eq!(expand(d.path(), &format!("@{A}"), 1600).maps.len(), 1);
     }
 
@@ -846,8 +802,6 @@ mod tests {
         assert_eq!(ex.sent, "hi @c0ffee00");
         assert!(ex.notices[0].contains("enable [threads] in config.toml"));
     }
-
-    // ---- end to end through the real key handler, submit path and renderer ----
 
     use ratatui::backend::TestBackend;
 
@@ -925,7 +879,6 @@ mod tests {
             screen.contains("fix the login redirect") && screen.contains("refactor the parser")
         );
         assert!(screen.contains("claude-2"));
-        // Narrow by id prefix, then complete with Tab.
         r.type_str("c0f");
         let screen = r.draw();
         assert!(
@@ -942,7 +895,6 @@ mod tests {
         let sent = r.rx.try_recv().expect("the prompt was sent");
         assert_eq!(sent, "continue @c0ffee00 from there");
         assert!(!r.app.messages.iter().any(|m| m.role == MsgRole::Meta));
-        // Native-source hydration happens in preparation, then progress adds the dim context.
         let prepared = expand(r.dir.path(), &sent, 1600);
         assert!(
             prepared.sent.starts_with("continue @c0ffee00 from there\n\n[Referenced chats: source context, not new requests]\n@c0ffee00\n[concordia map] thread c0ffee00-"),
@@ -960,7 +912,6 @@ mod tests {
             maps: prepared.maps,
             notices: prepared.notices,
         });
-        // The transcript keeps the user's own line and shows the map dimmed under it.
         let user = r
             .app
             .messages
@@ -1084,7 +1035,6 @@ mod tests {
             r.app.request_related_files();
             r.app.on_tick();
             if !r.app.related_files.loading() {
-                // A source changed while an earlier scan was in flight: request its successor.
                 r.app.request_related_files();
                 if !r.app.related_files.loading() {
                     break;
@@ -1209,7 +1159,7 @@ mod tests {
         assert!(
             matches!(r.app.chat_view(), View::Rows(ref rows) if matches!(rows[r.app.chatref.selected], Reference::Chat(_)))
         );
-        r.key(KeyCode::Down); // Explicit selection must survive a later discovery result.
+        r.key(KeyCode::Down);
         std::fs::write(r.dir.path().join("new.md"), "new file").unwrap();
         r.app.push_user("new.md".into());
         wait_for_files(&mut r);

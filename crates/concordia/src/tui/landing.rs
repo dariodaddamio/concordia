@@ -1,7 +1,3 @@
-//! The landing page: recent chats grouped by project folder and each project's open work as its
-//! Harness ledger reports it. It replaces the empty transcript until
-//! the person types, resumes a chat or presses Esc.
-
 use super::{App, MsgRole, FOOTER_HINT};
 use crate::sessions::{format_relative_time, list_recent_sessions, SessionSummary};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -10,15 +6,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
-/// How many recent chats the page lists, and how many projects it asks for open work.
 const RECENT_CHATS: usize = 40;
 const WORK_PROJECTS: usize = 6;
-/// Below this width the work pane is left out and the chats use the whole row.
 const TWO_PANES_MIN: u16 = 70;
 const DOCUMENTATION_URL: &str = "https://dariodaddamio.github.io/concordia/";
 
@@ -38,8 +32,6 @@ pub(crate) struct LandingMeter {
     pub(crate) snapshot: crate::usage::UsageSnapshot,
 }
 
-/// Sessions grouped by the folder they ran in: the current folder first and expanded, the rest
-/// collapsed and ordered by their newest chat.
 pub fn group_sessions(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
     let current = crate::workspace_paths::display_path(&project_root(cwd));
     let probe = crate::cursor_usage::probe_dir();
@@ -177,8 +169,6 @@ fn display_groups(sessions: Vec<SessionSummary>, cwd: &Path) -> Vec<ChatGroup> {
     display_groups_at(sessions, cwd, now_ms)
 }
 
-/// The project identity, or for a git worktree its main repository: a worktree's
-/// `.git` is a file reading `gitdir: <repo>/.git/worktrees/<name>`.
 fn project_root(folder: &Path) -> PathBuf {
     let pointer = folder.join(".git");
     let main = std::fs::symlink_metadata(&pointer)
@@ -205,7 +195,6 @@ fn project_root(folder: &Path) -> PathBuf {
     std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
-/// One project's open work. `None` when its Habena predates `plan:open --json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectWork {
     pub folder: String,
@@ -215,11 +204,9 @@ pub struct ProjectWork {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkItem {
     pub text: String,
-    /// Parked for later, as opposed to in progress.
     pub queued: bool,
 }
 
-/// `habena run plan:open --json` output: active plans first, then the open and queued rows.
 pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
     let text = |v: &serde_json::Value, key: &str| {
@@ -245,7 +232,6 @@ pub fn parse_open_work(stdout: &str) -> Option<Vec<WorkItem>> {
     Some(items)
 }
 
-/// The connected Habena program (`/harness connect habena`), if any.
 fn harness_program(state_root: &Path) -> Option<String> {
     crate::harness::connections::load(state_root)
         .ok()?
@@ -281,10 +267,7 @@ pub struct Landing {
     provider_health: Vec<(crate::store::ProviderKind, bool)>,
     from_chat: bool,
     all_sessions: Vec<SessionSummary>,
-    /// Sessions the default view hides. Counted once when the sessions are loaded: the count
-    /// needs a filesystem lookup per session and must never run while drawing a frame.
     hidden_total: usize,
-    /// Chat titles for `groups`, with the time they were resolved.
     titles_cache: Option<(std::time::Instant, Vec<String>, Vec<Vec<String>>)>,
     show_all: bool,
     pub(crate) hidden_temp_root: Option<PathBuf>,
@@ -300,12 +283,10 @@ pub struct Landing {
     goal_hits: Vec<Option<usize>>,
     pub(crate) work: Vec<ProjectWork>,
     work_rx: Option<mpsc::Receiver<ProjectWork>>,
-    /// Where the rows were drawn, for the mouse.
     chats_area: Rect,
     work_area: Rect,
     goals_area: Rect,
     last_click: Option<(usize, Instant)>,
-    /// Tokens through Concordia in the last 24 hours, read once when the page opens.
     tokens_24h: u64,
     tokens_all_time: u64,
     tokens_checked: Instant,
@@ -314,7 +295,6 @@ pub struct Landing {
     tokens_partial: bool,
     tokens_error: Option<String>,
     pub(crate) meters: Vec<LandingMeter>,
-    /// The shared chat list this page shows; `None` when the caller supplied the sessions.
     sessions_generation: Option<u64>,
 }
 
@@ -338,18 +318,45 @@ impl Landing {
         rows
     }
 
-    /// Open work is still being read.
     #[cfg(test)]
     pub fn work_pending(&self) -> bool {
         self.work_rx.is_some()
     }
 
-    fn hint(&self) -> &'static str {
-        "Enter open chat · Esc chat"
+    fn hint(&self, welcome: bool, has_draft: bool) -> String {
+        if welcome {
+            return if has_draft { "" } else { "Enter add account" }.into();
+        }
+        if has_draft {
+            return FOOTER_HINT.into();
+        }
+        let mut hints = Vec::new();
+        match self.rows().get(self.chat_sel) {
+            Some(ChatRow::Group(group)) if self.groups[*group].expanded => {
+                hints.push("Enter collapse folder".into());
+            }
+            Some(ChatRow::Group(_)) => hints.push("Enter expand folder".into()),
+            Some(ChatRow::Quick(group)) if self.groups[*group].quick_questions => {
+                hints.push("Enter hide quick chats".into());
+            }
+            Some(ChatRow::Quick(_)) => hints.push("Enter show quick chats".into()),
+            Some(ChatRow::Chat(..) | ChatRow::QuickChat(..)) => {
+                hints.push("Enter open chat".into())
+            }
+            None => {}
+        }
+        hints.push("Esc chat".into());
+        if self.hidden_total > 0 {
+            hints.push(if self.show_all {
+                "h hide".into()
+            } else {
+                format!("h show {} hidden", self.hidden_total)
+            });
+        }
+        hints.join(" · ")
     }
 }
 
-/// Show the landing page for this folder; with no recorded chats there is nothing to show.
 pub(super) fn open(app: &mut App) {
     let (sessions, generation) = scan_recent_chats(&app.state_root);
     let program = harness_program(&app.state_root);
@@ -389,10 +396,11 @@ pub(super) fn open_home(app: &mut App) {
 }
 
 pub(super) fn back_to_chat(app: &mut App) {
-    app.tab_request = Some(super::tabs::TabAction::BackToChat);
+    if !welcome_visible(app) {
+        app.tab_request = Some(super::tabs::TabAction::BackToChat);
+    }
 }
 
-/// An unbound conversation can host Home without replacing a saved or running chat.
 pub(super) fn can_host_home(app: &App) -> bool {
     !app.busy
         && app.native_session_id.is_none()
@@ -402,17 +410,12 @@ pub(super) fn can_host_home(app: &App) -> bool {
             .any(|message| matches!(message.role, MsgRole::User | MsgRole::Assistant))
 }
 
-/// The newest Home chat list read in this process. Reading provider histories can take seconds,
-/// so a later Home opens with this list at once and picks up a background rescan in `poll`.
 struct RecentChats {
     state_root: PathBuf,
     sessions: Vec<SessionSummary>,
-    /// Last list that open Homes may show.
     generation: u64,
-    /// Monotonic stamp handed to each scan when it starts; only a newer stamp may publish.
     next_generation: u64,
     scanning: bool,
-    /// A Home or save asked for another pass while `scanning` was true.
     rescan_again: bool,
 }
 
@@ -444,7 +447,6 @@ fn ensure_recent_chat_cache(
     cache
 }
 
-/// Take the next start stamp for a scan of this state root.
 fn begin_recent_chat_scan(state_root: &Path) -> u64 {
     let mut cache = ensure_recent_chat_cache(state_root);
     let entry = cache.as_mut().expect("ensure_recent_chat_cache");
@@ -452,7 +454,6 @@ fn begin_recent_chat_scan(state_root: &Path) -> u64 {
     entry.next_generation
 }
 
-/// Publish only when this scan's start stamp is still the newest finished result.
 fn publish_recent_chats(state_root: &Path, generation: u64, sessions: Vec<SessionSummary>) -> bool {
     let mut cache = ensure_recent_chat_cache(state_root);
     let entry = cache.as_mut().expect("ensure_recent_chat_cache");
@@ -464,8 +465,6 @@ fn publish_recent_chats(state_root: &Path, generation: u64, sessions: Vec<Sessio
     true
 }
 
-/// Clears `scanning` on every exit (return, panic, or spawn failure follow-up) and starts one
-/// more pass when a request arrived while the finished scan was running.
 struct RecentChatScanGuard {
     state_root: PathBuf,
 }
@@ -489,15 +488,44 @@ impl Drop for RecentChatScanGuard {
     }
 }
 
-/// Read the chat list now and publish it when this scan is still the newest.
 fn scan_recent_chats(state_root: &Path) -> (Vec<SessionSummary>, u64) {
     let generation = begin_recent_chat_scan(state_root);
-    let sessions = list_recent_sessions(state_root, RECENT_CHATS);
+    let sessions = scan_home_sessions(state_root);
     if publish_recent_chats(state_root, generation, sessions.clone()) {
         (sessions, generation)
     } else {
         cached_recent_chats(state_root).unwrap_or((sessions, generation))
     }
+}
+
+fn scan_home_sessions(state_root: &Path) -> Vec<SessionSummary> {
+    let mut sessions = list_recent_sessions(state_root, RECENT_CHATS);
+    let candidates: HashSet<_> = sessions
+        .iter()
+        .map(|s| (s.provider, s.account.as_str(), s.session_id.as_str()))
+        .collect();
+    let mut tasks = crate::store::list_tasks(state_root);
+    tasks.retain(|task| {
+        task.sessions.last().is_some_and(|s| {
+            candidates.contains(&(s.provider, s.account.as_str(), s.native_session_id.as_str()))
+        })
+    });
+    let diagnostics = crate::sessions::diagnose_tasks(state_root, &tasks);
+    let unavailable: HashSet<_> = diagnostics
+        .iter()
+        .filter(|chat| chat.cause().is_some())
+        .map(|chat| {
+            (
+                chat.provider,
+                chat.account.as_str(),
+                chat.native_session_id.as_str(),
+            )
+        })
+        .collect();
+    sessions.retain(|s| {
+        !unavailable.contains(&(s.provider, s.account.as_str(), s.session_id.as_str()))
+    });
+    sessions
 }
 
 fn cached_recent_chats(state_root: &Path) -> Option<(Vec<SessionSummary>, u64)> {
@@ -507,8 +535,6 @@ fn cached_recent_chats(state_root: &Path) -> Option<(Vec<SessionSummary>, u64)> 
         .map(|cache| (cache.sessions.clone(), cache.generation))
 }
 
-/// One background rescan at a time. A request while one is running sets `rescan_again` so another
-/// pass starts when the running one finishes.
 fn rescan_recent_chats(state_root: &Path) {
     {
         let mut cache = ensure_recent_chat_cache(state_root);
@@ -528,15 +554,10 @@ fn rescan_recent_chats(state_root: &Path) {
             };
             let generation = begin_recent_chat_scan(&root);
             let sessions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                list_recent_sessions(&root, RECENT_CHATS)
+                scan_home_sessions(&root)
             }));
-            match sessions {
-                Ok(sessions) => {
-                    let _ = publish_recent_chats(&root, generation, sessions);
-                }
-                Err(_) => {
-                    // Leave the last good list in place; scanning clears in the guard.
-                }
+            if let Ok(sessions) = sessions {
+                let _ = publish_recent_chats(&root, generation, sessions);
             }
         });
     if spawned.is_err() {
@@ -562,7 +583,6 @@ pub(super) fn open_home_tab(app: &mut App) {
     }
 }
 
-/// Take a newer chat list from the shared cache, keeping the selected chat and folder states.
 fn poll_recent_chats(app: &mut App) -> bool {
     let Some(landing) = app.landing.as_mut() else {
         return false;
@@ -735,7 +755,7 @@ fn open_with_mode(
         meters: Vec::new(),
         sessions_generation: None,
     };
-    app.footer_left = landing.hint().into();
+    app.footer_left = landing.hint(welcome, !app.editor.text().is_empty());
     app.landing = Some(landing);
     refresh_meters(app);
 }
@@ -766,7 +786,6 @@ pub(super) fn close(app: &mut App) {
     }
 }
 
-/// Drafting keeps the landing page visible.
 pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     if !visible(app) || text.is_empty() {
         return false;
@@ -775,7 +794,6 @@ pub(super) fn handle_paste(app: &mut App, text: &str) -> bool {
     false
 }
 
-/// On screen: opened, nothing said in this chat yet, and no picker over it.
 pub(super) fn visible(app: &App) -> bool {
     app.landing.is_some()
         && app.picker.is_none()
@@ -796,7 +814,14 @@ pub(super) fn editing_goal(_app: &App) -> bool {
     false
 }
 
-/// The landing usage pane owns subscription facts whenever it is actually drawn.
+pub(super) fn welcome_visible(app: &App) -> bool {
+    visible(app)
+        && app.landing.as_ref().is_some_and(|landing| landing.welcome)
+        && crate::store::load_store(&app.state_root)
+            .accounts
+            .is_empty()
+}
+
 pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
     visible(app)
         && app
@@ -805,7 +830,6 @@ pub(super) fn usage_box_visible(app: &App, width: u16) -> bool {
             .is_some_and(|landing| !landing.meters.is_empty() && width >= TWO_PANES_MIN)
 }
 
-/// Collect open work that arrived from the background reader.
 pub(super) fn poll(app: &mut App) -> bool {
     if app.landing.is_none() {
         return false;
@@ -859,12 +883,9 @@ fn activate_chat(app: &mut App) {
 fn set_pane(app: &mut App, pane: Pane) {
     if let Some(landing) = app.landing.as_mut() {
         landing.pane = pane;
-        app.footer_left = landing.hint().into();
     }
 }
 
-/// Keys while the page shows. `false` leaves the key to the rest of the interface (Ctrl
-/// shortcuts, and a printable key after it has closed the page and joined the input).
 pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
     if app.picker.is_some()
         || app.workspace.focused.is_some()
@@ -897,7 +918,6 @@ pub(super) fn navigation_key(app: &mut App, key: KeyEvent) -> bool {
 }
 
 pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
-    // Slash completion owns its keys even while the landing lists stay visible.
     if app
         .landing
         .as_ref()
@@ -908,14 +928,13 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         return false;
     }
 
+    let welcome = welcome_visible(app);
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
     let plain = !key
         .modifiers
         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-    // A nonempty draft owns editing and Enter; Up/Down still
-    // move through the chats while the draft is one line.
     let list_key = matches!(key.code, KeyCode::Up | KeyCode::Down)
         && plain
         && !app.editor.text().contains('\n');
@@ -926,14 +945,8 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     {
         return false;
     }
-    if key.code == KeyCode::Enter
-        && landing.welcome
-        && crate::store::load_store(&app.state_root)
-            .accounts
-            .is_empty()
-        && landing.pane == Pane::Chats
-    {
-        app.open_use_picker();
+    if key.code == KeyCode::Enter && welcome {
+        app.open_add_provider_picker();
         return true;
     }
     let rows = landing.rows().len();
@@ -950,17 +963,7 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         {
             activate_chat(app)
         }
-        (KeyCode::Char('h'), Pane::Chats)
-            if plain
-                && landing.all_sessions.len()
-                    != landing_sessions(
-                        landing.all_sessions.clone(),
-                        &app.cwd,
-                        false,
-                        landing.hidden_temp_root.as_deref(),
-                    )
-                    .len() =>
-        {
+        (KeyCode::Char('h'), Pane::Chats) if plain && landing.hidden_total > 0 => {
             landing.show_all = !landing.show_all;
             landing.groups = display_groups(
                 landing_sessions(
@@ -973,10 +976,8 @@ pub(super) fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             );
             landing.chat_sel = landing.chat_sel.min(landing.rows().len().saturating_sub(1));
             landing.chat_top = 0;
-            app.footer_left = landing.hint().into();
         }
         (KeyCode::Char(_), _) if plain => {
-            // Drafting keeps the landing page visible.
             set_pane(app, Pane::Chats);
             return false;
         }
@@ -1002,7 +1003,11 @@ fn next(selected: usize, count: usize) -> usize {
 }
 
 pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
+    let welcome = welcome_visible(app);
     if let Some(landing) = app.landing.as_ref() {
+        if welcome {
+            return super::contains(landing.chats_area, x, y);
+        }
         let label = landing.pane == Pane::Chats
             && landing.hidden_total > 0
             && app.footer_left.find(" · h").is_some_and(|byte_start| {
@@ -1020,7 +1025,6 @@ pub(super) fn clickable(app: &App, x: u16, y: u16) -> bool {
     })
 }
 
-/// Wheel and clicks while the page shows; `true` when the page used the event.
 pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
     let documentation_hit = app
         .areas
@@ -1040,9 +1044,17 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
         }
         return true;
     }
+    let welcome = welcome_visible(app);
     let Some(landing) = app.landing.as_mut() else {
         return false;
     };
+    if welcome
+        && m.kind == MouseEventKind::Down(MouseButton::Left)
+        && super::contains(landing.chats_area, m.column, m.row)
+    {
+        app.open_add_provider_picker();
+        return true;
+    }
     let inside = |r: Rect| {
         m.column >= r.x && m.column < r.x + r.width && m.row >= r.y && m.row < r.y + r.height
     };
@@ -1097,7 +1109,6 @@ pub(super) fn handle_mouse(app: &mut App, m: MouseEvent) -> bool {
     true
 }
 
-/// Rows the goals pane needs before wrapping: goals, the add or confirm line, and open work.
 fn goal_rows(landing: &Landing, width: usize) -> usize {
     let work: usize = landing
         .work
@@ -1137,42 +1148,15 @@ fn clipped(text: String, width: usize) -> String {
     result
 }
 
-fn meter_window(window: &crate::usage::UsageWindow, cells: usize, include_reset: bool) -> String {
+fn meter_window(window: &crate::usage::UsageWindow, cells: usize) -> String {
     let left = window.left_pct().round() as usize;
     let filled = (left * cells / 100).min(cells);
     let bar = format!("{}{}", "█".repeat(filled), "░".repeat(cells - filled));
-    let reset = window
-        .resets
-        .as_deref()
-        .map(|raw| meter_reset_label(raw, window.expired_for_ui()))
-        .unwrap_or_else(|| "reset unavailable".into());
-    format!(
-        "{} [{bar}] {}%{}",
-        window.label,
-        left,
-        if !include_reset {
-            String::new()
-        } else {
-            format!("  {reset}")
-        }
-    )
+    format!("{} [{bar}] {left}%", window.label)
 }
 
-fn meter_reset_label(raw: &str, expired: bool) -> String {
-    if raw.starts_with("reset at ") || raw.starts_with("already reset") {
-        return crate::usage::reset_phrase(raw);
-    }
-    if expired {
-        format!("reset at {raw}")
-    } else {
-        format!("resets {raw}")
-    }
-}
-
-/// One heading per account (plan, credits, limit state), then one row per usage window.
 fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     let snapshot = &meter.snapshot;
-    // The same account name `/usage` shows (for example "Codex 2"), not "codex codex-2".
     let mut heading = crate::accounts::display_account_name(meter.provider, &meter.account);
     if let Some(plan) = snapshot.plan.as_deref().filter(|p| !p.trim().is_empty()) {
         heading.push_str(&format!(" · {plan}"));
@@ -1189,12 +1173,12 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
     };
     let mut lines = vec![clipped(heading, width)];
     for window in &snapshot.windows {
+        if let Some(billing) = window.billing_text() {
+            lines.push(clipped(format!("  {billing}"), width));
+            continue;
+        }
+        let reset = window.reset_text();
         if window.expired_for_ui() {
-            let reset = window
-                .resets
-                .as_deref()
-                .map(|raw| meter_reset_label(raw, true))
-                .unwrap_or_else(|| "reset unavailable".into());
             lines.push(clipped(
                 format!(
                     "  {} [{}] usage unknown  {reset}",
@@ -1205,28 +1189,19 @@ fn meter_lines(meter: &LandingMeter, width: usize) -> Vec<String> {
             ));
             continue;
         }
-        let full = format!("  {}", meter_window(window, cells, true));
+        let meter = format!("  {}", meter_window(window, cells));
+        let full = format!("{meter}  {reset}");
         if full.chars().count() <= width {
             lines.push(full);
             continue;
         }
-        lines.push(clipped(
-            format!("  {}", meter_window(window, cells, false)),
-            width,
-        ));
-        if let Some(reset) = window.resets.as_deref() {
-            let reset = meter_reset_label(reset, window.expired_for_ui());
-            if reset != "reset unavailable" {
-                lines.push(clipped(format!("    {reset}"), width));
-            }
-        }
+        lines.push(clipped(meter, width));
+        lines.push(clipped(format!("    {reset}"), width));
     }
     if snapshot.windows.is_empty() {
-        // Say what is happening (checking, not shown by this provider, unavailable) rather
-        // than a bare "unknown" while `/usage` is reading the same account.
         let state = snapshot.summary.trim();
         let state = if state.is_empty() {
-            "usage unknown"
+            crate::usage::NO_USAGE_DATA
         } else {
             state
         };
@@ -1253,7 +1228,6 @@ fn goal_label(_goal: &str) -> String {
     )
 }
 
-/// Rows a line takes once wrapped into the goals pane.
 fn wrapped_rows(text: &str, width: usize) -> usize {
     wrap_goal_line(Line::from(text.to_string()), width)
         .len()
@@ -1307,35 +1281,15 @@ pub(super) fn apply_usage(
 }
 
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
-    let compact_intro = area.width >= 76 && area.height < 24;
+    let welcome_visible = welcome_visible(app);
     let area = super::brand::draw(f, area, app);
     if let Some(landing) = app.landing.as_ref() {
-        app.footer_left = if landing.mode == Mode::Browse
-            && landing.pane == Pane::Chats
-            && !app.editor.text().is_empty()
-        {
-            FOOTER_HINT
-        } else {
-            landing.hint()
-        }
-        .to_string();
-        if landing.pane == Pane::Chats && landing.hidden_total > 0 {
-            let hidden = landing.hidden_total;
-            if landing.show_all {
-                app.footer_left.push_str(" · h hide");
-            } else {
-                app.footer_left
-                    .push_str(&format!(" · h show {hidden} hidden"));
-            }
-        }
+        app.footer_left = landing.hint(welcome_visible, !app.editor.text().is_empty());
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    // A chat title is resolved from the account store and the title file on disk. Resolve the
-    // visible titles at most every two seconds, never once per frame.
-    // The key is the listed session ids in order, so any change to the list re-resolves at once.
     let titles_key: Vec<String> = app
         .landing
         .as_ref()
@@ -1358,7 +1312,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         })
     });
     if titles_stale {
-        // One account lookup per account, not per chat: each lookup loads the account store.
         let mut homes = std::collections::HashMap::new();
         let fresh: Vec<Vec<String>> = app
             .landing
@@ -1387,12 +1340,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let Some(landing) = app.landing.as_mut() else {
         return;
     };
-    // As tall as the longer pane's content, within the space there is.
-    let welcome_visible = landing.welcome
-        && crate::store::load_store(&app.state_root)
-            .accounts
-            .is_empty();
-    let usage_content = if landing.meters.is_empty() {
+    let usage_status = if !landing.tokens_ready {
+        Some(" reading usage… ")
+    } else if landing.tokens_error.is_some() {
+        Some(" recorded usage unavailable ")
+    } else {
+        None
+    };
+    let usage_content = if landing.meters.is_empty() && usage_status.is_none() {
         0
     } else {
         meter_rows(
@@ -1400,28 +1355,24 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
             (area.width as usize * 45 / 100).saturating_sub(2),
         ) + 7
     };
-    // Compact intro stacks above the chat list, so its rows must add to the list
-    // height rather than replace it (otherwise the list area collapses to zero).
     let content = {
         let chats = landing.rows().len();
-        let intro = if welcome_visible || compact_intro {
-            7
+        let intro = if welcome_visible {
+            4 + landing.provider_health.len()
         } else {
             0
         };
-        let stacked = if compact_intro && !welcome_visible {
-            chats.saturating_add(intro)
-        } else {
-            chats.max(intro)
-        };
-        stacked.max(usage_content).min(u16::MAX as usize - 2) as u16
+        chats
+            .max(intro)
+            .max(usage_content)
+            .min(u16::MAX as usize - 2) as u16
     };
     let area = Rect {
         height: (content + 2).clamp(3, area.height.max(3)).min(area.height),
         ..area
     };
     let narrow_goals = false;
-    let panes = if area.width >= TWO_PANES_MIN {
+    let panes = if !welcome_visible && area.width >= TWO_PANES_MIN {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
@@ -1442,48 +1393,48 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().add_modifier(Modifier::DIM);
 
-    // A narrow window shows the focused pane, so Tab never sends input into a hidden pane.
     if !narrow_goals {
-        // Chats: groups and their chats, the selection kept in view.
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .title(" chats ")
+            .title(if welcome_visible {
+                " Welcome to Concordia "
+            } else {
+                " chats "
+            })
             .border_style(border(landing.pane == Pane::Chats));
-        let usage = if !landing.tokens_ready {
-            Some(" reading usage… ".into())
-        } else if landing.tokens_error.is_some() {
-            Some(" recorded usage unavailable ".into())
-        } else if landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial {
-            Some(format!(
-                " {} {} / {} tokens in 24 hours{} ",
-                super::token_line::compact(landing.tokens_all_time),
-                if landing.tokens_partial {
-                    "recorded"
-                } else {
-                    "all time"
-                },
-                super::token_line::compact(landing.tokens_24h),
-                if landing.tokens_partial {
-                    " · partial"
-                } else {
-                    ""
-                }
-            ))
+        let usage = if usage_status.is_none()
+            && (landing.tokens_24h > 0 || landing.tokens_all_time > 0 || landing.tokens_partial)
+        {
+            let day = super::token_line::compact(landing.tokens_24h);
+            let total = super::token_line::compact(landing.tokens_all_time);
+            let coverage = if landing.tokens_partial {
+                " (incomplete)"
+            } else {
+                ""
+            };
+            let full = format!(
+                " {day} tokens logged in the last 24h · {total} in local history{coverage} "
+            );
+            let width = usize::from(panes[0].width.saturating_sub(2));
+            if full.chars().count() <= width {
+                Some(full)
+            } else {
+                let short = format!(" {day} tokens logged in the last 24h{coverage} ");
+                (short.len() <= width).then_some(short)
+            }
         } else {
             None
         };
-        if let Some(usage) = usage {
+        if let Some(usage) = usage.filter(|_| !welcome_visible) {
             block = block.title_bottom(Line::styled(usage, dim).right_aligned());
         }
         let inner = block.inner(panes[0]);
         f.render_widget(block, panes[0]);
         if welcome_visible {
             let mut lines = vec![
-                Line::styled("Welcome to Concordia", selected),
-                Line::from(
-                    "Concordia keeps your provider chats, accounts and continuity together.",
-                ),
-                Line::from("Local CLI health check (no network or provider turn):"),
+                Line::from("Connect an account to start chatting."),
+                Line::default(),
+                Line::from("Installed provider CLIs"),
             ];
             for (provider, found) in &landing.provider_health {
                 lines.push(Line::from(format!(
@@ -1492,71 +1443,22 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
                     if *found { "found" } else { "not found" }
                 )));
             }
-            lines.push(Line::styled(
-                "Next: /use to add an account (Enter)",
-                selected,
-            ));
-            lines.push(Line::default());
-            lines.push(Line::styled("What's new", selected));
-            for item in super::brand::whats_new(3, inner.width as usize) {
-                lines.push(Line::from(item));
-            }
-            lines.push(Line::default());
-            let documentation_row = lines.len();
-            lines.push(Line::from(Span::styled(
-                "Documentation",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED),
-            )));
-            lines.push(Line::from("F1  Shortcuts"));
+            lines.push(Line::styled("[ Enter ] Add account", selected));
+            landing.chats_area = if lines.len() <= inner.height as usize {
+                Rect::new(
+                    inner.x,
+                    inner.y + lines.len() as u16 - 1,
+                    inner.width.min(21),
+                    1,
+                )
+            } else {
+                Rect::default()
+            };
             f.render_widget(Paragraph::new(lines), inner);
-            app.areas.home_documentation = Some(Rect::new(
-                inner.x,
-                inner.y + documentation_row as u16,
-                "Documentation".len() as u16,
-                1,
-            ));
             landing.goals_area = Rect::default();
             return;
         }
-        if compact_intro {
-            let mut lines = vec![Line::styled("What's new", selected)];
-            lines.extend(
-                super::brand::whats_new(3, inner.width as usize)
-                    .into_iter()
-                    .map(Line::from),
-            );
-            lines.push(Line::default());
-            let documentation_row = lines.len();
-            lines.push(Line::from(Span::styled(
-                "Documentation",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::UNDERLINED),
-            )));
-            lines.push(Line::from("F1  Shortcuts"));
-            f.render_widget(Paragraph::new(lines), inner);
-            app.areas.home_documentation = Some(Rect::new(
-                inner.x,
-                inner.y + documentation_row as u16,
-                "Documentation".len() as u16,
-                1,
-            ));
-            landing.goals_area = Rect::default();
-            // The usage pane on the right remains independently visible at compact heights.
-        }
-        let list_area = if compact_intro {
-            Rect::new(
-                inner.x,
-                inner.y.saturating_add(7),
-                inner.width,
-                inner.height.saturating_sub(7),
-            )
-        } else {
-            inner
-        };
-        // Hit-testing must use the list region, not the compact intro above it.
+        let list_area = inner;
         landing.chats_area = list_area;
         let rows = landing.rows();
         let height = list_area.height as usize;
@@ -1658,14 +1560,12 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         landing.goal_hits.clear();
         return;
     };
-    let (usage_area, right) = if landing.meters.is_empty() {
+    let (usage_area, right) = if landing.meters.is_empty() && usage_status.is_none() {
         (None, right)
     } else {
         let usage_rows = meter_rows(&landing.meters, right.width.saturating_sub(2) as usize);
-        let usage_height = usage_rows as u16 + 2;
+        let usage_height = (usage_rows as u16).max(1) + 2;
         if right.height <= usage_height.saturating_add(7) {
-            // At compact heights every connected account is more useful than the optional
-            // open-work pane. Keep the complete provider snapshot on screen.
             (Some(right), Rect::default())
         } else {
             let chunks = Layout::default()
@@ -1676,10 +1576,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
         }
     };
     if let Some(usage_area) = usage_area {
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" usage ")
             .border_style(border(false));
+        if let Some(status) = usage_status {
+            block = block.title_bottom(Line::styled(status, dim).right_aligned());
+        }
         let inner = block.inner(usage_area);
         f.render_widget(block, usage_area);
         let width = inner.width as usize;
@@ -1722,8 +1625,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     let mut hits: Vec<Option<usize>> = Vec::new();
     let mut focus = None;
     if lines.is_empty() && landing.work.is_empty() {
-        // An empty pane must still say what it is for and how to fill it. Open work, when
-        // present, already fills the pane and keeps its rows.
         for (text, style) in [
             (
                 "No open work.",
@@ -1817,7 +1718,6 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Pre-wrap with the same rows used by scrolling and mouse hit-testing.
 fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
     let mut chars = Vec::new();
     let mut runs = Vec::new();
@@ -1853,7 +1753,6 @@ fn wrap_goal_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The provider's or Concordia's title for a chat, else its first words.
 fn chat_title(
     app: &App,
     session: &SessionSummary,

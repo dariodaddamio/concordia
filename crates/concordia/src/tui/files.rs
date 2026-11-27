@@ -1,4 +1,3 @@
-//! Explicit file navigation. Launchers are reaped away from the input/render loop.
 use super::*;
 use crate::file_links;
 #[path = "file_actions.rs"]
@@ -20,9 +19,6 @@ impl App {
         }
         #[cfg(not(test))]
         {
-            // A window driven through the test-control port must not open the user's browser or
-            // Explorer (an automated run once left a 5 GB browser behind); like tray signals,
-            // the external handoff is suppressed there and only reported.
             if std::env::var_os("CONCORDIA_TEST_CONTROL").is_some() {
                 self.flash(format!("opened {label} {target}"));
                 return;
@@ -34,9 +30,6 @@ impl App {
             let (tx, rx) = mpsc::unbounded_channel();
             self.file_jobs.push(rx);
             tokio::spawn(async move {
-                // Explorer can return a failure status after handing a URL to the registered
-                // browser. Use the Windows URL handler for links so its status represents the
-                // handoff itself; local files still open through Explorer.
                 let mut command = if label == "link" {
                     let mut command = crate::process_ui::visible_tokio_command("cmd.exe");
                     command.args(["/C", "start", "", &target]);

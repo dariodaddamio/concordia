@@ -1,4 +1,3 @@
-//! Immutable per-attempt accounting and bounded, revision-bound reads.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
@@ -36,7 +35,6 @@ pub struct Attribution {
 }
 
 impl Attribution {
-    /// The caller supplies the canonical home captured at launch, never a later login lookup.
     pub fn bound_home(home: Option<&Path>) -> Option<String> {
         home.map(|home| hash(home.to_string_lossy().as_bytes()))
     }
@@ -261,8 +259,6 @@ pub(super) fn record_once(root: &Path, entry: &Entry) -> std::io::Result<()> {
     match crate::state_io::write_atomic_new(&path, &bytes) {
         Ok(()) => Ok(()),
         Err(error) => {
-            // A concurrent writer may have published the same immutable event between
-            // cataloging and publication. Treat that idempotent race as success.
             let mut existing = Vec::new();
             match File::open(&path) {
                 Ok(file) => {

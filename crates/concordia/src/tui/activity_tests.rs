@@ -58,7 +58,7 @@ fn expansion_and_detail_use_independent_message_identity() {
         .as_deref()
         .unwrap()
         .contains("Inspect project · 2 operations"));
-    assert!(groups.text[0].as_deref().unwrap().starts_with("│ ✓ "));
+    assert!(groups.text[0].as_deref().unwrap().starts_with("✓ "));
     assert_eq!(groups.hidden, vec![false, true, false, false, false, false]);
     a.toggle_card(0, false);
     let groups = grouped_cards(&messages, &a, false);
@@ -68,8 +68,6 @@ fn expansion_and_detail_use_independent_message_identity() {
     a.toggle_card(0, true);
     assert!(grouped_cards(&messages, &a, true).hidden[1]);
 
-    // Action/subject weight is one intentional span, independent of provider capitalization,
-    // filename punctuation and UTF-8 byte widths. Status and disclosure stay separate.
     for (status, mark, color) in [
         (CardStatus::Running, '◉', Color::Cyan),
         (CardStatus::Done, '✓', Color::Green),
@@ -82,7 +80,7 @@ fn expansion_and_detail_use_independent_message_identity() {
             status,
         };
         for label in ["Edit File", "Edit file", "Ran"] {
-            let heading = format!("│ {mark} {label} src/café.rs - 2 output lines - Expand");
+            let heading = format!("│ {mark} {label} src/café.rs · 2 output lines · Expand");
             let runs = super::activity::card_runs(&heading, Some(&card));
             let style_at = |index| {
                 runs.iter()
@@ -93,7 +91,7 @@ fn expansion_and_detail_use_independent_message_identity() {
                     )
             };
             let chars = heading.chars().collect::<Vec<_>>();
-            let end = heading.split(" - ").next().unwrap().chars().count();
+            let end = heading.split(" · ").next().unwrap().chars().count();
             for (index, character) in chars.iter().enumerate().take(end).skip(4) {
                 assert!(
                     style_at(index).add_modifier.contains(Modifier::BOLD),
@@ -122,13 +120,13 @@ fn search_cycles_preserves_position_and_handles_unicode_case_expansion() {
     );
     a.next(false);
     assert_eq!(a.selected_match, 1);
-    a.search_parts(&[text]); // draw-frame search is cached and must not reset navigation
+    a.search_parts(&[text]);
     assert_eq!(a.selected_match, 1);
     a.next(false);
     assert_eq!(a.selected_match, 0);
     a.next(true);
     assert_eq!(a.selected_match, 1);
-    a.invalidate_search(); // a streaming card update marks cached search results stale
+    a.invalidate_search();
     a.search_parts(&["tool began\ntool resumed\ntool ended"]);
     assert_eq!(a.matches.len(), 3);
     a.query = "i\u{307}".into();
@@ -248,16 +246,17 @@ fn activity_modal_handles_older_and_newer_cards_through_main_key_handler() {
     app.begin_queue_edit(pending);
     app.messages.push(card("one", "older", "one full result"));
     app.messages.push(card("two", "newer", "two full result"));
-    app.activity.open(2);
+    let newest = app.messages.len() - 1;
+    app.activity.open(newest);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT), &tx);
-    assert_eq!(app.activity.detail, Some(1));
+    assert_eq!(app.activity.detail, Some(newest - 1));
     handle_key(
         &mut app,
         KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
         &tx,
     );
-    assert_eq!(app.activity.detail, Some(2));
+    assert_eq!(app.activity.detail, Some(newest));
     assert_eq!(app.editor.text(), "preserve draft");
     assert_eq!(
         app.queue.edit.as_ref().unwrap().editor.text(),
@@ -287,7 +286,6 @@ fn paste_events_and_overflow_chunks_are_routed_to_activity_query_only() {
     app.begin_queue_edit(edit);
     app.messages.push(card("one", "tool", "output"));
     app.activity.open(1);
-    // Same centralized path used by Event::Paste and Windows' buffered overflow chunks.
     app.paste_text("first\r\n");
     dispatch_key_burst(
         &mut app,
@@ -363,7 +361,7 @@ fn selected_match_in_tall_output_is_present_in_the_drawn_detail_viewport() {
         .collect::<Vec<_>>()
         .join("\n");
     app.messages.push(card("long", "tool output", &body));
-    app.activity.open(1);
+    app.activity.open(app.messages.len() - 1);
     app.activity.query = "needle".into();
     app.activity.query_cursor = 6;
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();

@@ -1,8 +1,6 @@
 use super::super::*;
 
 impl App {
-    /// Trim the resting projection only after source capture and indexed UI work
-    /// settle. Native sources, composer, queues and conversation identity remain owned.
     pub(in crate::tui) fn prune_transcript_projection(&mut self) -> bool {
         const ROWS: usize = 2048;
         const BYTES: usize = 16 * 1024 * 1024;
@@ -173,7 +171,6 @@ impl App {
     pub(in crate::tui) fn reply_meta(&self) -> (ProviderKind, String) {
         let mut label = self.account_label();
         if !self.model.is_empty() && self.model != "?" {
-            // The model's display name when the catalog knows it, as in the header.
             let model =
                 crate::models::find_at(&self.state_root, self.provider, &self.account, &self.model)
                     .map_or_else(|| self.model.clone(), |entry| entry.display_name);

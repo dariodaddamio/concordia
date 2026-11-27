@@ -1,4 +1,3 @@
-//! Render only provider-reported edit evidence; never reconstruct history from today's file.
 use super::stream_cards::StreamCard;
 use serde_json::Value;
 use std::path::Path;
@@ -83,8 +82,6 @@ pub(super) fn changes(value: &Value) -> Option<String> {
     (!out.is_empty()).then(|| out.join("\n\n"))
 }
 
-/// `codex exec --json` reports changed paths without patch bodies. Attach only successful
-/// apply_patch input recovered from this exact native session and current attempt.
 pub(crate) fn enrich_codex(
     cards: &mut [StreamCard],
     inputs: &[String],
@@ -177,9 +174,6 @@ pub(crate) fn enrich_codex(
             .filter(|(_, other)| *other == paths)
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
-        // One complete native patch batch produces one completed file-change event. Where
-        // a file changes repeatedly, map only a complete one-to-one ordered set. Never paste
-        // every later same-file patch into an earlier edit row.
         let batch = if candidates.len() == 1 {
             candidates.iter().next().copied()
         } else if candidates.len() == peers.len() {
@@ -223,7 +217,6 @@ pub(crate) fn enrich_codex(
 }
 
 fn replacement(old: &str, new: &str) -> String {
-    // A substring replacement has no reliable file line number. Do not invent one.
     let mut out = String::from("@@ reported replacement (file line numbers unavailable) @@\n");
     for (prefix, text) in [('-', old), ('+', new)] {
         for line in text.lines() {
@@ -286,7 +279,6 @@ pub(super) fn normalize(card: &mut StreamCard) {
     ));
 }
 
-/// Convert ACP's provider-reported diff payload into the common edit-card format.
 pub(crate) fn normalize_acp(card: &mut StreamCard, value: &Value) {
     let changes = if let Some(blocks) = value.as_array() {
         blocks

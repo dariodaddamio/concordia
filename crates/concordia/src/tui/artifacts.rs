@@ -1,4 +1,3 @@
-//! Discovery and source inspection reuse existing picker/file action surfaces.
 use super::*;
 use crate::file_links;
 #[path = "artifacts_inline.rs"]
@@ -258,8 +257,6 @@ fn poll_detail(app: &mut App) -> bool {
     };
     match result {
         Ok(Some(card)) => {
-            // Artifact ids include owner/run/attempt/event/revision. Bare exec event
-            // ids repeat across turns and cannot safely identify old Edit rows.
             for message in &mut app.messages {
                 if message.card.as_ref().is_some_and(|old| old.id == card.id) {
                     message.card = Some(card.clone());
@@ -368,7 +365,6 @@ pub(super) fn fixture_proof(app: &mut App, dir: &Path) {
             .len(),
         2
     );
-    // Hydration follows the selected exact artifact identity, never a reused native event id.
     let message_index = app.messages.len();
     for record in [&records[0], &revised[0]] {
         let card = record.card();

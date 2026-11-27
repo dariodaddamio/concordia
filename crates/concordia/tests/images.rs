@@ -1,4 +1,3 @@
-//! Real process transport with synthetic image bytes; never invokes a real provider.
 use base64::Engine as _;
 use concordia::{
     attachments,
@@ -118,8 +117,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
             assert!(!journal.contains(&format!("ARG:{}", hex("Inspect these pixels"))));
         }
     }
-    // Exec's real public event is path-only. The native source is written after launch, then
-    // the fake completes, so freshness/account binding and the final visible update are tested.
     {
         let mut scoped = Env(vec![]);
         scoped.set("FAKE_PROVIDER_MODE", "gated-stream");
@@ -599,8 +596,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         }
     }
 
-    // Cursor reports successful file paths on completed structured events. Exercise the real
-    // stream runner and the shared catalog, including duplicate and foreign/failed reports.
     env.set("CONCORDIA_CURSOR_BIN", FAKE);
     for (reported_session, failed, expected) in [
         ("cursor-output-session", false, 1),
@@ -765,7 +760,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
                 if let TurnProgress::Interaction(request) = event {
                     offered += 1;
                     if answer_fixture["cancel"] == true || answer_fixture["closed"] == true {
-                        // The process must continue reading cancellation/EOF while review is pending.
                         continue;
                     }
                     let answer = if answer_fixture["background"] == true {
@@ -1154,19 +1148,14 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         );
     }
 
-    // PDF transport is exercised through the same fake process boundary as images. The bytes
-    // are synthetic but have a PDF signature; this proves ordering, hashing and rejection before
-    // child spawn without invoking a PDF engine or a real provider.
     let pdf_path = root.join("brief.pdf");
     let original_pdf = b"%PDF-1.7\nsynthetic pdf bytes\n%%EOF\n".to_vec();
     std::fs::write(&pdf_path, &original_pdf).unwrap();
     let pdf = attachments::PdfDocument::import(root, &pdf_path).unwrap();
-    // Pasted absolute PDF paths use the same bounded grammar as other attachments.
     assert_eq!(
         attachments::pasted_paths(r#"C:\folder\document.pdf"#).unwrap(),
         vec![std::path::PathBuf::from(r"C:\folder\document.pdf")]
     );
-    // Import snapshots bytes, so changing the source after import cannot alter the payload.
     std::fs::write(&pdf_path, b"%PDF-1.7\nsource changed after import\n%%EOF\n").unwrap();
     let expected_pdf = base64::engine::general_purpose::STANDARD.encode(&original_pdf);
     assert_eq!(pdf.data().unwrap(), expected_pdf);
@@ -1311,8 +1300,6 @@ async fn all_three_image_transports_preserve_pixels_and_cursor_negotiates_and_an
         );
     }
 
-    // A changed PDF is rejected before launching the fake process; the original envelope stays
-    // the draft/queue value and no provider child is spawned.
     std::fs::write(&pdf.path, b"%PDF-1.7\ntampered\n%%EOF\n").unwrap();
     let _ = std::fs::remove_file(root.join("launch.txt"));
     let tampered = provider::run_provider_turn(&pdf_request, None).await;

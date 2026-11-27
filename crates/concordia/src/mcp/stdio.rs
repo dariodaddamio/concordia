@@ -1,4 +1,3 @@
-//! A bounded MCP exchange with one child and one cancellation owner.
 use super::{MAX_REQUEST_BYTES, MAX_UPSTREAM_BYTES, MAX_UPSTREAM_FRAME};
 use crate::mcp_registry::SecretRef;
 use serde_json::Value;
@@ -11,8 +10,6 @@ pub(super) fn sequence(
     env: &BTreeMap<String, SecretRef>,
     requests: Vec<Value>,
 ) -> Result<Vec<Value>, String> {
-    // The CLI itself runs inside Tokio. A scoped thread keeps this synchronous MCP
-    // entry usable there and in synchronous callers without nesting runtimes.
     std::thread::scope(|scope| {
         scope
             .spawn(move || exchange(command, args, env, requests))
@@ -142,7 +139,7 @@ fn exchange(
         let result = tokio::time::timeout(Duration::from_secs(10), exchange)
             .await
             .unwrap_or_else(|_| Err("MCP stdio exchange timed out".into()));
-        drop(tree); // close the job/process group before awaiting the direct child
+        drop(tree);
         let _ = child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
         result

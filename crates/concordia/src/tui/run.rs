@@ -16,7 +16,6 @@ pub async fn run_chat_window() -> Result<()> {
     run_chat_ui(true).await
 }
 
-/// One conversation tab: its `App` and the channels its provider turns report on.
 struct RunTab {
     chat_lease: Option<chat_ownership::Lease>,
     conversation_lease: Option<chat_ownership::Lease>,
@@ -41,9 +40,6 @@ impl RunTab {
         let (turn_tx, turn_rx) = mpsc::unbounded_channel();
         let (done_tx, done_rx) = mpsc::unbounded_channel();
         let (handle_tx, handle_rx) = mpsc::unbounded_channel();
-        // Native-window input polling can sleep while a provider emits a fast transcript burst.
-        // Keep the render tab queue bounded, but large enough to absorb one burst so the
-        // provider can publish completion and the UI can drain it on the next wake.
         let (progress_tx, progress_rx) = mpsc::channel(1024);
         Self {
             chat_lease: None,
@@ -63,18 +59,13 @@ impl RunTab {
         }
     }
 
-    /// Persist the draft and stop anything still running; used on close and on exit.
     fn shut_down(&mut self) {
         self.app.local_terminal.stop();
-        // A closed tab can be reopened. Retain a pending completion and queued
-        // progress together; finalizing here could dispatch another queued turn.
-        // On exit, the unfinished checkpoint and native history remain available.
         self.app.persist_draft_now();
         self.handle_rx.close();
         while let Ok(handle) = self.handle_rx.try_recv() {
             handle.cancel();
         }
-        // Leaving mid-turn must not orphan the provider (it would keep running and spending).
         if let Some(cancel) = self.app.preparing_cancel.take() {
             cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         }
@@ -87,7 +78,6 @@ impl RunTab {
     }
 
     fn reopen_handle_receiver(&mut self) {
-        // A retired turn cannot publish handles into the replacement receiver.
         let (sender, receiver) = mpsc::unbounded_channel();
         self.handle_tx = sender;
         self.handle_rx = receiver;
@@ -174,9 +164,6 @@ fn new_tab_app(state_root: &Path, cwd: &Path, use_window: bool) -> App {
     app.install_update_on_launch = crate::config::for_root(state_root)
         .updates
         .install_on_launch;
-    // App::new already owns the tab's recovery lease. Retrying it synchronously here forced a
-    // durable draft write for every Ctrl+T, even though a new Home tab has no draft to recover.
-    // The normal persist tick still retries a real dirty lease when the tab is used.
     app.prior_provider = app.provider;
     app.prior_account = app.account.clone();
     app.prior_home = app.continuity_home();
@@ -222,7 +209,6 @@ fn matches_resume(app: &App, request: &session_ui::ResumeRequest) -> bool {
     if chat_ownership::Key::for_app(app).as_ref() == Some(&request.key) {
         return true;
     }
-    // A task can span several native sessions, but never use its name/id to cross accounts.
     request.task.as_ref().is_some_and(|task| {
         app.task_id.as_ref() == Some(task)
             && app.account == request.account
@@ -360,7 +346,6 @@ pub(super) fn inspect_requested_resume(mut app: App, inspect: impl FnOnce(&mut A
     );
 }
 
-/// Apply the shared confirmation/close path after the target tab is active.
 fn confirm_and_close_tab(
     tabs: &mut tabs::TabSet<RunTab>,
     close_armed: &mut Option<(uuid::Uuid, Instant)>,
@@ -375,10 +360,7 @@ fn confirm_and_close_tab(
         return;
     }
     tabs.active_mut().shut_down();
-    // The close prompt belongs to this close; Ctrl+Shift+T must not bring it back.
     tabs.active_mut().app.flash = None;
-    // The draft was just saved. Closing is the user's decision, so the next start must not
-    // reopen this tab as saved work; reopening it here and editing makes it offerable again.
     if tabs.tabs.len() > 1 {
         if let Some(lease) = &tabs.active().app.keep.lease {
             let _ = lease.dismiss_current();
@@ -406,7 +388,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             .unwrap_or_default()
     ));
     ensure_default_selection(&state_root)?;
-    crate::config::loaded(); // read config.toml once, at start
+    crate::config::loaded();
     let cwd = std::env::current_dir()?;
 
     let (mut saved_window, mut tabs) = window_session::open(&state_root, &cwd, use_window);
@@ -433,8 +415,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         {
             let (backend, events) = native_window::open_with_state_root(state_root.clone())?;
             let input = input_stream::InputStream::from_native(events)?;
-            // This process owns a native window now. Detach only its inherited console,
-            // so another application's console control events cannot terminate its runs.
             unsafe {
                 windows_sys::Win32::System::Console::FreeConsole();
             }
@@ -462,7 +442,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             input_stream::InputStream::spawn()?,
         )
     };
-    // A panic must not leave the terminal in raw/mouse-reporting mode.
     let default_hook = std::panic::take_hook();
     let panic_restore = terminal_restore
         .as_ref()
@@ -470,8 +449,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicBool::new(false)));
     std::panic::set_hook(Box::new(move |info| {
         if panic_restore.load(std::sync::atomic::Ordering::Acquire) {
-            // Show the panic on the primary screen. The guard restores input modes after
-            // the VT reader has stopped and restored its own saved console settings.
             let _ = execute!(
                 std::io::stdout(),
                 LeaveAlternateScreen,
@@ -500,17 +477,12 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     let mut detached_windows =
         use_window.then(|| detached::DetachedWindows::new(terminal_input.wake_handle()));
 
-    // `tick_count` is the clock for draft-save debounce, proposal polling and the spinner, so the
-    // tick keeps its 200 ms cadence. It only repaints when `on_tick` reports a visible change.
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = Instant::now();
     let mut last_background_update_check = Instant::now();
     let mut key_burst = input::BurstBuffer::default();
     let mut mouse_pointer = pointer::Pointer::default();
     let mut window_mouse = None;
-    // Drawing is comparatively expensive: it rasterizes the whole frame and, on Windows,
-    // extracts native images.  Keep the wait loop responsive, but only do that work after a
-    // state change that can affect the screen.
     let mut dirty = true;
     let mut last_draw = Instant::now() - Duration::from_millis(16);
     let mut diagram_revision = diagrams::revision();
@@ -523,12 +495,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
 
     macro_rules! draw_if_needed {
         ($app:ident, $force:expr) => {
-            // Drain a burst of provider progress before rebuilding the frame. A fast provider
-            // otherwise makes every event trigger a full presentation pass over the transcript.
             if $force
                 || (dirty
-                    // Streaming updates can append hundreds of blocks. Keep the provider
-                    // consumer ahead of the renderer while still showing periodic progress.
                     && (!(*$app).busy || last_draw.elapsed() >= Duration::from_millis(250))
                     && (!key_burst.active() || !terminal_input.poll(Duration::ZERO)?))
             {
@@ -703,7 +671,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 app.tab_drag = strip_drag
                     .filter(tabs::DragReorder::dragging)
                     .map(|drag| (drag.source, drag.slot(&app.tab_hits)));
-                // Drain pending paste chunks before repainting the growing prompt.
                 draw_if_needed!(app, redraw_always);
                 let title = app.window_title();
                 if use_window {
@@ -726,8 +693,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     previous_title = title;
                 }
 
-                // Input wakes this poll immediately. The wait ends at the next tick, or at the
-                // next animation frame while work is active.
                 let mut timeout = tick_rate.saturating_sub(last_tick.elapsed());
                 if app.busy || app.deleg.d.any_active() {
                     timeout = timeout.min(Duration::from_millis(33));
@@ -735,8 +700,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     timeout = timeout.min(Duration::from_millis(50));
                 }
                 if terminal_input.poll(timeout)? {
-                    // Drain a burst (mouse drags, pastes) before redrawing; bounded so a flood can't
-                    // starve the turn/progress channels below.
                     let mut quit = false;
                     for _ in 0..256 {
                         let (event, captured_at, quiet_before) = terminal_input.read()?;
@@ -759,14 +722,10 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             notification_item = Some(item_id);
                             break;
                         }
-                        // Any input event may have changed a visible interaction state, including
-                        // events that are intentionally no-ops for the current screen.
                         dirty = true;
                         if let Event::Key(key) = &event {
                             tab_click = None;
                             let action = tabs::action_for(*key);
-                            // Tab shortcuts always apply when the chat has focus, even with
-                            // panes open. Only a focused pane reserves Ctrl+W for itself.
                             let pane_close =
                                 action == tabs::TabAction::Close && app.workspace.focused.is_some();
                             if action != tabs::TabAction::Unhandled && !pane_close {
@@ -780,7 +739,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         if let Event::Mouse(m) = &event {
                             if let Some(drag) = strip_drag.as_mut() {
                                 match m.kind {
-                                    // The app never saw the press, so it gets none of the drag.
                                     MouseEventKind::Drag(MouseButton::Left) => {
                                         drag.hover(m.column);
                                         if drag.dragging() {
@@ -808,6 +766,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 if let Some(index) = app.tab_hits.iter().position(|r| {
                                     r.contains(ratatui::layout::Position::new(m.column, m.row))
                                 }) {
+                                    app.end_tab_rename();
                                     if app.tab_close_hits.get(index).is_some_and(|r| {
                                         r.contains(ratatui::layout::Position::new(m.column, m.row))
                                     }) {
@@ -861,8 +820,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 break;
                             }
                             Event::Key(key) if use_window => {
-                                // The owned window delivers paste and drops explicitly. Its
-                                // keyboard input needs no terminal paste-inference quiet gap.
                                 if handle_key(&mut *app, key, turn_tx) {
                                     quit = true;
                                     break;
@@ -917,20 +874,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 }
                             }
                             Event::Resize(..) => {
-                                // Query the current size: queued resize events may already be
-                                // stale. The next dirty frame paints the resized surface without
-                                // exposing an intermediate blank clear.
                                 terminal.autoresize()?;
                             }
-                            Event::FocusGained => {
-                                // Native activation repaints the cached backing surface. Clearing
-                                // the cell buffer here would expose a blank frame until the next
-                                // application draw.
-                            }
+                            Event::FocusLost => app.end_tab_rename(),
                             _ => {}
                         }
-                        // Apply navigation before draining the next event: it belongs to
-                        // the destination tab, not the tab that requested the switch.
                         if app.tab_request.is_some()
                             || app.session_ui.resume_request.is_some()
                             || !terminal_input.poll(Duration::ZERO)?
@@ -1019,8 +967,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     {
                         tabs.active_mut().app.push_system(error);
                     } else if tabs.reopen() {
-                        // Shutdown closes the previous receiver so late starts from
-                        // that turn are cancelled. Future turns need their own channel.
                         tabs.active_mut().reopen_handle_receiver();
                     } else {
                         tabs.active_mut().app.flash("No closed tab to reopen.");
@@ -1069,7 +1015,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
             if tabs.active != active {
                 for (index, tab) in tabs.tabs.iter_mut().enumerate() {
                     if index != tabs.active {
-                        tab.app.rename_editor = None;
+                        tab.app.end_tab_rename();
                     }
                 }
                 if close_armed.is_some_and(|(owner, _)| owner != tabs.active().id) {
@@ -1099,13 +1045,11 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 }
                 while let Ok(h) = handle_rx.try_recv() {
                     app.accept_cancel_handle(h);
-                    // Launch acceptance commits the one-shot handoff transaction.
                     app.pending_repair_map = None;
                     app.need_context_pack = false;
                     dirty = true;
                 }
 
-                // A finished turn can wait here for an inline queue edit to be committed.
                 app.queue_advance(turn_tx);
                 while let Ok(prompt) = turn_rx.try_recv() {
                     dirty = true;
@@ -1129,8 +1073,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let provider = app.provider;
                     let account = app.account.clone();
                     let model = app.model.clone();
-                    // Prefer the saved selection, then coerce against the catalog so an
-                    // unsupported effort is never sent; without a catalog the preference stands.
                     let preferred = get_use_selection(&state_root)
                         .and_then(|sel| sel.effort)
                         .or_else(|| app.effort.clone());
@@ -1204,7 +1146,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     let prior_prov = app.prior_provider;
                     let prior_account = app.prior_account.clone();
                     let prior_home = app.prior_home.clone();
-                    // This dispatch carries any pending switch; later turns resume the new session.
                     app.prior_provider = app.provider;
                     app.prior_account = app.account.clone();
                     app.prior_home = owner
@@ -1212,7 +1153,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         .as_ref()
                         .map(|home| home.to_string_lossy().into_owned());
                     let pack_msgs = app.pack_messages();
-                    // Drop the just-typed user message from pack (already in prompt).
                     let pack_msgs: Vec<_> = if pack_msgs
                         .last()
                         .map(|m| matches!(m.role, PackRole::User) && m.text == prompt)
@@ -1223,8 +1163,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                         pack_msgs
                     };
                     let native_sources = app.native_sources.clone();
-                    // Keep handoff material in App until the transport confirms an
-                    // owned child handle. Preparation failures must be retryable.
                     let repair_map = app.pending_repair_map.clone();
                     let preparing_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                     app.preparing_cancel = Some(preparing_cancel.clone());
@@ -1249,8 +1187,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                     app.live_thinking.clear();
                     app.phase = Phase::Waiting;
                     tokio::spawn(async move {
-                        // Native-reference hydration and document reads must not block input/paint.
-                        // Expand only composer text, before appending document contents or PDF inputs.
                         let reference_root = state_root.clone();
                         let prepared = tokio::task::spawn_blocking(move || {
                             let mut incoming = incoming;
@@ -1370,8 +1306,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             let _ = done_tx.send(TurnOutcome { failed: true, stderr_tail: "proactive rollover stopped: no original source binding is available".into(), ..Default::default() });
                             return;
                         }
-                        // Pack only after an explicit switch (need_pack_hint). Planner clears
-                        // session id on cross-home/provider; omits pack when native resume applies.
                         let decision = plan_continuity(&ContinuityRequest {
                             from_provider: prior_prov,
                             to_provider: provider,
@@ -1391,7 +1325,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 }
                             })
                         } else {
-                            // Never leak a foreign / cross-home session id.
                             None
                         };
                         let mut prefix = if need_pack_hint {
@@ -1472,8 +1405,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                         prior_prov.as_str(),
                                         provider.as_str()
                                     ),
-                                    // A short route title; the body drops the header line the
-                                    // title already covers.
                                     title: format!(
                                         "Handoff {prior_account} → {account} · {pointer_count} pointers · ~{} tokens",
                                         crate::context::estimate_tokens(detail.chars().count())
@@ -1527,7 +1458,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                                 .then(crate::prompt_time::now),
                             compaction: Default::default(),
                         };
-                        // Validate plan even if spawn fails (argv safety).
                         let checked_plan = match plan_provider_turn(&req) {
                             Ok(plan) => plan,
                             Err(e) => {
@@ -1580,9 +1510,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             input: checked_plan.prompt.clone(),
                             original: original_range.clone(),
                         });
-                        // Admission is held before planning, but an input/launch failure is not
-                        // evidence of a live process. Mark invocation only when transport reports
-                        // its owned child, forwarding cancellation ownership before completion.
                         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
                         let forward_started = |handle: Arc<RunningTurn>| {
                             scope_invoked.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1600,9 +1527,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                             None,
                         );
                         tokio::pin!(turn);
-                        // Bound only the start: a provider that never launches is an error, but a
-                        // started turn may legitimately run silent for a long time (a long build in
-                        // a tool call). The user can still cancel it with Esc.
                         let start_deadline = tokio::time::sleep(Duration::from_secs(45));
                         tokio::pin!(start_deadline);
                         let mut started = false;
@@ -1699,9 +1623,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
 
                 dirty |= app.poll_delegates();
                 app.flush_delegate_prompt(turn_tx);
-                // A fast producer must yield to input and painting. Keep every event,
-                // including approvals; this is a consumer scheduling budget, not a cap
-                // on the provider's wire traffic or retained history.
                 let drain_started = Instant::now();
                 for _ in 0..256 {
                     let Ok(ev) = progress_rx.try_recv() else {
@@ -1717,9 +1638,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 if pending_done.is_none() {
                     *pending_done = done_rx.try_recv().ok();
                 }
-                // Progress is sent before completion. A completion received after a
-                // partial drain waits for the remaining events, across frames, before
-                // finalization can switch sessions or start the next queued turn.
                 if pending_done.is_some() && progress_rx.is_empty() {
                     app.on_turn_done(pending_done.take().unwrap(), turn_tx);
                     dirty = true;
@@ -1775,12 +1693,7 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
                 break;
             }
 
-            // Paint state changes handled above before waiting for the next input/tick. This is
-            // intentionally after the event and channel drains: a key burst may defer one frame,
-            // but must never defer the resulting frame until the next poll timeout.
             if !redraw_always {
-                // A tab action above may have changed the active tab; its strip must not be the
-                // one it saw when it was last active.
                 let labels = tab_labels(&tabs);
                 let active = tabs.active;
                 let app = &mut tabs.tabs[active].app;
@@ -1792,7 +1705,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         Ok(())
     })();
 
-    // Capture the visible conversations before cancellation changes live request state.
     for tab in &mut tabs.tabs {
         tab.app.persist_draft_now();
     }
@@ -1808,10 +1720,8 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
         reexec = reexec.or(tab.app.reexec_path.take());
     }
     let cwd = tabs.active().app.cwd.clone();
-    let _ = std::panic::take_hook(); // drop our hook; default behavior resumes
+    let _ = std::panic::take_hook();
     drop(terminal_input);
-    // Clear only on normal shutdown. The panic hook has already returned to the
-    // primary screen to print diagnostics; unwinding must preserve those messages.
     if !use_window {
         let _ = terminal.clear();
         let _ = execute!(terminal.backend_mut(), crossterm::cursor::MoveTo(0, 0));
@@ -1826,7 +1736,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     drop(tabs);
     drop(saved_window);
     input_result?;
-    // A session with a start line and no quit or error line was killed from outside.
     crate::logging::info("quit");
     if let Some(path) = reexec {
         if use_window {
@@ -1839,7 +1748,6 @@ async fn run_chat_ui(use_window: bool) -> Result<()> {
     Ok(())
 }
 
-/// Format panic diagnostics without copying arbitrary panic payloads into the log.
 pub(crate) fn format_panic_log_line(
     payload_value: &(dyn std::any::Any + Send),
     location_value: Option<&std::panic::Location<'_>>,
@@ -1874,7 +1782,6 @@ pub(crate) fn format_panic_log_line(
     )
 }
 
-/// Restores terminal modes on normal exit and unwinding.
 struct TerminalRestoreGuard(Arc<std::sync::atomic::AtomicBool>);
 
 impl TerminalRestoreGuard {
@@ -1897,8 +1804,6 @@ impl Drop for TerminalRestoreGuard {
 
 fn restore_terminal() {
     let mut out = stdout();
-    // Each command is independent. In particular, keyboard enhancement is unsupported on
-    // Windows; batching it with screen restoration aborts cleanup before leaving the TUI.
     let _ = execute!(out, EndSynchronizedUpdate);
     let _ = execute!(out, PopKeyboardEnhancementFlags);
     let _ = execute!(out, DisableBracketedPaste);

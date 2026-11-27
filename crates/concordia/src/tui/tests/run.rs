@@ -21,14 +21,12 @@ fn a_running_update_does_not_freeze_the_ui_and_shows_progress() {
         s.contains("updating") && s.contains("Compiling concordia") && s.contains("Esc cancels"),
         "{s}"
     );
-    // Typing, scrolling and slash commands keep working while it runs.
     h.type_str("draft text");
     assert_eq!(h.app.editor.text(), "draft text");
     h.app.editor.clear();
     h.type_str("/version");
     h.enter();
     assert!(h.transcript_text().contains("concordia 0.0.1"));
-    // Esc cancels it, and the user is told.
     h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.wait_for(|h| h.app.job.is_none()));
     assert!(
@@ -81,7 +79,7 @@ fn a_finished_update_restarts_into_the_new_build_and_a_failed_one_explains() {
     assert!(h.wait_for(|h| h.app.job.is_none()));
     assert!(h
         .transcript_text()
-        .contains("update failed - cargo build failed (101)"));
+        .contains("update failed · cargo build failed (101)"));
     assert!(!h.app.should_quit && h.app.reexec_path.is_none());
 }
 
@@ -201,7 +199,6 @@ fn the_update_screen_wraps_bullets_under_their_text() {
         screen.contains(" · The command list has 12 commands"),
         "{screen}"
     );
-    // The wrapped half of the bullet starts under the bullet's text, not under the dot.
     let wrapped = screen
         .lines()
         .find(|l| l.contains("removed commands") || l.contains("replacement."))
@@ -219,7 +216,6 @@ fn enter_installs_only_when_the_screen_offers_an_update() {
     assert!(h.app.job.is_none() && !h.app.busy);
     assert_eq!(h.app.editor.text(), "keep my draft");
 
-    // A busy chat blocks installation and keeps the explanation on screen.
     let mut h = Harness::new(80, 30);
     update_screen(&mut h, update_preview(true, 0));
     h.app.busy = true;
@@ -242,6 +238,25 @@ fn the_update_screen_scrolls_to_its_last_line() {
     let screen = h.screen();
     assert!(screen.contains("Esc close"), "{screen}");
     assert!(screen.contains("change number 29"), "{screen}");
+}
+
+#[test]
+fn update_history_hint_appears_only_in_the_footer() {
+    for width in [80, 120, 160] {
+        let mut h = Harness::new(width, 24);
+        let mut preview = update_preview(false, 0);
+        preview.history.push(crate::update::PreviewLine::Text(
+            "Prior build fixture".into(),
+        ));
+        update_screen(&mut h, preview);
+        let footer = footer_row(&h);
+        assert!(footer.contains("H history · Enter / Esc close"), "{footer}");
+        let screen = h.screen();
+        assert_eq!(screen.matches("H history").count(), 1, "{screen}");
+        assert_eq!(screen.matches("Esc close").count(), 1, "{screen}");
+        h.key(KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(h.screen().contains("Prior build fixture"));
+    }
 }
 
 #[test]
@@ -466,7 +481,7 @@ fn cancelling_preserves_partial_reply_and_draft_and_repeated_stop_is_idempotent(
         h.app
             .messages
             .iter()
-            .filter(|m| m.text == "cancelling...")
+            .filter(|m| m.text == "cancelling…")
             .count(),
         1
     );
@@ -614,7 +629,6 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     let mut h = Harness::new(100, 36);
     h.app.push_user("why".into());
     h.app.busy = true;
-    // Long enough that the collapsed preview hides text, so the accordion has work to do.
     let long = "x".repeat(600);
     h.app.apply_progress(TurnProgress::Thinking(format!(
         "first   idea\n\n\nsecond idea {long}"
@@ -690,7 +704,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
             row.text
                 .iter()
                 .collect::<String>()
-                .contains("Thinking - Expand")
+                .contains("Thinking · Expand")
         })
         .unwrap();
     let y = h.app.areas.transcript.y + (row - h.app.view.visible().start) as u16;
@@ -703,7 +717,7 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
         h.app.activity.detail.is_none(),
         "thinking expands in chat, never a modal"
     );
-    assert!(h.screen().contains("Thinking - Collapse"));
+    assert!(h.screen().contains("Thinking · Collapse"));
     assert!(h.screen().contains("first") && h.screen().contains("second idea"));
     assert_eq!(
         h.app.messages[thought_index].text,
@@ -712,16 +726,14 @@ fn thinking_is_kept_dimmed_after_the_turn_and_never_sent_as_context() {
     h.click(x, y);
     h.draw();
     assert!(!h.app.activity.is_expanded(thought_index, false));
-    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Thinking · Expand"));
     h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
     h.draw();
-    // Ctrl+O expands the last collapsed item of the latest reply (the late edit card),
-    // not an earlier thinking block (F01).
     assert!(
         !h.app.activity.is_expanded(thought_index, false),
         "Ctrl+O must not reopen earlier thinking when a later card is collapsed"
     );
-    assert!(h.screen().contains("Thinking - Expand"));
+    assert!(h.screen().contains("Thinking · Expand"));
     assert!(h.screen().contains("Collapse"));
     assert!(h.app.activity.detail.is_none());
     h.app.messages.clear();
@@ -749,7 +761,6 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     h.app.push_user("hi".into());
     h.app.busy = true;
     let cap = "You hit your spend cap set by the owner of your workspace.";
-    // The `error` event, then `turn.failed`, both stream in as the same message.
     h.app.apply_progress(TurnProgress::Error(cap.into()));
     h.app.apply_progress(TurnProgress::Error(cap.into()));
     h.app.finalize_turn(TurnOutcome {
@@ -761,9 +772,19 @@ fn one_failure_reported_three_ways_is_shown_once_and_cli_noise_is_dropped() {
     assert_eq!(text.matches("spend cap").count(), 1, "{text}");
     assert!(!text.contains("Reading additional input"), "{text}");
     assert!(!text.contains("Ignoring unknown features"), "{text}");
+    let detail = h
+        .app
+        .messages
+        .last()
+        .and_then(|m| m.card.as_ref())
+        .and_then(|card| card.detail.as_deref())
+        .unwrap();
+    assert!(!detail.contains(cap), "{detail}");
+    assert!(!detail.contains("Reading additional input"), "{detail}");
+    assert!(!detail.contains("Ignoring unknown features"), "{detail}");
     assert!(
-        text.contains("something new") && text.contains("exited with code 1"),
-        "{text}"
+        detail.contains("something new") && detail.contains("exited with code 1"),
+        "{detail}"
     );
 }
 

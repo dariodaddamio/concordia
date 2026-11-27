@@ -1,5 +1,3 @@
-//! Startup handoff failure coverage for the provider process runner.
-
 use concordia::provider::{run_provider_turn, ProviderTurnRequest};
 use concordia::store::{ProviderKind, TrustMode};
 use std::time::{Duration, Instant};
@@ -143,8 +141,6 @@ async fn closed_started_receiver_cancels_the_provider() {
     std::env::remove_var("FAKE_PROVIDER_PID");
     assert!(outcome.cancelled, "outcome: {outcome:?}");
 
-    // The runner may cancel before the fake process has time to write its marker.
-    // If it did start far enough to publish a PID, ensure that process is reaped.
     if let Ok(pid_text) = std::fs::read_to_string(&pid_file) {
         let pid = pid_text.trim().parse::<u32>().expect("fake provider PID");
         let start = Instant::now();
@@ -157,7 +153,6 @@ async fn closed_started_receiver_cancels_the_provider() {
         );
     }
 
-    // A resumed Claude result can include earlier session cost; never count it as this attempt.
     let stream = dir.path().join("claude-usage.jsonl");
     std::fs::write(&stream, "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"total_cost_usd\":1.25,\"usage\":{\"input_tokens\":120,\"cache_read_input_tokens\":900,\"cache_creation_input_tokens\":7,\"output_tokens\":45}}\n").unwrap();
     std::env::set_var("CONCORDIA_CLAUDE_BIN", FAKE);
@@ -193,8 +188,6 @@ async fn closed_started_receiver_cancels_the_provider() {
         );
     }
     if cfg!(windows) {
-        // Exercise the actual spawn/attachment path through a stock npm wrapper. The
-        // fake executable stands in for Node and records the untouched argv prefix.
         let npm = dir.path().join("npm fixture % & λ");
         let package = npm.join("node_modules/@openai/codex");
         std::fs::create_dir_all(package.join("bin")).unwrap();

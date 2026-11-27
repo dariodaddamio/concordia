@@ -1,11 +1,3 @@
-//! `<state>/config.toml`: user-written defaults and checked fallback-model edits.
-//!
-//! Loading never fails: a missing file is the defaults, a malformed file is the
-//! defaults plus a warning (with line and column), unknown keys and invalid values are warnings
-//! (invalid values fall back to the default or are clamped). Warnings are surfaced by
-//! `concordia doctor`. Concordia-owned state stays in `store.json`; a value the user set there
-//! wins over the config default (see `docs/config.md`).
-
 use crate::store::{default_store_root, TrustMode};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -31,24 +23,17 @@ pub struct UpdateConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnConfig {
-    /// Minutes without provider output before Concordia notifies the user. Zero disables it.
     pub idle_timeout_minutes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Continuation {
     pub automatic: bool,
-    /// Codex-only proactive context rollover; off unless explicitly enabled.
     pub proactive_rollover: bool,
-    /// Same-provider automatic exhaustion handoff is deliberately opt-in.
     pub same_provider_automatic: bool,
-    /// Maximum automatic handoffs into one account per local day.
     pub automatic_handoff_cap: usize,
-    /// Optional ordered allowlist; empty uses connected accounts in automatic mode.
     pub accounts: Vec<String>,
-    /// Ordered models on the current account, validated against its native catalog.
     pub models: Vec<String>,
-    /// Optional role-keyed first fallback model.
     pub fallback_models: std::collections::BTreeMap<String, String>,
 }
 
@@ -68,7 +53,6 @@ impl Default for Continuation {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct EditorConfig {
-    /// One executable, never a shell command.
     pub program: String,
     pub args: Vec<String>,
     pub launch: crate::file_open::EditorLaunch,
@@ -78,11 +62,9 @@ pub struct EditorConfig {
 pub struct Ui {
     pub file_action: crate::file_open::FileAction,
     pub token_line: bool,
-    /// Add the local-time header to provider turns.
     pub time_header: bool,
     pub tips: bool,
     pub persist_history: bool,
-    /// Footer memory and CPU figures (`mem 41 MB - cpu 1%`); off by default.
     pub stats: bool,
     pub theme: Theme,
     pub background: Option<Rgb>,
@@ -125,10 +107,8 @@ impl Theme {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Threads {
-    /// Whether Concordia writes its local thread log.
     pub logging: bool,
     pub map_chars: usize,
-    /// Register `concordia mcp` in homes Concordia created (default off: schemas cost tokens).
     pub mcp: bool,
 }
 
@@ -186,12 +166,10 @@ impl Default for Config {
 pub struct LoadedConfig {
     pub config: Config,
     pub warnings: Vec<String>,
-    /// File that was consulted (it may not exist).
     pub path: PathBuf,
     pub exists: bool,
 }
 
-/// Location of the config file: `CONCORDIA_CONFIG` if set, else `<state>/config.toml`.
 pub fn config_path(state_root: &Path) -> PathBuf {
     match std::env::var("CONCORDIA_CONFIG") {
         Ok(p) if !p.trim().is_empty() => PathBuf::from(p),
@@ -199,7 +177,6 @@ pub fn config_path(state_root: &Path) -> PathBuf {
     }
 }
 
-/// Save one role's continuation fallback while preserving other TOML settings.
 pub fn set_fallback_model(state_root: &Path, role: &str, model: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!role.trim().is_empty(), "role is required");
     anyhow::ensure!(!model.trim().is_empty(), "model is required");
@@ -268,7 +245,6 @@ fn line_col(text: &str, byte: usize) -> (usize, usize) {
 }
 
 impl Config {
-    /// Read `<state>/config.toml`. Never fails, never writes.
     pub fn load(state_root: &Path) -> LoadedConfig {
         let path = config_path(state_root);
         Self::load_from_path(path)
@@ -313,7 +289,6 @@ impl Config {
         out
     }
 
-    /// Parse config text into a config plus warnings (pure; used by `load` and the tests).
     pub fn parse(text: &str) -> (Config, Vec<String>) {
         let mut warnings = Vec::new();
         let table: toml::Table = match text.parse() {
@@ -546,27 +521,22 @@ pub(crate) fn contrast(first: Rgb, second: Rgb) -> f64 {
 
 static CONFIG: OnceLock<LoadedConfig> = OnceLock::new();
 
-/// Load (once) from the default state directory. Call at TUI start and from CLI subcommands.
 pub fn loaded() -> &'static LoadedConfig {
     CONFIG.get_or_init(|| Config::load(&default_store_root()))
 }
 
-/// The process-wide config, loaded once.
 pub fn get() -> &'static Config {
     &loaded().config
 }
 
-/// Whether the per-turn token line is shown. Wired by stage 1b.
 pub fn ui_token_line() -> bool {
     get().ui.token_line
 }
 
-/// Config default for the delegation protocol (a value saved in the store wins).
 pub fn delegation_protocol() -> bool {
     get().delegation.protocol
 }
 
-/// The same config for an explicit state root (store code and tests with temp roots).
 pub fn for_root(state_root: &Path) -> Config {
     let mut config = Config::load(state_root).config;
     if let Some(value) = crate::store::update_install_on_launch(state_root) {

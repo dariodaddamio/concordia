@@ -1,4 +1,3 @@
-//! User-facing appearance controls. Never rewrites the hand-edited config.toml.
 use super::*;
 use crate::config::{Rgb, Theme, Ui};
 use serde::{Deserialize, Serialize};
@@ -121,7 +120,6 @@ impl State {
             Ok(saved) => {
                 if let Some(theme) = saved.theme.as_deref().and_then(parse_theme) {
                     ui.theme = theme;
-                    // An explicitly chosen preset replaces config palette overrides.
                     ui.background = None;
                     ui.foreground = None;
                     ui.accent = None;
@@ -285,7 +283,7 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
             .into_iter()
             .map(|(id, title, detail)| row(id, title, detail))
             .chain([
-                row("import", "Import theme...", "Type a .toml path"),
+                row("import", "Import theme…", "Type a .toml path"),
                 row("export", "Export current", "Type a destination path"),
             ])
             .collect();
@@ -379,11 +377,11 @@ pub(super) fn choose(app: &mut App, kind: PickerKind, id: &str) {
                 vec![row(
                     "custom",
                     "Enter a hex color",
-                    "Example: #FFB000 · Enter saves · Esc cancels",
+                    "Example: #FFB000 · Enter save · Esc close",
                 )],
                 true,
             );
-            app.footer_left = "Type #RRGGBB · Enter saves · Esc cancels".into();
+            app.footer_left = "Type #RRGGBB · Enter save · Esc close".into();
         }
         (PickerKind::BrandColor, value) => save(app, "color", value),
         _ => {}

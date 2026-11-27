@@ -1,4 +1,3 @@
-//! Deterministic parser for the literal host-call syntax used by provider output.
 use serde_json::Value;
 
 pub(crate) fn literal_tool_argument(input: &str) -> Option<(Value, usize)> {

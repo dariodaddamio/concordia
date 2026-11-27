@@ -1,6 +1,3 @@
-//! In-pane self-update: obtain a new binary (build from source, or download a release), verify
-//! it runs, stage it into an unlocked install slot, flip the pointer, re-exec.
-
 use anyhow::{bail, Context, Result};
 use std::env;
 use std::fs;
@@ -11,10 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The one file name `concordia` resolves to on PATH. It is always the newest installed build.
 pub const PRIMARY_SLOT: &str = "concordia.exe";
 
-/// Hash bytes, rather than trusting an executable's name, size or reported version.
 pub(crate) fn file_sha256(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path)?;
@@ -37,7 +32,6 @@ pub struct UpdateResult {
     pub install_path: PathBuf,
     pub built_from: PathBuf,
     pub log_tail: String,
-    /// One-line human summary ("updated 0.1.0 -> 0.1.2"); empty for a source rebuild.
     pub summary: String,
 }
 
@@ -48,8 +42,6 @@ pub fn is_concordia_binary_name(name: &str) -> bool {
         || lower.starts_with("concordia-") && lower.ends_with(".exe")
 }
 
-/// Where installed binaries and the `current` pointer live. `CONCORDIA_INSTALL_DIR` overrides the
-/// default (`%LOCALAPPDATA%\concordia\bin`) for portable installs and for tests.
 pub fn install_bin_dir() -> PathBuf {
     if let Ok(dir) = env::var("CONCORDIA_INSTALL_DIR") {
         if !dir.trim().is_empty() {
@@ -66,24 +58,18 @@ fn default_install_bin_dir() -> PathBuf {
         .join("bin")
 }
 
-/// Pointer file: one line = absolute path of the active install slot.
 pub fn current_pointer_path() -> PathBuf {
     install_bin_dir().join("current")
 }
 
-/// Resolve the binary every launcher must use (pointer → CONCORDIA_EXE → newest slot).
 pub use crate::fs_safe::resolve_active_exe;
 
-/// Point every launcher at `path`. Written via a temp file + rename so a crash can never leave a
-/// half-written pointer.
 pub fn write_current_pointer(path: &Path) -> std::io::Result<()> {
     let bin = install_bin_dir();
     fs::create_dir_all(&bin)?;
     crate::state_io::write_atomic(&current_pointer_path(), path.to_string_lossy().as_bytes())
 }
 
-/// Run `<exe> --version` and require an concordia version line. Called before an update is installed:
-/// a corrupt, truncated or wrong-architecture binary must never become what every launcher runs.
 pub fn verify_binary(exe: &Path) -> Result<String> {
     let line = crate::doctor::probe_version(exe)
         .map_err(|e| anyhow::anyhow!("{} does not run: {e}", exe.display()))?;
@@ -96,14 +82,6 @@ pub fn verify_binary(exe: &Path) -> Result<String> {
     Ok(line)
 }
 
-// ---- background jobs ---------------------------------------------------------------------------
-//
-// A rebuild takes up to a minute and a release download depends on the network, so neither may
-// run on the UI thread. A job reports progress through `JobControl::say`, can be cancelled, and
-// delivers one result.
-
-/// The coarse phases exposed to the update UI. These are stages, not percentages: an update
-/// cannot truthfully predict how long a compiler, network or installer operation will take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateStage {
     Preparing,
@@ -120,7 +98,6 @@ pub struct JobDiagnostic {
     pub message: String,
     pub code: Option<String>,
     pub source: Option<String>,
-    /// The bounded rendered compiler diagnostic, retained for an expandable details view.
     pub detail: String,
 }
 
@@ -135,7 +112,6 @@ pub struct JobSnapshot {
     pub error_count: usize,
 }
 
-/// Shared between the job thread and the UI: a cancel flag and one bounded progress snapshot.
 #[derive(Clone, Default)]
 pub struct JobControl {
     cancel: Arc<AtomicBool>,
@@ -157,7 +133,6 @@ impl JobControl {
         }
     }
 
-    /// Set a truthful coarse phase and its user-facing status/detail.
     pub fn stage(&self, stage: UpdateStage, status: &str, detail: impl AsRef<str>) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
             snapshot.stage = Some(stage);
@@ -172,7 +147,6 @@ impl JobControl {
         }
     }
 
-    /// Update only the status within the current stage. Compiler warnings never call this.
     fn progress(&self, status: &str, detail: &str) {
         if let Ok(mut snapshot) = self.snapshot.lock() {
             snapshot.status = bounded_redacted(status, 512);
@@ -257,24 +231,18 @@ pub struct ChangelogSection {
     pub bullets: Vec<String>,
 }
 
-/// One line of the `/update` screen; the screen styles and wraps each kind its own way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewLine {
-    /// `Installed  0.0.1 · build 2026-10-30a`: a dim label and its value.
     Field(&'static str, String),
-    /// `What's new`, `You're on the newest build (...)`.
     Title(String),
-    /// A changelog group: `Fixed`, `Changed`.
     Kind(String),
     Bullet(String),
     Text(String),
     Blank,
-    /// The keys that act on this screen.
     Hint(String),
 }
 
 impl PreviewLine {
-    /// The line as plain text, as the screen draws it before wrapping.
     pub fn plain(&self) -> String {
         match self {
             PreviewLine::Field(label, value) => format!("{label:<10} {value}"),
@@ -309,17 +277,12 @@ impl UpdatePreview {
         UpdatePreview {
             history: Vec::new(),
             history_expanded: false,
-            lines: vec![
-                PreviewLine::Text(text.into()),
-                PreviewLine::Blank,
-                PreviewLine::Hint("Esc close".into()),
-            ],
+            lines: vec![PreviewLine::Text(text.into())],
             install_available: false,
             release_url: None,
         }
     }
 
-    /// Every line as plain text (tests and the transcript fallback).
     pub fn plain_lines(&self) -> Vec<String> {
         self.lines.iter().map(PreviewLine::plain).collect()
     }
@@ -333,7 +296,6 @@ pub struct Job {
 }
 
 impl Job {
-    /// The result, once the job has finished.
     pub fn poll(&self) -> Option<JobResult> {
         self.rx.try_recv().ok()
     }
@@ -385,8 +347,6 @@ pub fn start_check(cwd: PathBuf) -> Job {
     })
 }
 
-/// Run `cmd`, relaying its latest output line as progress, and kill its whole process tree if the
-/// job is cancelled. Returns `(success, exit code, last lines of output)`.
 pub fn run_child_with_cancel(cmd: Command, ctl: &JobControl) -> Result<(bool, i32, String)> {
     run_child_with_format(cmd, ctl, false)
 }
@@ -551,12 +511,9 @@ fn lower_process_priority(_child: &std::process::Child) -> Result<()> {
     Ok(())
 }
 
-/// What `/update` did.
 #[derive(Debug, Clone)]
 pub enum UpdateOutcome {
-    /// A new build is installed; the caller should re-exec into it.
     Installed(UpdateResult),
-    /// Nothing newer exists (message for the user).
     UpToDate(String),
 }
 
@@ -591,7 +548,6 @@ fn install_channel() -> Result<Option<String>> {
 }
 
 fn record_install_channel(channel: &str) -> Result<()> {
-    // Validate an existing owned marker before overwriting it; never follow a link.
     install_channel()?;
     let dir = install_bin_dir();
     fs::create_dir_all(&dir)?;
@@ -606,7 +562,6 @@ fn is_source_root(dir: &Path) -> bool {
         .is_file()
 }
 
-/// For an exe built in a checkout (`<root>/target/{release,debug}/concordia.exe`), the checkout.
 pub fn source_root_of_exe(exe: &Path) -> Option<PathBuf> {
     let target = exe.parent()?.parent()?;
     if target.file_name()? != "target" {
@@ -616,7 +571,6 @@ pub fn source_root_of_exe(exe: &Path) -> Option<PathBuf> {
     is_source_root(root).then(|| root.to_path_buf())
 }
 
-/// Remember where this install was built from, so `/update` can rebuild it from any directory.
 pub fn record_source_root(root: &Path) {
     let dir = install_bin_dir();
     if fs::create_dir_all(&dir).is_ok() {
@@ -642,8 +596,6 @@ fn recorded_source_root() -> Option<PathBuf> {
     is_source_root(&root).then_some(root)
 }
 
-/// The source checkout `/update` rebuilds: the one containing `cwd`, else the one this install
-/// was built from.
 pub fn source_root(cwd: &Path) -> Option<PathBuf> {
     let channel = install_channel().ok()?;
     if channel.as_deref() == Some("release") {
@@ -654,8 +606,6 @@ pub fn source_root(cwd: &Path) -> Option<PathBuf> {
         .or_else(recorded_source_root)
 }
 
-/// `/update`: rebuild from source when run inside a checkout, otherwise download the newest
-/// published release (when a release feed is configured).
 pub fn update_auto(cwd: &Path) -> Result<UpdateOutcome> {
     update_auto_ctl(cwd, &JobControl::default())
 }
@@ -750,7 +700,6 @@ pub fn changelog_sections(text: &str) -> Vec<ChangelogSection> {
         if let Some(rest) = line.strip_prefix("### ") {
             out.extend(current.take());
             bullet = None;
-            // Only sections stamped with a build (`### Fixed (`2026-10-30a`)`) shipped in one.
             let Some((kind, raw)) = rest.split_once("(`") else {
                 continue;
             };
@@ -781,7 +730,6 @@ pub fn changelog_sections(text: &str) -> Vec<ChangelogSection> {
     out
 }
 
-/// The sections that `pick` keeps, as kind headings each followed by their bullets once.
 fn grouped(sections: &[ChangelogSection], pick: impl Fn(&str) -> bool) -> Vec<PreviewLine> {
     let mut lines = Vec::new();
     for kind in ["Added", "Changed", "Fixed", "Removed", "Security"] {
@@ -829,7 +777,6 @@ fn source_preview_for(
         .unwrap_or_default();
     let from = PreviewLine::Field("From", format!("source checkout · {branch} · {state}"));
     let mut lines = Vec::new();
-    // A checkout behind the running build is shown but never installed by a keypress.
     let older = stamp.as_str() < installed;
     let install_available = stamp.as_str() > installed;
     if install_available || older {
@@ -884,14 +831,6 @@ fn source_preview_for(
             s < installed
         }
     });
-    lines.push(PreviewLine::Hint(
-        if history.is_empty() {
-            "Esc close"
-        } else {
-            "H history · Esc close"
-        }
-        .into(),
-    ));
     Ok(UpdatePreview {
         history,
         history_expanded: false,
@@ -901,8 +840,6 @@ fn source_preview_for(
     })
 }
 
-/// Every build that `include` keeps, newest first, each with its changes: the whole changelog
-/// on this screen, formatted like the newest entries.
 fn builds(sections: &[ChangelogSection], include: impl Fn(&str) -> bool) -> Vec<PreviewLine> {
     let mut stamps: Vec<&str> = sections
         .iter()
@@ -920,14 +857,9 @@ fn builds(sections: &[ChangelogSection], include: impl Fn(&str) -> bool) -> Vec<
     lines
 }
 
-/// What Enter does, said once at the top of the screen so a long changelog cannot push it out
-/// of view.
-const INSTALL_BUILD: &str = "Press Enter to install it. Concordia builds it (about a minute), then \
-     restarts on the new build by itself. There is nothing else to do. Esc closes without updating.";
-const INSTALL_RELEASE: &str = "Press Enter to install it. Concordia downloads and checks it, then \
-     restarts on the new release by itself. There is nothing else to do. Esc closes without updating.";
+const INSTALL_BUILD: &str = "Concordia builds the update (about a minute), then restarts this tab.";
+const INSTALL_RELEASE: &str = "Concordia downloads and checks the update, then restarts this tab.";
 
-/// `/update`: what an update would install, without installing anything.
 pub fn check_for_update(cwd: &Path) -> Result<UpdatePreview> {
     check_for_update_ctl(cwd, &JobControl::default())
 }
@@ -960,8 +892,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                 lines: vec![
                     PreviewLine::Title(format!("You're on the newest release ({current}).")),
                     from,
-                    PreviewLine::Blank,
-                    PreviewLine::Hint("Esc close".into()),
                 ],
                 install_available: false,
                 release_url: None,
@@ -994,7 +924,6 @@ fn check_for_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdatePreview> {
                     }
                     lines.push(PreviewLine::Blank);
                 }
-                lines.push(PreviewLine::Hint("o open release page · Esc close".into()));
                 UpdatePreview {
                     history: Vec::new(),
                     history_expanded: false,
@@ -1065,7 +994,6 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
         source_version(&root)? == expected_source,
         "source build identity changed during update; retry the build"
     );
-    // `--version` may also carry BUILD_REV (`stamp` or `stamp, rev`); the source stamp must match.
     let reported = verify_binary(&built)?;
     let stamp_prefix = format!("concordia {} ({}", expected_source.0, expected_source.1);
     anyhow::ensure!(
@@ -1096,14 +1024,7 @@ pub fn perform_update_ctl(cwd: &Path, ctl: &JobControl) -> Result<UpdateResult> 
     })
 }
 
-/// Install a verified binary as `<bin>\concordia.exe` (what `concordia` on PATH runs) and flip the pointer.
-///
-/// A running exe cannot be overwritten on Windows, but it *can* be renamed. So the new build is
-/// staged next to the old one, the old file is moved aside, and the new one takes its name. A
-/// pane still running the old build is untouched and keeps working; every new launch gets the new
-/// build. This is what stops `concordia` from silently resolving to a stale copy.
 pub fn install_binary(built: &Path) -> Result<PathBuf> {
-    // Never install something that does not run.
     let expected_version = verify_binary(built)?;
     let built_len = fs::metadata(built)?.len();
 
@@ -1153,7 +1074,6 @@ fn rename_with_retry(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Replace `dest` with a copy of `built`, tolerating `dest` being a running executable.
 fn swap_in(
     built: &Path,
     dest: &Path,
@@ -1167,7 +1087,6 @@ fn swap_in(
     let aside = dir.join(format!("{PRIMARY_SLOT}.old-{tag}"));
 
     fs::copy(built, &staged).with_context(|| format!("copy to {}", staged.display()))?;
-    // A short copy (disk full, antivirus) must never become the active build.
     if fs::metadata(&staged).map(|m| m.len()).unwrap_or(0) != built_len {
         let _ = fs::remove_file(&staged);
         bail!("copy to {} was incomplete", staged.display());
@@ -1187,7 +1106,6 @@ fn swap_in(
         }
     }
     if let Err(e) = rename_with_retry(&staged, dest) {
-        // Put the old one back so the install is never left without an concordia.exe.
         if had_old {
             let _ = rename_with_retry(&aside, dest);
         }
@@ -1216,8 +1134,6 @@ fn record_swap_artifact(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Clean only receipt-owned swap files, retaining the latest rollback and live Windows images.
-/// Unknown files, links and in-progress copies are never removed by a name prefix alone.
 fn sweep_leftovers(dir: &Path) {
     let Some(root) = resolved_directory(dir) else {
         return;
@@ -1276,15 +1192,11 @@ fn sweep_leftovers(dir: &Path) {
     }
 }
 
-/// May also be called after a later startup, when older Windows images have exited.
 pub fn cleanup_obsolete_installs() {
     #[cfg(not(test))]
     sweep_leftovers(&install_bin_dir());
 }
 
-/// `concordia install`: put *this* executable where `concordia` on PATH finds it, make sure that directory is
-/// on the user's PATH, and point every launcher at it. The one install story for a downloaded exe
-/// and for a source build alike.
 pub struct InstallReport {
     pub installed: PathBuf,
     pub path_added: bool,
@@ -1308,7 +1220,6 @@ pub fn install_self() -> Result<InstallReport> {
     })
 }
 
-/// The per-user Start menu (or Desktop when explicitly requested) shortcut owned by Concordia.
 pub fn shortcut_path(desktop: bool) -> Result<PathBuf> {
     #[cfg(windows)]
     {
@@ -1365,7 +1276,6 @@ pub fn shortcut_spec(concordia_exe: &Path, home: &Path) -> ShortcutSpec {
     }
 }
 
-/// Create a native Windows shell shortcut without launching a visible helper console.
 pub fn install_shortcut(desktop: bool) -> Result<PathBuf> {
     #[cfg(windows)]
     {
@@ -1473,7 +1383,6 @@ fn read_shortcut(path: &Path) -> Result<Option<ShortcutSpec>> {
     }))
 }
 
-/// Read an owned shortcut for diagnostics without changing it.
 pub fn owned_shortcut(desktop: bool) -> Result<Option<ShortcutSpec>> {
     #[cfg(windows)]
     {
@@ -1499,8 +1408,6 @@ fn shortcut_matches(actual: &ShortcutSpec, expected: &ShortcutSpec) -> bool {
         && same_path(&actual.icon, &expected.icon)
 }
 
-/// Repair the Start menu shortcut and an existing Desktop shortcut without recreating either
-/// after the user explicitly removed it.
 pub fn sync_owned_shortcuts() -> Result<()> {
     #[cfg(windows)]
     {
@@ -1536,7 +1443,6 @@ pub fn sync_owned_shortcuts() -> Result<()> {
     }
 }
 
-/// Remove only the exact shortcut path Concordia owns.
 pub fn remove_shortcut(desktop: bool) -> Result<PathBuf> {
     let path = shortcut_path(desktop)?;
     if path.is_file() {
@@ -1547,8 +1453,6 @@ pub fn remove_shortcut(desktop: bool) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// `existing` with `dir` added at the front, or `None` when it is already present (compared
-/// case-insensitively, ignoring a trailing backslash, as Windows does).
 pub fn path_with_dir(existing: &str, dir: &Path) -> Option<String> {
     let norm = |p: &str| p.trim().trim_end_matches(['\\', '/']).to_ascii_lowercase();
     let want = norm(&dir.to_string_lossy());
@@ -1587,9 +1491,6 @@ fn user_path_ps(script: &str, env: &[(&str, &str)]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
-/// Add `dir` to the *user* PATH if missing. The registry value is read and written unexpanded
-/// (REG_EXPAND_SZ), so entries such as `%USERPROFILE%\bin` survive; `setx` would truncate PATH at
-/// 1024 characters. Returns whether anything changed.
 pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
     let existing = user_path_ps(
         "(Get-Item 'HKCU:\\Environment').GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)",
@@ -1598,7 +1499,6 @@ pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
     let Some(updated) = path_with_dir(&existing, dir) else {
         return Ok(false);
     };
-    // Setting CONCORDIA_EXE through .NET also broadcasts the environment change to running programs.
     user_path_ps(
         "Set-ItemProperty -Path 'HKCU:\\Environment' -Name Path -Value $env:CONCORDIA_NEW_PATH -Type ExpandString; \
          [Environment]::SetEnvironmentVariable('CONCORDIA_PATH_REFRESH', [string](Get-Date).Ticks, 'User'); \
@@ -1608,14 +1508,8 @@ pub fn ensure_on_user_path(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
-/// Leave TUI callers: run the new binary in this console and wait for it.
-///
-/// Returns the new process's exit code. This process must stay alive until the child exits: if it
-/// returned the console to the shell early, the shell and the new Concordia would both read the
-/// keyboard and swallow each other's keystrokes.
 pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
     persist_concordia_exe_env(new_exe);
-    // Visible by design: the replacement owns the interactive console.
     let mut command = crate::process_ui::visible_command(new_exe);
     let status = command
         .current_dir(cwd)
@@ -1628,11 +1522,6 @@ pub fn reexec_into(new_exe: &Path, cwd: &Path) -> Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
-/// Leave native-window callers: start the new binary on its own and return at once.
-///
-/// A window process has detached its console, so its standard handles are no longer valid and
-/// cannot be inherited (`The handle is invalid`). The replacement opens its own window and needs
-/// neither those handles nor this process.
 pub fn relaunch_window(new_exe: &Path, cwd: &Path) -> Result<()> {
     persist_concordia_exe_env(new_exe);
     crate::process_ui::command(new_exe)
@@ -1706,7 +1595,6 @@ fn run_cargo_build(
 fn cargo_process_is_running() -> bool {
     #[cfg(windows)]
     {
-        // Parent `cargo test` / `cargo run` hosts are not "another" build; only peers block.
         let ancestors = {
             let procs = crate::sysstats::process_pairs();
             let mut set = std::collections::HashSet::new();
@@ -1810,11 +1698,9 @@ fn persist_concordia_exe_env(path: &Path) {
     let _ = write_current_pointer(path);
     let s = path.to_string_lossy().into_owned();
     env::set_var("CONCORDIA_EXE", &s);
-    // An explicit install dir (portable install, tests) must not touch the user's environment.
     if env::var("CONCORDIA_INSTALL_DIR").is_ok_and(|d| !d.trim().is_empty()) {
         return;
     }
-    // Best-effort User env so new shells pick it up.
     let _ = crate::process_ui::command("setx")
         .args(["CONCORDIA_EXE", &s])
         .stdin(Stdio::null())
@@ -1872,10 +1758,7 @@ mod tests {
                 .map(|key| (key, env::var_os(key)))
                 .collect(),
         );
-        // Re-exec persists its path. A test must never write the real pointer or User env.
         env::set_var("CONCORDIA_INSTALL_DIR", sandbox.path());
-        // `where.exe` with no arguments fails with exit code 2. Returning at all proves we waited
-        // (an early return would hand the console to the shell while the child still reads keys).
         let exe = which::which("where.exe").unwrap();
         let code = reexec_into(&exe, &std::env::temp_dir()).unwrap();
         assert_eq!(code, 2);
@@ -1894,14 +1777,11 @@ mod tests {
         let added = path_with_dir(r"C:\Windows;C:\Tools", dir).unwrap();
         assert!(added.starts_with(r"C:\Users\me\AppData\Local\concordia\bin;"));
         assert!(added.ends_with(r"C:\Windows;C:\Tools"));
-        // Already present, in any case or with a trailing slash: nothing to do.
         assert!(path_with_dir(&added, dir).is_none());
         assert!(path_with_dir(r"C:\X;c:\USERS\ME\appdata\local\CONCORDIA\bin\", dir).is_none());
-        // Empty PATH, and unexpanded variables are left alone.
         assert_eq!(path_with_dir("", dir).unwrap(), dir.to_string_lossy());
         let kept = path_with_dir(r"%USERPROFILE%\bin;C:\Tools", dir).unwrap();
         assert!(kept.contains(r"%USERPROFILE%\bin"));
-        // A look-alike directory is not a match.
         assert!(path_with_dir(r"C:\Users\me\AppData\Local\concordia\bin2", dir).is_some());
     }
 
@@ -1923,7 +1803,6 @@ mod tests {
         assert_eq!(source_root_of_exe(&exe).as_deref(), Some(d.path()));
         let dbg = d.path().join("target").join("debug").join("concordia.exe");
         assert_eq!(source_root_of_exe(&dbg).as_deref(), Some(d.path()));
-        // An installed copy, or a build outside a checkout, has no source root.
         assert!(source_root_of_exe(&d.path().join("bin").join("concordia.exe")).is_none());
         let other = tempfile::tempdir().unwrap();
         let loose = other
@@ -1970,7 +1849,6 @@ mod tests {
             Some(checkout.path())
         );
 
-        // Other projects must not steal an installed application's source update.
         fs::write(
             elsewhere.path().join("Cargo.toml"),
             "[workspace]\nmembers=[]\n",
@@ -1993,7 +1871,6 @@ mod tests {
             .contains("invalid install channel"));
         fs::write(install.path().join(CHANNEL_FILE), "source\n").unwrap();
 
-        // A record pointing at something that is no longer a checkout is ignored.
         fs::remove_dir_all(checkout.path().join("crates")).unwrap();
         assert!(source_root(elsewhere.path()).is_none());
         std::env::remove_var("CONCORDIA_INSTALL_DIR");
@@ -2008,7 +1885,6 @@ mod tests {
         w("concordia.exe.new-fresh");
         w("current");
         w("notes.txt");
-        // Names and age alone do not establish ownership of a staged/rollback executable.
         w("concordia.exe.new-ancient");
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
         fs::File::options()
@@ -2097,7 +1973,6 @@ mod tests {
         let (ok, code, _) = run_child_with_cancel(ps("exit 7"), &ctl).unwrap();
         assert!(!ok && code == 7);
 
-        // Cargo warnings remain inspectable without replacing the active build stage.
         ctl.stage(
             UpdateStage::Building,
             "Building Concordia",
@@ -2150,7 +2025,6 @@ mod tests {
         );
         t.join().unwrap();
 
-        // The release fetch uses the same owned cancellation while HTTP is in flight.
         use crate::release::Fetcher;
         use std::io::Read;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2159,14 +2033,12 @@ mod tests {
         let ctl = JobControl::default();
         let c2 = ctl.clone();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        // PowerShell can take many seconds to start under a loaded test run, so the request gets
-        // a generous window to arrive and promptness is measured from the cancellation.
         let peer = std::thread::spawn(move || {
             let start = Instant::now();
             while start.elapsed() < Duration::from_secs(40) {
                 if let Ok((mut stream, _)) = listener.accept() {
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .set_read_timeout(Some(Duration::from_secs(20)))
                         .unwrap();
                     let mut byte = [0];
                     let received = stream.read(&mut byte).unwrap_or(0) > 0;
@@ -2283,7 +2155,6 @@ mod tests {
         );
     }
 
-    /// A git checkout at build `stamp` with a changelog spanning two builds.
     fn checkout_at_build(stamp: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("crates/concordia/src");
@@ -2351,7 +2222,6 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "H history · Esc close",
             ]
         );
 
@@ -2382,7 +2252,6 @@ mod tests {
                 " Fixed",
                 " · Text before a tool shows once.",
                 "",
-                "H history · Esc close",
             ]
         );
     }
@@ -2405,7 +2274,6 @@ mod tests {
                 "",
                 "The checkout is behind this build. Pull or switch branch, then run /update again.",
                 "",
-                "H history \u{b7} Esc close",
             ]
         );
     }

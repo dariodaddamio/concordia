@@ -1,4 +1,3 @@
-//! Recover source-backed patches into their original chat rows, off the UI thread.
 use super::*;
 
 type OwnerKey = (String, String, String);
@@ -86,7 +85,6 @@ pub(super) fn record_live(app: &mut App, record: &crate::artifacts::Record) -> b
         record: record.clone(),
         not_before,
     });
-    // Metadata-only targets are bounded like the file catalog; no per-frame disk reads.
     if state.targets.len() > 256 {
         state.targets.remove(0);
     }
@@ -177,8 +175,6 @@ pub(super) fn poll(app: &mut App) -> bool {
             let key = owner(&target.record);
             let active = app.busy && app.native_owner.as_ref() == Some(&target.record.owner);
             if active {
-                // Each newly captured completed edit permits two debounced group reads. Later
-                // edits in a long turn reopen the budget without a per-frame polling loop.
                 let budget = app
                     .artifacts
                     .inline

@@ -1,17 +1,3 @@
-//! Update from GitHub Releases, for installs that have no source checkout.
-//!
-//! Flow: list releases -> pick the newest complete one -> download `SHA256SUMS` and the exe ->
-//! verify size and checksum -> require that it runs and reports the expected version -> install
-//! through the same slot/pointer logic as a source rebuild.
-//!
-//! Network access is PowerShell's `Invoke-WebRequest` (TLS 1.2 forced, constant script, values
-//! passed through the environment), so concordia itself carries no HTTP stack. It only happens when the
-//! user runs `/update`; concordia never phones home on its own.
-//!
-//! Integrity note: the checksum file comes from the same release as the binary, so it catches
-//! corruption and truncation, not a compromised release. TLS authenticates GitHub. The owner
-//! has selected unsigned distribution; checksums do not establish publisher identity.
-
 use crate::update::{install_binary, verify_binary, UpdateResult};
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -24,11 +10,8 @@ pub const ASSET_NAME: &str = "concordia-x86_64-pc-windows-msvc.exe";
 pub const SUMS_NAME: &str = "SHA256SUMS";
 const DEFAULT_REPO: &str = "dariodaddamio/concordia";
 const DEFAULT_API: &str = "https://api.github.com";
-/// Anything outside these bounds is not our binary.
 const MIN_EXE_BYTES: u64 = 100 * 1024;
 const MAX_EXE_BYTES: u64 = 64 * 1024 * 1024;
-
-// ---- versions --------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
@@ -39,7 +22,6 @@ pub struct Version {
 }
 
 impl Version {
-    /// `v1.2.3`, `1.2.3`, `1.2.3-rc.1`, `1.2.3+build`.
     pub fn parse(s: &str) -> Option<Version> {
         let s = s.trim().strip_prefix('v').unwrap_or(s.trim());
         let s = s.split('+').next()?;
@@ -98,7 +80,7 @@ impl Ord for Version {
             .cmp(&(other.major, other.minor, other.patch))
             .then_with(|| match (&self.pre, &other.pre) {
                 (None, None) => Ordering::Equal,
-                (None, Some(_)) => Ordering::Greater, // 1.0.0 > 1.0.0-rc.1
+                (None, Some(_)) => Ordering::Greater,
                 (Some(_), None) => Ordering::Less,
                 (Some(a), Some(b)) => {
                     let mut left = a.split('.');
@@ -135,14 +117,10 @@ impl PartialOrd for Version {
     }
 }
 
-// ---- configuration ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// `owner/name`
     pub repo: String,
     pub api_base: String,
-    /// Plain http is accepted only for a loopback API (tests, a local mirror).
     pub allow_http_loopback: bool,
     pub include_prerelease: bool,
 }
@@ -159,8 +137,6 @@ fn valid_repo(r: &str) -> bool {
     }
 }
 
-/// Normal installs use the public project feed. Explicit environment/build overrides remain
-/// available for forks; an invalid override fails instead of silently switching repositories.
 pub fn config_from_env(current: &str) -> Option<Config> {
     let dev = std::env::var("CONCORDIA_DEV").ok().as_deref() == Some("1");
     config_from(
@@ -204,7 +180,6 @@ pub fn config_from(
         .filter(|a| !a.is_empty())
         .unwrap_or_else(|| DEFAULT_API.to_string());
     let allow_http_loopback = http_loopback(&api_base);
-    // Pre-1.0 releases are all marked pre-release on GitHub, so a 0.x install must see them.
     let cur = Version::parse(current);
     let include_prerelease = prerelease_flag == Some("1")
         || cur
@@ -223,7 +198,6 @@ impl Config {
         format!("{}/repos/{}/releases?per_page=20", self.api_base, self.repo)
     }
 
-    /// https always; http only for a loopback API.
     pub fn check_url(&self, url: &str) -> Result<()> {
         if url.starts_with("https://") {
             return Ok(());
@@ -247,8 +221,6 @@ fn http_loopback(url: &str) -> bool {
         && port.is_none_or(|port| port.parse::<u16>().is_ok_and(|port| port != 0))
 }
 
-// ---- release selection -----------------------------------------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub tag: String,
@@ -260,8 +232,6 @@ pub struct Release {
     pub html_url: String,
 }
 
-/// The newest non-draft release that has both the exe and the checksum file attached. A release
-/// whose assets are still uploading is skipped rather than half-installed.
 pub fn find_release(json: &str, include_prerelease: bool) -> Result<Option<Release>> {
     let v: Value = serde_json::from_str(json).context("releases response is not JSON")?;
     let list = v
@@ -319,7 +289,6 @@ pub fn find_release(json: &str, include_prerelease: bool) -> Result<Option<Relea
     Ok(best)
 }
 
-/// One line of Markdown as plain text: bold and code markers dropped, `[text](url)` as `text`.
 pub fn plain_markdown(line: &str) -> String {
     let line = line.replace("**", "").replace('`', "");
     let mut out = String::with_capacity(line.len());
@@ -342,7 +311,6 @@ pub fn plain_markdown(line: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// GitHub Markdown release notes as the compact plain text the `/update` screen shows.
 pub fn clean_notes(notes: &str) -> String {
     notes
         .lines()
@@ -376,7 +344,6 @@ pub fn published_date(value: &str) -> String {
     }
 }
 
-/// The hash for `name` in a `sha256sum`-style file (`<hex>  <name>` or `<hex> *<name>`).
 pub fn parse_sums(text: &str, name: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let (hash, rest) = l.trim().split_once(char::is_whitespace)?;
@@ -386,16 +353,12 @@ pub fn parse_sums(text: &str, name: &str) -> Option<String> {
     })
 }
 
-// ---- fetching --------------------------------------------------------------------------------
-
 pub trait Fetcher {
     fn get_text(&self, url: &str) -> Result<String>;
     fn download(&self, url: &str, dest: &Path) -> Result<()>;
     fn sha256(&self, path: &Path) -> Result<String>;
 }
 
-/// Real network and hashing through Windows PowerShell. Scripts are constants; URLs and paths
-/// arrive in the environment, so nothing is ever interpolated into a command.
 #[derive(Default)]
 pub struct PowerShellFetcher {
     control: Option<crate::update::JobControl>,
@@ -456,7 +419,6 @@ fn run_ps(
 impl Fetcher for PowerShellFetcher {
     fn get_text(&self, url: &str) -> Result<String> {
         run_ps(
-            // .Content is a byte[] when the server does not label the body as text.
             "$c=(Invoke-WebRequest -UseBasicParsing -TimeoutSec 30 \
              -Headers @{'User-Agent'='concordia-updater';'Accept'='application/vnd.github+json'} \
              -Uri $env:CONCORDIA_URL).Content; \
@@ -479,8 +441,6 @@ impl Fetcher for PowerShellFetcher {
     }
 
     fn sha256(&self, path: &Path) -> Result<String> {
-        // .NET directly: `Get-FileHash` lives in a module that is not always loadable (it was
-        // missing for the PowerShell on a clean CI runner), and a checksum must never be skipped.
         let out = run_ps(
             "$s=[IO.File]::OpenRead($env:CONCORDIA_FILE); \
              try { $h=[Security.Cryptography.SHA256]::Create(); \
@@ -492,8 +452,6 @@ impl Fetcher for PowerShellFetcher {
         Ok(out.trim().to_string())
     }
 }
-
-// ---- the update ------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Check {
@@ -584,7 +542,6 @@ fn cache_receipt(root: &Path, path: &Path) -> Option<Value> {
     .then_some(record)
 }
 
-/// At most 64 directory entries and four exact verified owned pairs per update.
 fn prune_release_cache(root: &Path, selected: &Path) {
     let Some(root) = crate::update::resolved_directory(root) else {
         return;
@@ -630,7 +587,6 @@ fn remember_release(root: &Path, source: &Path, expected: &str) -> Result<PathBu
         .context("release cache is not a regular directory")?;
     let target = root.join(format!("{expected}.exe"));
     if cached_release(&root, expected).is_none() {
-        // Never overwrite an unrelated or corrupt file which merely has the expected name.
         let mut output = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -657,7 +613,6 @@ fn remember_release(root: &Path, source: &Path, expected: &str) -> Result<PathBu
     Ok(target)
 }
 
-/// Removes only the unique scratch directory created by this operation.
 struct Scratch(PathBuf);
 
 impl Drop for Scratch {
@@ -681,7 +636,6 @@ impl Drop for Scratch {
     }
 }
 
-/// Download, verify and install `rel`. Nothing is installed unless every check passes.
 pub fn install_release(
     cfg: &Config,
     rel: &Release,
@@ -752,7 +706,6 @@ pub(crate) fn install_release_controlled(
         bail!("checksum mismatch (expected {expected}, got {actual}); nothing was installed");
     }
 
-    // It must run and be the version the release claims, or every launcher would break.
     let reported = verify_binary(&exe)?;
     let want = format!("concordia {} ", rel.version);
     if !reported.starts_with(&want) {
@@ -885,7 +838,6 @@ mod tests {
         let remote = config_from(Some("o/n"), None, None, None, "0.1.0").unwrap();
         assert!(remote.check_url("http://127.0.0.1/x").is_err());
         assert!(remote.check_url("ftp://x").is_err());
-        // An attacker-controlled API base cannot opt into http for a remote host.
         let sneaky = config_from(
             Some("o/n"),
             None,
@@ -921,11 +873,11 @@ mod tests {
     #[test]
     fn the_newest_complete_published_release_wins() {
         let json = release_json(&[
-            ("v0.2.0", true, false, BOTH),           // draft
-            ("v0.1.5", false, false, &[ASSET_NAME]), // still uploading: no sums
+            ("v0.2.0", true, false, BOTH),
+            ("v0.1.5", false, false, &[ASSET_NAME]),
             ("v0.1.4", false, false, BOTH),
             ("v0.1.3", false, false, BOTH),
-            ("v0.1.9-rc.1", false, true, BOTH), // pre-release
+            ("v0.1.9-rc.1", false, true, BOTH),
             ("not-a-version", false, false, BOTH),
         ]);
         let r = find_release(&json, false).unwrap().unwrap();
@@ -983,10 +935,8 @@ mod tests {
             Some("b".repeat(64).as_str())
         );
         assert!(parse_sums(&text, "missing.exe").is_none());
-        // Wrong length / non-hex hashes are not accepted.
         assert!(parse_sums(&format!("abc  {ASSET_NAME}"), ASSET_NAME).is_none());
         assert!(parse_sums(&format!("{}  {ASSET_NAME}", "z".repeat(64)), ASSET_NAME).is_none());
-        // Upper-case is normalized.
         assert_eq!(
             parse_sums(&format!("{}  {ASSET_NAME}", "A".repeat(64)), ASSET_NAME).unwrap(),
             "a".repeat(64)
@@ -1055,7 +1005,6 @@ mod tests {
                 latest: "0.1.4".into()
             }
         );
-        // Never "update" backwards to an older release.
         assert!(matches!(
             check(&cfg(), "0.2.0", &FeedOnly(json)).unwrap(),
             Check::UpToDate { .. }

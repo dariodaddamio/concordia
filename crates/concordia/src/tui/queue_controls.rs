@@ -1,12 +1,6 @@
-//! Explicit controls for resuming a paused prompt queue.
-//!
-//! Resuming only sets the queue state. The existing event loop runs `queue_advance` after the
-//! key/slash command, so queued prompts still use the normal submit path and only one starts.
-
 use super::App;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Handle Ctrl+R. Returns true when the shortcut was consumed.
 pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -19,7 +13,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     true
 }
 
-/// Resume from `/queue resume` and return a visible status message.
 pub(super) fn resume(app: &mut App) -> Vec<String> {
     vec![resume_queue(app)]
 }

@@ -1,4 +1,3 @@
-//! Chat references, recent previews and bounded workspace discovery without reading file contents.
 use super::*;
 use crate::file_links::{self, Candidate};
 use std::collections::HashSet;
@@ -180,7 +179,6 @@ fn discover(cwd: &Path, sources: &[String]) -> Vec<RelatedFile> {
         if let Some(candidate) = file_links::explicit_reference(source) {
             candidates.push(candidate);
         }
-        // Prefer exact Markdown links and longest candidates before ambiguous prose suffixes.
         candidates.sort_by_key(|c| {
             (
                 std::cmp::Reverse(c.markdown),
@@ -418,11 +416,10 @@ impl App {
                 id: if self.related_files.loading() {
                     "none".into()
                 } else {
-                    // Empty filter / no files: muted non-selectable hint, not a selected row.
                     "files:hint".into()
                 },
                 label: if self.related_files.loading() {
-                    "Finding files mentioned in this chat..."
+                    "Finding files mentioned in this chat…"
                 } else {
                     "No matches. Type a relative path (src/main.rs) or an absolute path (C:/project/file.md)."
                 }

@@ -43,7 +43,6 @@ fn drag_selects_transcript_text_and_ctrl_c_copies_it() {
     h.up(x1, y0);
     assert_eq!(h.app.view.selected_text().as_deref(), Some("brave"));
 
-    // Ctrl+C with a selection copies instead of quitting/cancelling.
     assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert_eq!(clipboard::get_text().unwrap(), "brave");
     assert!(
@@ -51,7 +50,6 @@ fn drag_selects_transcript_text_and_ctrl_c_copies_it() {
         "selection stays highlighted after copy"
     );
     h.key(KeyCode::Esc, KeyModifiers::NONE);
-    // With nothing selected and idle, Ctrl+C asks for a second press before quitting.
     assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
     assert!(h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
 }
@@ -61,7 +59,6 @@ fn drag_across_messages_keeps_line_breaks() {
     let mut h = Harness::new(60, 20);
     h.app.push_user("first line".into());
     h.app.push_assistant("second line".into());
-    // No reply label between the rows: this test is about line breaks.
     h.app.messages.last_mut().unwrap().meta = None;
     h.draw();
     let a = h.row_of("first line");
@@ -165,7 +162,7 @@ fn keyboard_navigation_and_selection() {
     assert_eq!(h.app.editor.selected_text().as_deref(), Some("al"));
     h.key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
     assert_eq!(h.app.editor.selected_text().as_deref(), Some("alpha"));
-    h.key(KeyCode::Esc, KeyModifiers::NONE); // clears selection, does not quit
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(h.app.editor.selected_text().is_none());
     assert!(!h.app.should_quit);
     h.key(KeyCode::End, KeyModifiers::NONE);
@@ -181,7 +178,6 @@ fn bracketed_paste_keeps_newlines_without_submitting() {
     h.draw();
     assert_eq!(h.app.messages.len(), before, "paste must not submit");
     assert_eq!(h.app.editor.text(), "line one\nline two\nline three");
-    // Prompt box grew to fit three text rows (+ 2 border rows).
     assert_eq!(h.app.areas.input.height, 3);
 }
 
@@ -198,7 +194,6 @@ fn prompt_box_scrolls_and_caret_stays_visible_when_text_is_tall() {
     let cur = h.term.get_cursor_position().unwrap();
     let r = h.app.areas.input;
     assert!(cur.y >= r.y && cur.y < r.y + r.height);
-    // The top visible row maps to a scrolled-down line, not line 0.
     let (x, y) = h.i_cell(0, 0);
     h.click(x, y);
     assert!(h.app.editor.cursor() > 0);
@@ -220,7 +215,6 @@ fn wheel_and_page_keys_scroll_transcript() {
         h.key(KeyCode::PageDown, KeyModifiers::NONE);
     }
     assert_eq!(h.app.view.scroll, 0);
-    // Sending a message snaps back to the newest output.
     h.mouse(MouseEventKind::ScrollUp, 10, 5);
     h.type_str("hi");
     let (tx, _rx) = mpsc::unbounded_channel();
@@ -301,13 +295,13 @@ fn add_account_flow_from_the_picker_to_a_connected_announcement() {
 
     h.type_str("/use");
     h.enter();
-    h.enter(); // "+ add account"
+    h.enter();
     let picker = h.app.picker.as_ref().expect("provider picker");
     assert!(picker.kind == PickerKind::AddProvider);
     let ids: Vec<_> = picker.rows.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(ids, ["add:codex", "add:claude", "add:cursor"]);
 
-    h.enter(); // Codex
+    h.enter();
     assert!(h.app.picker.is_none());
     assert_eq!(launched.borrow().len(), 1);
     assert_eq!(launched.borrow()[0].script, "codex login");
@@ -321,12 +315,10 @@ fn add_account_flow_from_the_picker_to_a_connected_announcement() {
         .clone();
     assert!(home.starts_with(h.app.state_root.join("homes")));
 
-    // Still signing in: polling stays quiet.
     h.tick(20);
     assert!(h.app.pending_login.is_some());
     assert!(!h.transcript_text().contains("connected"));
 
-    // The login finishes (provider CLI writes auth.json); concordia announces it, without auto-switching.
     std::fs::write(home.join("auth.json"), "{}").unwrap();
     let before = h.app.account.clone();
     h.tick(10);
@@ -420,11 +412,11 @@ fn up_and_down_walk_sent_prompts_and_restore_the_draft() {
     assert_eq!(h.app.editor.text(), "/doctor");
     h.key_up();
     assert_eq!(h.app.editor.text(), "/version");
-    h.key_up(); // oldest entry: stays put
+    h.key_up();
     assert_eq!(h.app.editor.text(), "/version");
     h.key_down();
     assert_eq!(h.app.editor.text(), "/doctor");
-    h.key_down(); // past the newest entry: the unsent draft comes back
+    h.key_down();
     assert_eq!(h.app.editor.text(), "dra");
     h.key_down();
     assert_eq!(h.app.editor.text(), "");
@@ -440,7 +432,7 @@ fn down_opens_a_fresh_prompt_and_up_preserves_both_unsent_buffers() {
     h.key_down();
     assert_eq!(h.app.editor.text(), "");
     assert_eq!(h.app.draft_text(), "unfinished thought");
-    h.key_down(); // Repeated Down must not overwrite the saved draft.
+    h.key_down();
     h.type_str("another thought");
     h.key_up();
     assert_eq!(h.app.editor.text(), "unfinished thought");
@@ -455,7 +447,7 @@ fn down_opens_a_fresh_prompt_and_up_preserves_both_unsent_buffers() {
     assert_eq!(h.app.editor.text(), "unfinished thought");
     h.app.editor.set_text("first\nsecond");
     h.key(KeyCode::Home, KeyModifiers::CONTROL);
-    h.key_down(); // Move within multiline text before switching buffers.
+    h.key_down();
     assert_eq!(h.app.editor.text(), "first\nsecond");
     assert!(!h.app.fresh_draft);
 }
@@ -537,14 +529,14 @@ fn up_moves_the_caret_inside_a_multi_line_prompt_instead_of_recalling() {
 second",
     );
     h.draw();
-    h.key_up(); // caret is on row 1 -> moves to row 0, no recall
+    h.key_up();
     assert_eq!(
         h.app.editor.text(),
         "first
 second"
     );
     assert_eq!(h.app.hist_pos, None);
-    h.key_up(); // now on the first row -> recall
+    h.key_up();
     assert_eq!(h.app.editor.text(), "/version");
 }
 
@@ -565,7 +557,6 @@ fn idle_ctrl_c_needs_a_second_press_inside_the_window() {
     assert!(h.app.flash.as_ref().unwrap().0.contains("again to exit"));
     assert!(h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
 
-    // A stale first press does not count.
     let mut h = Harness::new(80, 24);
     h.app.quit_armed = Instant::now().checked_sub(QUIT_WINDOW + Duration::from_secs(1));
     assert!(!h.key(KeyCode::Char('c'), KeyModifiers::CONTROL));
@@ -593,7 +584,11 @@ fn a_failed_provider_explains_itself_instead_of_showing_an_empty_reply() {
         stderr_tail: "warn: something\nError: login expired\nrun `codex login`".into(),
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(h.screen().contains("Turn failed."));
+    assert!(!h.screen().contains("login expired"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider exited with code 3"), "{t}");
     assert!(t.contains("login expired"), "{t}");
     assert!(t.contains("codex login"), "{t}");
@@ -606,20 +601,21 @@ fn idle_notice_updates_in_place_and_clears_on_output() {
     let mut h = Harness::new(160, 24);
     h.type_str("draft");
     h.app.busy = true;
-    h.app.busy = true;
-    h.app.apply_progress(TurnProgress::Idle {
-        provider: ProviderKind::Claude,
-        minutes: 10,
-        silent_for: Duration::from_secs(600),
-    });
-    h.app.apply_progress(TurnProgress::Idle {
-        provider: ProviderKind::Claude,
-        minutes: 20,
-        silent_for: Duration::from_secs(1200),
-    });
-    let t = h.transcript_text();
-    assert_eq!(t.matches("No output from Claude Code").count(), 1, "{t}");
-    assert!(t.contains("20 minutes"), "{t}");
+    for (minutes, expected) in [(1, "1 minute."), (2, "2 minutes.")] {
+        h.app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Claude,
+            minutes,
+            silent_for: Duration::from_secs(minutes * 60),
+        });
+        h.draw();
+        let screen = h.screen();
+        assert_eq!(
+            screen.matches("No output from Claude Code").count(),
+            1,
+            "{screen}"
+        );
+        assert!(screen.contains(expected), "{screen}");
+    }
     h.app.apply_progress(TurnProgress::Text("back".into()));
     assert!(!h.transcript_text().contains("No output from"));
 }
@@ -702,6 +698,39 @@ fn idle_notice_key_and_click_open_options_and_cancel_cancels() {
 }
 
 #[test]
+fn idle_options_open_next_to_the_visible_notice() {
+    for (width, height, above) in [(160, 45, false), (120, 36, false), (80, 24, true)] {
+        let mut h = Harness::new(width, height);
+        if above {
+            for index in 0..40 {
+                h.app.push_system(format!("Earlier output {index}"));
+            }
+        }
+        h.app.busy = true;
+        h.app.apply_progress(TurnProgress::Idle {
+            provider: ProviderKind::Claude,
+            minutes: 1,
+            silent_for: Duration::from_secs(60),
+        });
+        h.draw();
+        if above {
+            let (x, y) = find_cell(h.term.backend().buffer(), "No output from");
+            h.click(x, y);
+        } else {
+            h.key(KeyCode::Char('k'), KeyModifiers::CONTROL);
+        }
+        let buffer = h.term.backend().buffer();
+        let (_, notice_y) = find_cell(buffer, "No output from");
+        let (menu_x, menu_y) = find_cell(buffer, "turn is quiet");
+        if above {
+            assert_eq!(buffer[(menu_x - 2, notice_y - 1)].symbol(), "└");
+        } else {
+            assert_eq!(menu_y, notice_y + 1);
+        }
+    }
+}
+
+#[test]
 fn idle_notice_removes_only_itself() {
     let mut h = Harness::new(100, 24);
     h.app.push_system("system before");
@@ -731,7 +760,10 @@ fn a_provider_that_could_not_start_says_so() {
         stderr_tail: "spawn codex: program not found".into(),
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(h.screen().contains("Could not start the turn."));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider could not run"), "{t}");
     assert!(t.contains("program not found"), "{t}");
 }
@@ -749,7 +781,10 @@ fn only_the_last_few_stderr_lines_are_shown() {
         stderr_tail: tail,
         ..Default::default()
     });
-    let t = h.transcript_text();
+    h.draw();
+    assert!(!h.screen().contains("noise"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("noise 11") && t.contains("noise 6"));
     assert!(!t.contains("noise 5"), "{t}");
 }
@@ -789,6 +824,10 @@ fn a_failed_turn_with_partial_text_keeps_the_text_and_adds_the_failure() {
     });
     let t = h.transcript_text();
     assert!(t.contains("partial answer"));
+    assert!(t.contains("Turn failed."));
+    assert!(!t.contains("connection reset"));
+    h.key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+    let t = h.screen();
     assert!(t.contains("provider exited with code 2"));
     assert!(t.contains("connection reset"));
 }
@@ -815,8 +854,6 @@ fn a_very_long_session_still_draws_quickly() {
     }
     let per_frame = start.elapsed() / 20;
     eprintln!("{rows} rows: {per_frame:?} per frame");
-    // Goal: ~16 ms for smooth dragging (measured ~17 ms in a debug build, 500 ms before the
-    // row cache). The bound is loose so a loaded CI machine does not flake.
     assert!(
         per_frame < Duration::from_millis(100),
         "drawing {rows} rows took {per_frame:?} per frame"
@@ -842,10 +879,12 @@ fn typing_a_slash_previews_every_command_with_its_description() {
         "a scrolling list shows its size:\n{s}"
     );
     assert!(h.app.areas.palette.height > 0);
-    // The rest are one wrap away: Up jumps to the last command and scrolls it into view.
     h.key_up();
     let s = h.screen();
     assert!(s.contains("/export"), "{s}");
+    h.type_str("us");
+    let screen = h.screen();
+    assert!(screen.contains("commands · 2"), "{screen}");
 }
 
 #[test]
@@ -870,7 +909,7 @@ fn the_palette_narrows_as_you_type_and_disappears_for_normal_text() {
 
     let mut h = Harness::new(90, 28);
     h.type_str("/use");
-    h.key(KeyCode::Enter, KeyModifiers::ALT); // newline: now multi-line chat text
+    h.key(KeyCode::Enter, KeyModifiers::ALT);
     h.type_str("more");
     assert!(!h.screen().contains("switch account or provider"));
 }
@@ -884,10 +923,9 @@ fn arrows_move_the_selection_and_tab_completes_it() {
     assert_eq!(h.app.palette.selected, 0);
     h.key(KeyCode::Tab, KeyModifiers::NONE);
     assert_eq!(h.app.editor.text(), "/update");
-    // Moving the selection never touches the prompt text or the history.
     let mut h = Harness::new(90, 28);
     h.type_str("/");
-    h.key_up(); // wraps to the last command
+    h.key_up();
     assert_eq!(h.app.editor.text(), "/");
     assert_eq!(h.app.palette.selected, h.app.palette_entries().len() - 1);
 }
@@ -927,7 +965,6 @@ fn clicking_a_suggestion_completes_it() {
     h.type_str("/use");
     let pal = h.app.areas.palette;
     assert!(pal.height >= 3, "palette should list /use");
-    // Once /use is complete, the next row is its add subcommand.
     h.click(pal.x + 4, pal.y + 2);
     assert_eq!(h.app.editor.text(), "/use add");
 }
@@ -954,7 +991,7 @@ fn signing_in_to_the_same_login_twice_preserves_both_homes_and_explains_removal(
     let mut h = Harness::new(100, 30);
     h.fake_connect();
 
-    let home = h.add_codex_signed_in_as("ME@Example.com"); // same login, different case
+    let home = h.add_codex_signed_in_as("ME@Example.com");
     assert!(h.app.pending_login.is_none());
     let t = h.transcript_text();
     assert!(t.contains("same login as Codex"), "{t}");
@@ -1001,10 +1038,10 @@ fn removing_an_account_through_the_picker_deletes_what_concordia_created() {
     h.type_str("/use remove");
     h.enter();
     assert_eq!(h.picker_ids(), ["rmpick:codex-1"]);
-    h.enter(); // choose the account
+    h.enter();
     let ids = h.picker_ids();
     assert_eq!(ids, ["rm:delete:codex-1", "rm:unreg:codex-1", "rm:cancel"]);
-    h.enter(); // "Remove and delete its login data"
+    h.enter();
     assert!(!home.exists());
     assert!(h.transcript_text().contains("deleted its login folder"));
     assert!(crate::store::list_stored_accounts(&h.app.state_root).is_empty());
@@ -1016,12 +1053,12 @@ fn cancelling_the_confirmation_changes_nothing() {
     let mut h = Harness::new(100, 30);
     h.fake_connect();
     let home = h.add_codex_signed_in_as("solo@example.com");
-    h.type_str("/use remove codex-1"); // straight to the confirmation
+    h.type_str("/use remove codex-1");
     h.enter();
     assert!(h.picker_ids().contains(&"rm:cancel".to_string()));
     h.key_down();
     h.key_down();
-    h.enter(); // Cancel
+    h.enter();
     assert!(home.join("auth.json").is_file());
     assert_eq!(
         crate::store::list_stored_accounts(&h.app.state_root).len(),
@@ -1046,7 +1083,7 @@ fn your_own_login_can_only_be_hidden_and_removing_the_active_account_switches_aw
         ["rm:hide:codex", "rm:cancel"],
         "no delete option for your own home"
     );
-    h.enter(); // Hide
+    h.enter();
     let t = h.transcript_text();
     assert!(t.contains("hidden from Concordia"), "{t}");
     assert!(t.contains("now using Codex 2"), "{t}");
@@ -1071,7 +1108,7 @@ fn ctrl_c_in_a_picker_closes_it_and_never_quits_or_loses_the_draft() {
     let _iso = Isolated::new();
     let mut h = Harness::new(100, 30);
     h.type_str("/model");
-    h.enter(); // already a complete command: runs and opens the picker
+    h.enter();
     assert!(h.app.picker.is_some());
     assert!(
         !h.key(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -1079,7 +1116,6 @@ fn ctrl_c_in_a_picker_closes_it_and_never_quits_or_loses_the_draft() {
     );
     assert!(h.app.picker.is_none());
     assert!(!h.app.should_quit);
-    // And with a draft being typed afterwards, nothing was lost or armed for exit.
     h.type_str("draft");
     assert_eq!(h.app.editor.text(), "draft");
     assert!(h.app.quit_armed.is_none());
@@ -1194,7 +1230,6 @@ fn command_screens_explain_input_ownership_and_close_with_x_without_losing_draft
         }
         h.draw();
         let screen = h.screen();
-        // Update is a full page (no paused composer). Overlay pickers keep ownership copy.
         if kind != PickerKind::Update {
             let ownership = if filterable {
                 "Typing filters the list, not your chat"
@@ -1314,9 +1349,7 @@ fn mouse_pointer_matches_clickable_targets_and_text() {
     assert_eq!(pointer::shape(&h.app, 4, y as u16), "pointer");
     let r = h.app.areas.input;
     assert_eq!(pointer::shape(&h.app, r.x + 3, r.y), "text");
-    // Header Home/Chat navigation occupies (0,0).
     assert_eq!(pointer::shape(&h.app, 0, 0), "pointer");
-    // Open-work body text is not a hit target.
     assert_eq!(pointer::shape(&h.app, 90, y as u16), "default");
 }
 
@@ -1415,7 +1448,6 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     assert_eq!(h.app.phase.frame(0), "✎");
     h.app.cancel_requested = true;
     assert!(h.app.window_title().contains("Stopping"));
-    // Appearance uses the normal keyboard/mouse picker and preserves a working draft.
     h.app.editor.set_text("preserved draft");
     h.app.handle_slash("/config");
     assert!(h.app.settings_view.is_some());
@@ -1438,7 +1470,6 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     assert_eq!(reloaded.color(), [120, 191, 255]);
     assert!(!reloaded.ui.motion);
     assert!(!h.app.state_root.join("config.toml").exists());
-    // Invalid custom input leaves saved settings untouched and is corrected in-place.
     appearance::choose(&mut h.app, PickerKind::BrandColor, "custom");
     h.app.picker.as_mut().unwrap().filter = "#nope".into();
     h.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -1455,7 +1486,6 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
     .unwrap()
     .into_rgba8();
     assert_eq!(portrait.as_ref(), &original);
-    // Display preferences and file actions survive rebuilding the application state.
     appearance::save(&mut h.app, "tokens", "off");
     appearance::save(&mut h.app, "tips", "off");
     let reloaded = appearance::State::load(&h.app.state_root);
@@ -1474,7 +1504,6 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
         crate::store::get_settings(&h.app.state_root).file_action,
         Some(crate::file_open::FileAction::Preview)
     );
-    // Same-named definitions keep their project/account scope; inspection executes nothing.
     let project = h.app.state_root.join("fixture-project");
     let home = h.app.state_root.join("fixture-provider");
     for root in [project.join(".claude"), home.clone()] {
@@ -1511,7 +1540,6 @@ fn terminal_titles_use_chat_or_project_names_and_distinct_status_icons() {
         Some("A deliberately long chat title with an em dash — and more words than fit".into());
     assert!(!h.app.window_title().contains('—'));
     assert!(h.app.window_title().chars().count() < 85);
-    // An incompatible saved version is reported and never overwritten by a new selection.
     let path = h.app.state_root.join(".ao/appearance.json");
     let original = b"{\"version\":99,\"theme\":\"future\"}";
     std::fs::write(&path, original).unwrap();
@@ -1737,7 +1765,7 @@ fn model_picker_lists_provider_efforts_in_the_row() {
         .find(|row| row.id == "model:sol")
         .unwrap()
         .detail
-        .contains("efforts: low"));
+        .contains("Effort: low"));
     assert!(!rows
         .iter()
         .find(|row| row.id == "model:sol")
@@ -1930,7 +1958,6 @@ fn active_email_and_nickname_are_visible_in_header_without_a_picker() {
         let screen = h.screen();
         let header = screen.lines().next().unwrap();
         assert!(header.contains("Codex · Work"), "{header}");
-        // Top bar keeps nickname + model controls; email reveal was removed from the header.
         assert!(!header.contains("member@example.invalid"), "{header}");
         assert!(!header.contains("view email"), "{header}");
         assert!(h.app.areas.header_email.is_none());
@@ -2139,14 +2166,14 @@ fn retained_patch_errors_are_inspectable_without_claiming_the_exit_cause() {
         .messages
         .iter()
         .filter_map(|m| m.card.as_ref())
-        .find(|c| c.title.starts_with("Provider diagnostics"))
+        .find(|c| c.title.starts_with("Turn failed"))
         .unwrap();
     assert!(diagnostics.detail.as_deref().unwrap().contains(old_error));
     assert!(diagnostics
         .detail
         .as_deref()
         .unwrap()
-        .contains("do not establish why"));
+        .contains("may not explain why"));
     assert!(!h
         .app
         .messages

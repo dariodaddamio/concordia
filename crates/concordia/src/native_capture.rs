@@ -1,4 +1,3 @@
-//! Larger capture snapshots are separate from the small interactive history index.
 use super::*;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use std::io::{BufRead, BufReader};
@@ -43,8 +42,6 @@ struct Manifest {
     records: Vec<Record>,
 }
 
-/// Only protocol metadata and explicit plaintext fields are materialized. In particular,
-/// image/PDF data, tool arguments/results and encrypted payloads are streamed past, not cloned.
 struct Filter {
     depth: usize,
 }
@@ -209,9 +206,6 @@ fn open(root: &Path, binding: &Binding) -> Result<(Source, SourceIndex), String>
     if let Ok(source) = open_bound(root, binding) {
         return Ok(source);
     }
-    // Claude can begin a source with one attachment-bearing user record larger than the
-    // ordinary index's identity header. Prove that exact first record without expanding
-    // the interactive reader's limits or accepting a path-only session guess.
     if binding.provider != ProviderKind::Claude {
         return open_bound(root, binding);
     }
@@ -716,8 +710,6 @@ pub(super) fn text(
 ) -> Result<Reference, String> {
     let (id, manifest) = snapshot(root, scope)?;
     let mut file = open_index_source(root, &manifest.source)?;
-    // Streaming KMP finds overlapping and cross-record matches without repeatedly copying
-    // a growing transcript or retaining any historical plaintext in the manifest.
     let mut search = Search::new(expected);
     let mut records: Vec<(usize, usize, usize)> = Vec::new();
     let mut seen_text = false;
@@ -742,8 +734,6 @@ pub(super) fn text(
                 search.push(b"\n")?;
             }
         }
-        // A historical snapshot contains separate turns. Exact matching may not invent
-        // one request by joining two unrelated native messages/chunks across that history.
         if manifest.historical {
             search.matched = 0;
         }
@@ -988,7 +978,6 @@ pub(super) fn fixture_proof() {
         )
         .unwrap();
         let scope = super::begin_scope(dir.path(), &binding).unwrap();
-        // A large irrelevant record used to invalidate every later message in the turn.
         let padding = if provider == ProviderKind::Codex {
             json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"oversized-tool","output":"x".repeat(9 * 1024 * 1024)}})
         } else {
@@ -1101,7 +1090,6 @@ pub(super) fn fixture_proof() {
             .unwrap(),
             "original café"
         );
-        // Unsupported historical formats are rejected without changing original sources.
         let original = fs::read(&path).unwrap();
         let mut old_scope = sealed.clone();
         old_scope.version = 1;
@@ -1114,7 +1102,6 @@ pub(super) fn fixture_proof() {
             .unwrap_err()
             .contains("unsupported native reference format"));
         assert_eq!(fs::read(&path).unwrap(), original);
-        // Mutate only the selected large record beyond the identity header.
         let selected_record = manifest
             .records
             .iter()
@@ -1143,7 +1130,6 @@ pub(super) fn fixture_proof() {
             "unrelated source data never substitutes for the selected tool record"
         );
         if provider == ProviderKind::Claude {
-            // A real Claude source may start directly with an attachment-bearing user record.
             fs::write(&path, format!("{image}\n")).unwrap();
             let fresh = super::fresh_scope(dir.path(), &binding).unwrap();
             let reference = super::capture_text(dir.path(), &fresh, "user", full).unwrap();

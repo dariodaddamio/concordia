@@ -1,25 +1,15 @@
-//! Cursor limits without spending tokens.
-//!
-//! Cursor's CLI has no non-interactive usage command (`agent -p "/usage"` would go to the model),
-//! but its interactive screen answers `/usage` locally. This runs that screen in a pseudo-console,
-//! types only `/usage`, reads the table and kills the process tree. No prompt is ever sent.
-
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-// CSI-u Return reaches Ink's submit handler; Win32 input records no longer do on Cursor 2026.11.17.
 const ENTER_KEY: &[u8] = b"\x1b[13u";
 
-/// Whole fetch budget: start, ready, `/usage`, table.
 pub const PTY_TIMEOUT: Duration = Duration::from_secs(15);
-/// Output quiet this long (or this long after first output) means the prompt is waiting for input.
 const QUIET_READY: Duration = Duration::from_millis(700);
 const READY_CAP: Duration = Duration::from_secs(6);
 
-/// What to run in the pseudo-console.
 #[derive(Debug, Clone)]
 pub struct PtySpec {
     pub program: String,
@@ -28,14 +18,10 @@ pub struct PtySpec {
     pub cwd: PathBuf,
 }
 
-/// A fixed empty folder, so Cursor records its workspace trust once rather than per fetch. The
-/// sessions Cursor records there are Concordia's, not the person's.
 pub fn probe_dir() -> PathBuf {
     std::env::temp_dir().join("concordia-usage-probe")
 }
 
-/// Program, args and env for the interactive agent behind `bin`. A `.cmd` shim is bypassed through
-/// the PowerShell script it would run (as in `provider::launch`), else run through `cmd.exe /c`.
 pub fn interactive_launch(bin: &str) -> (String, Vec<String>, Vec<(String, String)>) {
     use crate::provider::launch::{cursor_ps1_beside, is_batch_shim};
     if !is_batch_shim(bin) {
@@ -68,11 +54,8 @@ pub fn interactive_launch(bin: &str) -> (String, Vec<String>, Vec<(String, Strin
     }
 }
 
-/// The real fetch for one Cursor account home: the installed agent, the account's API key if it
-/// has one, an empty temp working directory.
 pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     if crate::provider::bin_override("CONCORDIA_AGENT_BIN").is_some() {
-        // A test or fake provider stands in for the agent: never drive it interactively.
         return Err("agent binary is overridden".into());
     }
     let bin = crate::provider::cursor::find_agent_bin()?;
@@ -82,6 +65,7 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     }
     let cwd = probe_dir();
     std::fs::create_dir_all(&cwd).map_err(|e| format!("temp dir: {e}"))?;
+    confirm_logged_in(&program, &args, &env, &cwd)?;
     let started = std::time::SystemTime::now();
     let text = run_usage_in_pty(
         &PtySpec {
@@ -98,9 +82,40 @@ pub fn fetch_cursor_usage_text(home: &Path) -> Result<String, String> {
     text
 }
 
-/// Cursor records every interactive start as a chat, so each usage check would leave an empty
-/// chat behind. Remove only the ones this check made: started in the probe folder, holding no
-/// conversation, and created since the check began.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(20);
+
+fn confirm_logged_in(
+    program: &str,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+) -> Result<(), String> {
+    let has_key = env.iter().any(|(key, _)| key == "CURSOR_API_KEY");
+    let mut cmd = crate::process_ui::command(program);
+    cmd.args(args).arg("status").current_dir(cwd);
+    cmd.env_remove("CURSOR_API_KEY");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let output = crate::process_lifetime::capture_with_input(cmd, STATUS_TIMEOUT, 64 * 1024, None)
+        .map_err(|error| format!("could not check the Cursor login: {error}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    login_status(&text, has_key)
+}
+
+fn login_status(status: &str, has_key: bool) -> Result<(), String> {
+    let text = status.to_ascii_lowercase();
+    if is_login_prompt(&text) || (!has_key && !text.contains("logged in")) {
+        Err(NOT_LOGGED_IN.into())
+    } else {
+        Ok(())
+    }
+}
+
 fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) {
     let since_ms = since
         .duration_since(std::time::UNIX_EPOCH)
@@ -145,12 +160,9 @@ fn remove_probe_chats(chats: &Path, probe: &Path, since: std::time::SystemTime) 
 struct Shared {
     buf: Vec<u8>,
     overflow: bool,
-    first: Option<Instant>,
     last: Instant,
 }
 
-/// Start `spec` in a pseudo-console, wait for it to settle, type `/usage` + Enter, return the
-/// screen text once the table is on it. Always kills the process tree.
 pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -163,8 +175,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let mut cmd = CommandBuilder::new(&spec.program);
     cmd.args(&spec.args);
     cmd.cwd(&spec.cwd);
-    // Account-specific credentials, when supplied, are added below. Never let
-    // an unrelated inherited API key select the account for this observation.
     cmd.env_remove("CURSOR_API_KEY");
     for (k, v) in &spec.env {
         cmd.env(k, v);
@@ -194,7 +204,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let shared = Arc::new(Mutex::new(Shared {
         buf: Vec::new(),
         overflow: false,
-        first: None,
         last: Instant::now(),
     }));
     let sink = Arc::clone(&shared);
@@ -212,7 +221,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
             s.buf.extend_from_slice(&chunk[..n]);
             let now = Instant::now();
             s.last = now;
-            s.first.get_or_insert(now);
         }
     });
 
@@ -222,7 +230,6 @@ pub fn run_usage_in_pty(spec: &PtySpec, timeout: Duration) -> Result<String, Str
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
-    // Closing a pseudo-console can block until its output is drained; never let that stall us.
     std::thread::spawn(move || drop(master));
     result
 }
@@ -239,21 +246,20 @@ fn drive(
     let mut sent_at = Instant::now();
     let mut trusted = false;
     let mut dsr_answered = 0usize;
-    // Only output after this offset/instant counts (everything before it was a dialog we answered).
     let mut base = 0usize;
     let mut epoch: Option<Instant> = None;
+    let mut visible: Option<Instant> = None;
     loop {
         if start.elapsed() >= timeout {
             return Err(format!("Cursor changed its usage screen or did not respond within {}s; usage is unavailable", timeout.as_secs()));
         }
-        let (bytes, first, last) = {
+        let (bytes, last) = {
             let s = shared.lock().map_err(|_| "poisoned")?;
             if s.overflow {
                 return Err("Cursor usage output exceeds 1 MiB".into());
             }
-            (s.buf.clone(), s.first, s.last)
+            (s.buf.clone(), s.last)
         };
-        // ConPTY may ask where the cursor is and wait for the answer.
         let asked = count_sub(&bytes, b"\x1b[6n");
         while dsr_answered < asked {
             let _ = writer.write_all(b"\x1b[1;1R");
@@ -261,6 +267,9 @@ fn drive(
             dsr_answered += 1;
         }
         let text = screen_text(&bytes[base.min(bytes.len())..]);
+        if visible.is_none() && !text.trim().is_empty() {
+            visible = Some(Instant::now());
+        }
         if sent && table_complete(&text) {
             std::thread::sleep(Duration::from_millis(250));
             let bytes = shared.lock().map_err(|_| "poisoned")?.buf.clone();
@@ -269,11 +278,10 @@ fn drive(
         if let Ok(Some(_)) = child.try_wait() {
             return Err("the Cursor agent exited before showing usage".into());
         }
-        // Once answered, the old dialog text lingers in the stream (clears are not tracked), so
-        // a stuck dialog shows up as the overall timeout instead.
+        if is_login_prompt(&text) {
+            return Err(NOT_LOGGED_IN.into());
+        }
         if !trusted && is_trust_prompt(&text) {
-            // The working directory is an empty folder Concordia made for this; the prompt shows
-            // `[a] Trust this workspace`, which is the only key sent for it.
             let _ = writer.write_all(b"a");
             let _ = writer.flush();
             trusted = true;
@@ -281,7 +289,7 @@ fn drive(
             base = bytes.len();
             epoch = Some(Instant::now());
         } else {
-            let since = epoch.or(first);
+            let since = epoch.or(visible);
             let ready = since.is_some_and(|e| {
                 (last > e && last.elapsed() >= QUIET_READY) || e.elapsed() >= READY_CAP
             });
@@ -295,8 +303,6 @@ fn drive(
                 enters = 1;
                 sent_at = Instant::now();
             } else if sent && enters < 3 && sent_at.elapsed() >= Duration::from_secs(4) {
-                // Enter was lost (the screen loads usage over the network first, so give it time).
-                // With the command already run, Enter on an empty prompt does nothing.
                 let _ = writer.write_all(ENTER_KEY);
                 let _ = writer.flush();
                 enters += 1;
@@ -311,6 +317,21 @@ fn count_sub(hay: &[u8], needle: &[u8]) -> usize {
     hay.windows(needle.len()).filter(|w| *w == needle).count()
 }
 
+pub const NOT_LOGGED_IN: &str = "Cursor is not logged in; run `agent login` to see usage";
+
+fn is_login_prompt(text: &str) -> bool {
+    let t = text.to_ascii_lowercase();
+    [
+        "to log in",
+        "not logged in",
+        "logged out",
+        "to sign in",
+        "login required",
+    ]
+    .iter()
+    .any(|phrase| t.contains(phrase))
+}
+
 fn is_trust_prompt(text: &str) -> bool {
     let t = text.to_ascii_lowercase();
     t.contains("trust this workspace") || t.contains("workspace trust")
@@ -320,8 +341,6 @@ fn table_complete(text: &str) -> bool {
     text.contains("Included") && text.contains("% used") && text.contains("On-Demand")
 }
 
-/// Terminal bytes to plain lines: cursor moves become newlines or spaces, everything else
-/// (colours, modes, titles) is dropped.
 pub fn screen_text(bytes: &[u8]) -> String {
     let s = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(s.len());
@@ -380,7 +399,6 @@ mod tests {
 
     const TABLE: &str = "Usage \u{2022} Pro                 Resets Nov 6\n Category  Current  Usage\n Included  27% used  ###\n On-Demand  Disabled\n";
 
-    /// A fake raw-input agent: accepts the same local command and Return sequence as Cursor.
     fn fake_agent(dir: &Path, table: bool, hang_after: bool) -> PtySpec {
         let sample = dir.join("sample.txt");
         std::fs::write(&sample, if table { TABLE } else { "nothing useful\n" }).unwrap();
@@ -472,6 +490,109 @@ if ([Text.Encoding]::UTF8.GetString($bytes) -ne "/usage$([char]27)[13u") {{ exit
             cwd: dir.path().to_path_buf(),
         };
         assert!(run_usage_in_pty(&spec, Duration::from_secs(4)).is_err());
+    }
+
+    fn fake_logged_out_agent(dir: &Path) -> (PtySpec, PathBuf) {
+        let pressed = dir.join("key-pressed");
+        #[cfg(windows)]
+        let (program, args) = {
+            let script = dir.join("logged-out-agent.ps1");
+            std::fs::write(
+                &script,
+                format!(
+                    r#"Add-Type 'using System; using System.Runtime.InteropServices; public static class ProbeInput {{ [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m); }}'
+[ProbeInput]::SetConsoleMode([ProbeInput]::GetStdHandle(-10), 0x0200) | Out-Null
+[Console]::WriteLine('Cursor Agent')
+[Console]::WriteLine('Press any key to log in...')
+$bytes = New-Object byte[] 1
+if ([Console]::OpenStandardInput().Read($bytes, 0, 1) -gt 0) {{ [IO.File]::WriteAllText('{}', 'browser') }}
+"#,
+                    pressed.display().to_string().replace('\'', "''")
+                ),
+            )
+            .unwrap();
+            (
+                "powershell.exe".to_string(),
+                vec![
+                    "-NoProfile".into(),
+                    "-File".into(),
+                    script.to_string_lossy().into_owned(),
+                ],
+            )
+        };
+        #[cfg(unix)]
+        let (program, args) = {
+            let script = dir.join("logged-out-agent.sh");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh
+stty -icanon -echo
+echo 'Cursor Agent'
+echo 'Press any key to log in...'
+if [ -n \"$(dd bs=1 count=1 2>/dev/null)\" ]; then echo browser > '{}'; fi
+",
+                    pressed.display()
+                ),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (script.to_string_lossy().into_owned(), Vec::new())
+        };
+        (
+            PtySpec {
+                program,
+                args,
+                env: Vec::new(),
+                cwd: dir.to_path_buf(),
+            },
+            pressed,
+        )
+    }
+
+    #[test]
+    fn a_logged_out_agent_gets_no_keypress_so_no_browser_login_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let (spec, pressed) = fake_logged_out_agent(dir.path());
+        let started = Instant::now();
+        let error = run_usage_in_pty(&spec, Duration::from_secs(15)).unwrap_err();
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(error, NOT_LOGGED_IN);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "waited for the timeout instead of stopping at the login prompt"
+        );
+        assert!(
+            !pressed.exists(),
+            "a key reached the login prompt, which opens the browser login"
+        );
+    }
+
+    #[test]
+    fn the_probe_starts_only_when_status_confirms_a_login() {
+        let logged_out: Result<(), String> = Err(NOT_LOGGED_IN.into());
+        assert_eq!(login_status("Not logged in", false), logged_out);
+        assert_eq!(login_status("", false), logged_out);
+        assert_eq!(
+            login_status("Logged in as someone@example.com", false),
+            Ok(())
+        );
+        assert_eq!(login_status("", true), Ok(()));
+        assert_eq!(login_status("Not logged in", true), logged_out);
+    }
+
+    #[test]
+    fn login_prompts_are_recognised() {
+        assert!(is_login_prompt(
+            " Cursor Agent
+ Press any key to log in..."
+        ));
+        assert!(is_login_prompt("You are not logged in"));
+        assert!(!is_login_prompt(TABLE));
+        assert!(!is_login_prompt(
+            "Do you trust the contents of this directory?"
+        ));
     }
 
     #[test]

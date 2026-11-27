@@ -1,4 +1,3 @@
-//! Native skill directories point to one user-selected source; no copied skill trees.
 use super::connections;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,7 +51,6 @@ pub fn needs_setup(store: &Path, home: Option<&Path>) -> Result<bool, String> {
     let Some(home) = home else { return Ok(false) };
     for source in connections::shared_skill_sources(store)? {
         for bundle in bundles(Path::new(&source))? {
-            // Existing user-owned bundles are preserved, including name collisions.
             if std::fs::symlink_metadata(destination(home, &bundle)?).is_err() {
                 return Ok(true);
             }

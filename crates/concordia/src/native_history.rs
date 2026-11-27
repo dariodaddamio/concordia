@@ -1,4 +1,3 @@
-//! Explicit, bounded access to native CLI chats. No session resume, context transfer or inference.
 use crate::provider::stream_cards::{
     classify_codex_event, format_card_line, upsert_card, StreamCard, StreamPart,
 };
@@ -10,28 +9,19 @@ use std::{
     path::Path,
 };
 
-/// Read-only restoration data. Loading it never dispatches a provider turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryMessage {
     pub role: String,
     pub text: String,
-    /// Original native tool identity and reported input/output, for display only.
     pub card: Option<StreamCard>,
 }
 
-/// Message-identity cursor for the oldest shown message: its position in the bounded read plus a
-/// hash of it and the next two messages. A later page re-finds it by identity, so source growth
-/// (the bounded read is the file's tail and moves) cannot duplicate or skip messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Anchor {
     index: usize,
     count: usize,
     key: u64,
-    /// Byte offset where the bounded native read began. A different offset means the read
-    /// window moved (an over-8 MiB source grew), so `index` no longer names the same message.
     source_offset: u64,
-    /// Messages the bounded read dropped from its front. Like `source_offset`, a change means
-    /// the window moved (a Cursor or in-memory read grew past 8 MiB).
     dropped_front: u64,
 }
 
@@ -56,8 +46,6 @@ fn make_anchor(messages: &[HistoryMessage], index: usize, window: (u64, u64)) ->
     }
 }
 
-/// Position of the anchored message in the current read, or an error when it cannot be found
-/// uniquely (the source was rewritten or the anchor aged out of the read window).
 fn resolve_anchor(
     messages: &[HistoryMessage],
     anchor: Anchor,
@@ -66,8 +54,6 @@ fn resolve_anchor(
     let at = |i: usize| {
         i + anchor.count <= messages.len() && anchor_key(messages, i, anchor.count) == anchor.key
     };
-    // The same index is trusted only while the read window is unchanged; after it moves,
-    // repeated content (for example identical short turns) could match at the old index.
     if (anchor.source_offset, anchor.dropped_front) == window && at(anchor.index) {
         return Ok(anchor.index);
     }
@@ -87,13 +73,9 @@ pub struct History {
     pub hidden_messages: usize,
     pub exhausted: bool,
     pub next_cursor: Option<Anchor>,
-    /// The 8 MiB native read bound dropped older source content.
     pub source_truncated: bool,
-    /// Byte offset where the bounded native read began (0 for a full read).
     pub source_offset: u64,
-    /// Messages the bounded read dropped from its front to stay within 8 MiB.
     pub dropped_front: u64,
-    /// Message text or tool-card detail was shortened for display (not a read-window cut).
     pub details_shortened: bool,
     pub start_ordinal: usize,
     pub end_ordinal: usize,
@@ -125,8 +107,6 @@ fn bound_history_card(card: &mut StreamCard) -> bool {
     true
 }
 
-/// Read a bounded scrollback from an explicitly bound account and native session.
-/// File discovery and I/O belong on a worker thread, outside the render loop.
 pub fn read_bound(
     root: &Path,
     account: &str,
@@ -137,8 +117,6 @@ pub fn read_bound(
     read_bound_page(root, account, provider, session_id, path, None)
 }
 
-/// Read one older page from the same explicitly bound native source. The source read is still
-/// capped at 8 MiB; page expansion only increases the in-memory message window within that cap.
 pub fn read_bound_page(
     root: &Path,
     account: &str,
@@ -163,9 +141,6 @@ pub fn read_bound_page(
         read_history_file_page(path, provider, message_limit, byte_limit)?
     };
     let total_messages = history.messages.len();
-    // Page backward from a source cursor (an ordinal in the bounded native read), accumulating both
-    // display limits (200 messages and 1 MiB including card detail). The caller advances by the
-    // range actually consumed, so large messages never cause gaps or overlaps.
     let end = match before {
         Some(anchor) => resolve_anchor(
             &history.messages,
@@ -223,8 +198,6 @@ pub fn read_bound_page(
     Ok(history)
 }
 
-/// Confirm a bound native record can be opened without parsing its transcript. Listing
-/// surfaces (/resume, /doctor) call this for every chat; the full read happens on open.
 pub fn probe_bound(
     root: &Path,
     account: &str,
@@ -275,7 +248,6 @@ fn read_history_file_page(
     file.take(HISTORY_NATIVE_BYTES)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    // Discard the incomplete first JSON line, including any split UTF-8 character.
     let begin = if partial_first {
         bytes
             .iter()
@@ -307,7 +279,6 @@ fn read_history_file_page(
             if kind == "response_item"
                 && payload.get("type").and_then(Value::as_str) == Some("reasoning")
             {
-                // Only provider-reported readable summaries; encrypted reasoning stays opaque.
                 if let Some(summary) = payload.get("summary").and_then(Value::as_array) {
                     let text = summary
                         .iter()
@@ -570,8 +541,6 @@ impl HistoryBuffer {
 }
 
 pub(crate) fn visible_user_history(mut text: &str) -> &str {
-    // Native transcripts include setup and background notices as user messages.
-    // Keep any actual request following those wrappers.
     loop {
         text = text.trim_start();
         let wrapper = [
@@ -587,7 +556,6 @@ pub(crate) fn visible_user_history(mut text: &str) -> &str {
         .into_iter()
         .find(|tag| text.starts_with(&format!("<{tag}>")));
         let Some(tag) = wrapper else {
-            // ACP transcripts keep Concordia's standing context as plain text before the request.
             const START: &str = "You run inside Concordia, which hosts native provider CLIs.";
             const END: &str = "Do not ask the user to do work Concordia can do.";
             if text.starts_with(START) {

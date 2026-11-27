@@ -1,6 +1,3 @@
-//! Small text transformations shared by providers, storage, and the UI.
-
-/// Remove control and bidirectional/invisible characters that can spoof terminal output.
 pub(crate) fn terminal_safe(text: &str) -> String {
     text.chars()
         .filter(|c| (!c.is_control() || matches!(*c, '\n' | '\t')) && !is_terminal_unsafe(*c))
@@ -14,10 +11,6 @@ fn is_terminal_unsafe(c: char) -> bool {
 const WORKER_OUTPUT_PREFIX: &str = "<<<CONCORDIA-WORKER-OUTPUT";
 const WORKER_OUTPUT_END_PREFIX: &str = "<<<END-CONCORDIA-WORKER-OUTPUT";
 
-/// Wrap worker output as untrusted data before it is handed to an agent.
-///
-/// The UUID v4 source is backed by the operating system CSPRNG. Fence-like text is
-/// removed from the payload so content cannot manufacture a closing delimiter.
 pub fn fence_untrusted(content: &str) -> String {
     let fence_id = uuid::Uuid::new_v4().simple().to_string();
     let fence = format!("{WORKER_OUTPUT_PREFIX}-{fence_id}>>>");
@@ -33,7 +26,6 @@ pub fn fence_untrusted(content: &str) -> String {
     )
 }
 
-/// Effort names become one argv value; keep them to short lowercase words.
 pub fn valid_effort(effort: &str) -> bool {
     !effort.is_empty() && effort.len() <= 20 && effort.chars().all(|c| c.is_ascii_lowercase())
 }

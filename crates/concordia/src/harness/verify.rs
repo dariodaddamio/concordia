@@ -1,10 +1,3 @@
-//! `/harness verify`: turn an adapter's live probe into the receipt the launch gate reads.
-//!
-//! A receipt is written only when the adapter's verify command exits 0 and prints a JSON report
-//! saying `denied-live-probe` for exactly this provider, this isolated home and the project's
-//! current policy revision. Anything else is `unverified`, withdraws an earlier receipt, and says
-//! why. A model turn never reaches this code: only the slash command does.
-
 use super::{expand, resolve_program, Context, Manifest, RunOutcome};
 use crate::provider::enforcement;
 use serde_json::Value;
@@ -15,9 +8,7 @@ const PROVEN: &str = "denied-live-probe";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
-    /// A receipt was written; the launch gate now accepts this provider and home.
     Verified,
-    /// Nothing was proven; the text says why. Any earlier receipt was withdrawn.
     Unverified(String),
     /// The project has no locked-code policy, so there is nothing to prove.
     NothingToVerify(String),
@@ -32,7 +23,6 @@ fn tail(text: &str) -> String {
     text[start..].replace('\n', " ")
 }
 
-/// The report: the last stdout line that is a JSON object, else the whole output.
 fn parse_report(stdout: &str) -> Option<Value> {
     let object = |v: Value| v.is_object().then_some(v);
     stdout
@@ -55,7 +45,6 @@ fn write_receipt(path: &Path, body: &Value) -> std::io::Result<()> {
     crate::state_io::write_atomic(path, &serde_json::to_vec_pretty(body)?)
 }
 
-/// Run the adapter's verify command and write a receipt under `store` only for a real denial.
 pub fn verify_in(
     store: &Path,
     manifest: &Manifest,
@@ -508,9 +497,6 @@ mod tests {
         );
         let receipt = enforcement::slot(f.store.path(), f.project.path()).join("claude.json");
         let old = fs::read_to_string(&receipt).unwrap();
-        // UUID staging intentionally ignores stale fixed `.tmp` names. Force a
-        // genuine publication failure instead: temporarily obstruct its parent,
-        // retaining the old directory and receipt byte-for-byte alongside it.
         let slot = receipt.parent().unwrap();
         let retained = slot.with_extension("retained");
         fs::rename(slot, &retained).unwrap();

@@ -1,5 +1,56 @@
 # Changelog
 
+### Fixed (2026-11-25f, local source)
+
+- Doctor names Grok correctly and uses lowercase severity tags. Long paths use the available picker width, and account removal shows the same login state as Doctor.
+- Permissions and usage clear the transcript rows or area they cover. Settings extends the Help divider and wraps Help at narrower sizes. Integrations uses the standard picker width.
+- Home shows usage loading in the usage pane. Question turns say they are waiting for your answer, and tool status no longer repeats the tool card title.
+- The command menu shows the filtered and unfiltered counts. Shortcut, update and rename footers reflect their available keys.
+
+### Fixed (2026-11-25e, local source)
+
+- Question cards start with the prompt and show a shortened session ID alongside it. The full ID appears below.
+- Header dropdowns clear the full width of the rows they cover.
+- Quiet-turn options open beside the notice while it is visible.
+
+### Fixed (2026-11-25d, local source)
+
+- The footer permissions menu opens above its chip and keeps the draft visible on the left.
+- Settings keeps rows and help visible outside the permissions menu.
+- Activity search shows `1 match`, and the quiet-turn notice shows `1 minute`.
+
+### Fixed (2026-11-25c, local source)
+
+- Failure details stay with the turn that failed.
+- Home shows actions for the selected row and opens provider choices directly during setup.
+- The permissions menu opens beside its control. Settings Help returns when the menu closes.
+- Narrow windows mark shortened text in the command menu, Shortcuts, Agents, and Workers.
+- Doctor offers to review a fix when the selected check has one.
+
+### Fixed (2026-11-25b, local source)
+
+- Restoring the Windows window redraws the whole grid and ends tab renaming when focus leaves.
+- Account, model and effort pickers start on the current choice. Account and usage screens use the same status labels.
+- Home and Settings reflow more cleanly, and the Settings permissions menu opens by the value.
+- Turn status, tool cards and the Agents panel show fewer markers. Failed turns keep technical details under Expand.
+
+### Fixed (2026-11-25a, local source)
+
+- Home omits chats that Doctor reports as unopenable, including chats with missing handoff maps.
+- Home and the account pickers show the same reset time. Resets less than 24 hours away use a
+  countdown, and later resets show a date.
+- What's new marks shortened bullets with an ellipsis, and Documentation opens from the visible link.
+- The header account picker respects hidden accounts. Header chips show a hand cursor while a picker
+  is open.
+- Home labels token counts by time period and explains when local history is incomplete.
+- Cursor API usage shows as usage-based when on-demand billing is enabled. Spending and subscription
+  caps still show their remaining allowance when reported.
+
+### Developer tooling
+
+`scripts/audit-shots.ps1` captures native Windows UI states with fake providers and indexes the
+screenshots, text grids and unavailable routes.
+
 ### Fixed (2026-11-20a, local source)
 
 This release comes from qualifying every row of PLAN.md's "Remaining surfaces to qualify" in

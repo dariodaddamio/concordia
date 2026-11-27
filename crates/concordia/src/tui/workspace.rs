@@ -1,4 +1,3 @@
-//! Bounded internal read-only file panes. Files are read away from the render/input loop.
 use super::*;
 use crate::file_links;
 use std::io::Read;
@@ -468,7 +467,6 @@ impl Workspace {
                         .iter_mut()
                         .find(|p| p.id == id && p.generation == generation && !p.loading)
                     {
-                        // Conflicts stay visible until explicit reload/save reconciles them.
                         pane.changed |= observed != pane.stamp;
                     }
                 }
@@ -735,7 +733,6 @@ fn read_lines(path: &Path) -> Result<Vec<String>, String> {
     display_lines(&read_text(path)?)
 }
 
-/// Draw file panes, returning the remaining chat rectangle. No disk I/O occurs here.
 pub(super) fn draw(f: &mut Frame, app: &mut App) -> Rect {
     draw_in(f, app, f.area())
 }
@@ -904,8 +901,6 @@ fn draw_pane(
             }
         )
     };
-    // The title ends before the window button (or the X), and the reload hint outranks the
-    // file name: shorten the name first, then the hint.
     let room = usize::from(if native_windows && !standalone && rect.width >= 26 {
         pane.window_button().x.saturating_sub(rect.x + 2)
     } else {
@@ -1115,10 +1110,7 @@ fn draw_pane(
                 error.clone()
             } else if pane.searching {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
-            } else if pane.raw() || pane.csv_formatted() {
-                // Key names belong in the footer only (design-system).
-                String::new()
-            } else if pane.query.is_empty() {
+            } else if pane.raw() || pane.csv_formatted() || pane.query.is_empty() {
                 String::new()
             } else {
                 format!("/{}  {} matches", pane.query, pane.matches.len())
@@ -1150,9 +1142,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             return true;
         }
     }
-    // Browser-tab chords belong to the window. Never swallow them here — including when
-    // panes are open but the chat has focus (focused == None). Ctrl+W is the only chord
-    // run.rs defers to a focused pane; docked panes still do not own it.
     match tabs::action_for(*key) {
         tabs::TabAction::Unhandled => {}
         tabs::TabAction::Close if app.workspace.focused.is_some() => {}
@@ -1185,7 +1174,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
     };
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
     {
-        return false; // Preserve the existing copy/cancel contract.
+        return false;
     }
     if let Some(pane) = state.panes.iter_mut().find(|p| p.id == id) {
         if pane.searching {
@@ -1219,7 +1208,6 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
         state.focused = None;
         return true;
     }
-    // A read-only pane closes on `q`, as pagers do; Ctrl+W belongs to the terminal's tabs.
     if key.modifiers.is_empty() && key.code == KeyCode::Char('q') {
         state.close(id);
         return true;
@@ -1259,7 +1247,7 @@ pub(super) fn handle_key(app: &mut App, key: &KeyEvent) -> bool {
             _ => {}
         }
     }
-    true // Read-only focus consumes typing and Enter, never sending chat.
+    true
 }
 
 pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
@@ -1300,7 +1288,6 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
             _ => {}
         }
     }
-    // Horizontal navigation owns its track before the raw editor sees a text-selection click.
     if let Some(Resize::Horizontal(id)) = app.workspace.resizing {
         if let Some(pane) = app.workspace.panes.iter_mut().find(|pane| pane.id == id) {
             if matches!(
@@ -1433,8 +1420,6 @@ pub(super) fn handle_mouse(app: &mut App, mouse: &MouseEvent) -> bool {
     let hit = state.panes.iter().position(|p| contains(p.area, x, y));
     if let Some(index) = hit {
         let split_index = state.panes[..index].iter().filter(|p| !p.detached).count();
-        // A child HWND has no sibling row split, even when the shared workspace
-        // still contains docked panes whose main-window hit areas are hidden.
         let has_next = !state.panes[index].detached
             && state.panes[index + 1..]
                 .iter()
@@ -1485,8 +1470,6 @@ pub(super) fn paste(app: &mut App, text: &str) -> bool {
     edit::paste(app, text)
 }
 
-/// A native backend supplies signed cells before clamping terminal mouse coordinates.
-/// Returns true when a pane was detached by a completed title drag.
 pub(super) fn finish_tab_drag(app: &mut App, x: i32, y: i32) -> bool {
     let Some((id, start_x, start_y)) = app.workspace.tab_drag.take() else {
         return false;
@@ -1503,7 +1486,6 @@ pub(super) fn finish_tab_drag(app: &mut App, x: i32, y: i32) -> bool {
     false
 }
 
-/// Draw another view of the same document, without changing main-window hit targets.
 pub(super) fn draw_window(f: &mut Frame, app: &mut App, id: u32) {
     let state = &mut app.workspace;
     if let Some(pane) = state.panes.iter_mut().find(|p| p.id == id && p.detached) {
@@ -1527,7 +1509,6 @@ pub(super) fn draw_window(f: &mut Frame, app: &mut App, id: u32) {
     }
 }
 
-/// Route only editor events; provider dispatch and application commands stay in the main window.
 pub(super) fn handle_window_event(app: &mut App, id: u32, event: Event) -> bool {
     if !app.workspace.panes.iter().any(|p| p.id == id && p.detached) {
         return false;

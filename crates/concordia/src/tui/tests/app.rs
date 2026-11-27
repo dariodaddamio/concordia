@@ -65,7 +65,6 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     assert!(s.contains("| x model save failed"), "{s}");
     assert!(s.contains("| + now using Codex 3"), "{s}");
 
-    // Visually distinct: a command block's text is dim, the reply's is default; errors are red.
     let buf = h.term.backend().buffer().clone();
     let find = |needle: &str| -> (u16, u16) {
         for y in 0..buf.area.height {
@@ -87,7 +86,6 @@ fn command_output_is_a_barred_block_and_agent_replies_carry_a_label() {
     let (x, y) = find("Codex 3 \u{b7} gpt-5.1");
     assert_eq!(buf[(x, y)].fg, provider_color(ProviderKind::Codex));
 
-    // NO_COLOR keeps the structure (bars, labels) with emphasis only.
     h.app.no_color = true;
     h.draw();
     let s = h.screen();
@@ -206,7 +204,6 @@ fn recording_appends_events_and_writes_meta_once_and_new_starts_a_fresh_thread()
         .threads_command("delete tid")
         .join(" ")
         .contains("current"));
-    // The bounded map remains available even when the card is not transferred as transcript text.
     let pack = crate::context::build_context_pack(
         &h.app.pack_messages(),
         ProviderKind::Codex,
@@ -234,7 +231,7 @@ fn the_landing_page_lists_this_folders_chats_first_and_expanded() {
         !screen.contains("chat third"),
         "collapsed groups hide their chats"
     );
-    assert!(screen.contains("Enter open chat"), "{screen}");
+    assert!(screen.contains("Enter collapse folder"), "{screen}");
     h.app.editor.set_text("keep the landing draft");
     assert!(landing::visible(&h.app));
     assert_eq!(h.app.editor.text(), "keep the landing draft");
@@ -331,10 +328,14 @@ fn first_launch_without_accounts_shows_welcome_and_use_action() {
     landing::open_with(&mut h.app, Vec::new(), None);
     h.draw();
     assert!(h.screen().contains("Welcome to Concordia"));
-    assert!(h.screen().contains("/use to add an account"));
+    assert!(h.screen().contains("No account connected"));
+    assert!(!h.screen().contains("Subscription:"));
+    assert!(!h.screen().contains(" chats "));
+    h.key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(h.app.tab_request.is_none());
     h.key(KeyCode::Enter, KeyModifiers::NONE);
-    assert!(h.app.picker.is_some(), "Enter should open the /use flow");
-    assert!(h.screen().contains("+ add account"));
+    assert_eq!(h.app.picker.as_ref().unwrap().kind, PickerKind::AddProvider);
+    assert!(h.screen().contains("add account"));
 }
 
 #[test]
@@ -610,13 +611,13 @@ fn the_landing_page_shows_the_last_24_hours_of_tokens() {
     while Instant::now() < deadline {
         h.app.on_tick();
         h.draw();
-        if h.screen().contains("3.3k tokens in 24 hours") {
+        if h.screen().contains("3.3k tokens logged in the last 24h") {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(
-        h.screen().contains("3.3k tokens in 24 hours"),
+        h.screen().contains("3.3k tokens logged in the last 24h"),
         "{}",
         h.screen()
     );

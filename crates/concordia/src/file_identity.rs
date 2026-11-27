@@ -1,4 +1,3 @@
-//! Platform file identity, shared by native sources and workspace bindings.
 use std::fs::File;
 
 #[cfg(windows)]
